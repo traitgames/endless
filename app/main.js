@@ -307,6 +307,10 @@ const player = {
 const keys = new Set();
 let pointerLocked = false;
 let chatOpen = false;
+let suppressNextUnlockChatOpen = false;
+let resumePointerLockAfterUnlock = false;
+let lastEscapeChatCloseAt = -Infinity;
+const ESCAPE_CHAT_REOPEN_GUARD_MS = 250;
 
 function isChatFocused() {
   return document.activeElement === chatInput;
@@ -334,6 +338,7 @@ function setPaused(paused) {
   if (paused) {
     keys.clear();
     if (pointerLocked) {
+      suppressNextUnlockChatOpen = true;
       document.exitPointerLock();
     }
     return;
@@ -358,8 +363,25 @@ window.addEventListener("resize", () => {
 
 window.addEventListener("keydown", (event) => {
   if (event.code === "Escape") {
-    toggleChatPause();
+    if (!chatOpen) {
+      // Ignore stale/late Escape events right after an explicit Escape-close.
+      if (performance.now() - lastEscapeChatCloseAt < ESCAPE_CHAT_REOPEN_GUARD_MS) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      setChatOpen(true, { focusInput: true });
+    } else {
+      lastEscapeChatCloseAt = performance.now();
+      if (pointerLocked) {
+        suppressNextUnlockChatOpen = true;
+        resumePointerLockAfterUnlock = true;
+      }
+      setChatOpen(false);
+      setPaused(false);
+    }
     event.preventDefault();
+    event.stopPropagation();
     return;
   }
 
@@ -380,7 +402,7 @@ window.addEventListener("keydown", (event) => {
     player.position.set(0, 12, 0);
     player.velocity.set(0, 0, 0);
   }
-});
+}, true);
 
 window.addEventListener("keyup", (event) => {
   if (isChatFocused()) return;
@@ -395,6 +417,7 @@ canvas.addEventListener("click", () => {
 
 chatInput.addEventListener("focus", () => {
   if (pointerLocked) {
+    suppressNextUnlockChatOpen = true;
     document.exitPointerLock();
   }
   keys.clear();
@@ -414,7 +437,34 @@ window.addEventListener("mousemove", (event) => {
 });
 
 document.addEventListener("pointerlockchange", () => {
+  const wasPointerLocked = pointerLocked;
   pointerLocked = document.pointerLockElement === canvas;
+  const suppressAutoOpen = suppressNextUnlockChatOpen;
+  suppressNextUnlockChatOpen = false;
+
+  if (resumePointerLockAfterUnlock && wasPointerLocked && !pointerLocked && !chatOpen && document.hasFocus()) {
+    resumePointerLockAfterUnlock = false;
+    canvas.requestPointerLock();
+    return;
+  }
+
+  if (pointerLocked) {
+    resumePointerLockAfterUnlock = false;
+  }
+
+  if (suppressAutoOpen) {
+    return;
+  }
+
+  if (performance.now() - lastEscapeChatCloseAt < ESCAPE_CHAT_REOPEN_GUARD_MS) {
+    return;
+  }
+
+  // If pointer lock is released while chat is minimized (e.g. first Escape),
+  // open chat immediately so a second Escape isn't required.
+  if (wasPointerLocked && !pointerLocked && !chatOpen && document.hasFocus()) {
+    setChatOpen(true, { focusInput: true });
+  }
 });
 
 const clock = new THREE.Clock();
