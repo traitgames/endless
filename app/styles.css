@@ -233,7 +233,7 @@ canvas {
 
 #chat-actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -247,6 +247,12 @@ canvas {
   background: rgba(255, 255, 255, 0.1);
   color: var(--text);
   border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+#chat-actions #world-commands {
+  background: rgba(110, 160, 255, 0.14);
+  color: #dce8ff;
+  border: 1px solid rgba(110, 160, 255, 0.3);
 }
 
 #chat-actions #reset-save {

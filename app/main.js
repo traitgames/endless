@@ -19,6 +19,7 @@ const chatLog = document.getElementById("chat-log");
 const chatForm = document.getElementById("chat-form");
 const chatInput = document.getElementById("chat-input");
 const chatClear = document.getElementById("chat-clear");
+const worldCommandsBtn = document.getElementById("world-commands");
 const chatPanel = document.getElementById("chat");
 const chatMinimizeBtn = document.getElementById("chat-minimize");
 const hudEl = document.getElementById("hud");
@@ -176,7 +177,7 @@ const BIOME_DEFS = {
 const DEFAULT_STATE = {
   seed: BOOT_SEED,
   world: DEFAULT_WORLD,
-  timeOfDay: seededHash2(19, 47, BOOT_SEED),
+  timeOfDay: 7 / 24,
   ui: {
     chatOpen: false,
   },
@@ -376,7 +377,7 @@ const atmosphereBase = {
   fogColor: new THREE.Color(state.world.fog.colorHex),
 };
 const DAY_NIGHT = {
-  dayLengthSeconds: 240,
+  dayLengthSeconds: 40 * 60,
   sunDistance: 230,
   moonDistance: 210,
 };
@@ -1215,7 +1216,9 @@ chatForm.addEventListener("submit", (event) => {
   if (!message) return;
   addChatEntry({ role: "user", content: message, ts: Date.now() });
   chatInput.value = "";
-  sendToCodex(resolveChatCommand(message));
+  const resolvedMessage = resolveChatCommand(message);
+  if (tryHandleLocalChatCommand(resolvedMessage)) return;
+  sendToCodex(resolvedMessage);
 });
 
 resetSaveBtn?.addEventListener("click", () => {
@@ -1231,6 +1234,11 @@ resetSaveBtn?.addEventListener("click", () => {
 chatClear.addEventListener("click", () => {
   chatStore.clear();
   saveState();
+});
+
+worldCommandsBtn?.addEventListener("click", () => {
+  showWorldCommandHelp();
+  setChatOpen(true, { focusInput: true });
 });
 
 function addChatEntry(entry) {
@@ -1367,6 +1375,155 @@ function resolveChatCommand(message) {
     return `Commit the current git working tree changes with an appropriate concise commit message. Use this user hint when crafting the message: "${hint}". Run git status first, stage relevant changes, then create the commit. Return the commit summary and changed file paths.`;
   }
   return message;
+}
+
+function tryHandleLocalChatCommand(message) {
+  const trimmed = typeof message === "string" ? message.trim() : "";
+  if (!trimmed) return false;
+  if (!/^\/world(?:\s|$)/i.test(trimmed)) return false;
+  return handleLocalWorldCommand(trimmed);
+}
+
+function handleLocalWorldCommand(message) {
+  const parts = message.split(/\s+/).filter(Boolean);
+  if (parts.length === 0 || parts[0].toLowerCase() !== "/world") return false;
+
+  const sub = (parts[1] || "").toLowerCase();
+  if (!sub || sub === "help" || sub === "commands" || sub === "?") {
+    showWorldCommandHelp();
+    return true;
+  }
+
+  const isBiomeCommand = sub === "biome";
+  const isTeleportBiomeCommand = sub === "tp" && (parts[2] || "").toLowerCase() === "biome";
+  if (isBiomeCommand || isTeleportBiomeCommand) {
+    const biomeName = (isBiomeCommand ? parts.slice(2) : parts.slice(3)).join(" ");
+    if (!biomeName) {
+      addChatEntry({
+        role: "codex_output",
+        content: "Usage: /world biome <biome-name>\nExample: /world biome forest",
+        ts: Date.now(),
+      });
+      return true;
+    }
+    teleportPlayerToBiome(biomeName);
+    return true;
+  }
+
+  return false;
+}
+
+function showWorldCommandHelp() {
+  const biomeNames = Object.values(BIOME_DEFS)
+    .map((biome) => biome.id)
+    .sort()
+    .join(", ");
+  addChatEntry({
+    role: "codex_output",
+    content: [
+      "World commands (local):",
+      "/world help",
+      "/world biome <biome-name>",
+      "/world tp biome <biome-name>",
+      "",
+      `Biomes: ${biomeNames}`,
+    ].join("\n"),
+    ts: Date.now(),
+  });
+}
+
+function teleportPlayerToBiome(rawBiomeName) {
+  const targetBiome = resolveBiomeName(rawBiomeName);
+  if (!targetBiome) {
+    addChatEntry({
+      role: "codex_output",
+      content: `Unknown biome "${rawBiomeName}". Click "World Cmds" for the biome list.`,
+      ts: Date.now(),
+    });
+    return;
+  }
+
+  const target = findNearestBiomeTarget(targetBiome.id, player.position.x, player.position.z);
+  if (!target) {
+    addChatEntry({
+      role: "codex_output",
+      content: `Could not find biome "${targetBiome.id}" nearby. Try another biome.`,
+      ts: Date.now(),
+    });
+    return;
+  }
+
+  player.position.set(target.x, target.y, target.z);
+  player.velocity.set(0, 0, 0);
+  player.grounded = false;
+  const cx = Math.floor(player.position.x / CHUNK_SIZE);
+  const cz = Math.floor(player.position.z / CHUNK_SIZE);
+  ensureChunks(cx, cz);
+  updateBiomeHud();
+  saveState();
+
+  addChatEntry({
+    role: "codex_output",
+    content: `Teleported to ${targetBiome.label} at ${Math.round(target.x)}, ${Math.round(target.z)}.`,
+    ts: Date.now(),
+  });
+}
+
+function resolveBiomeName(name) {
+  const normalized = String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+  if (!normalized) return null;
+  for (const biome of Object.values(BIOME_DEFS)) {
+    const idKey = biome.id.toLowerCase().replace(/[^a-z]/g, "");
+    const labelKey = biome.label.toLowerCase().replace(/[^a-z]/g, "");
+    if (normalized === idKey || normalized === labelKey) {
+      return biome;
+    }
+  }
+  return null;
+}
+
+function findNearestBiomeTarget(targetBiomeId, originX, originZ) {
+  const maxRadius = 8192;
+  const step = 48;
+
+  for (let radius = 0; radius <= maxRadius; radius += step) {
+    if (radius === 0) {
+      const centerBiome = getBiomeAt(originX, originZ);
+      if (centerBiome?.id === targetBiomeId) {
+        const groundY = heightAt(originX, originZ);
+        return {
+          x: originX,
+          z: originZ,
+          y: Math.max(groundY + 3, state.world.water.level + 3),
+        };
+      }
+      continue;
+    }
+
+    for (let offset = -radius; offset <= radius; offset += step) {
+      const candidates = [
+        [originX + offset, originZ - radius],
+        [originX + radius, originZ + offset],
+        [originX + offset, originZ + radius],
+        [originX - radius, originZ + offset],
+      ];
+      for (const [x, z] of candidates) {
+        const biome = getBiomeAt(x, z);
+        if (biome?.id !== targetBiomeId) continue;
+        const groundY = heightAt(x, z);
+        return {
+          x,
+          z,
+          y: Math.max(groundY + 3, state.world.water.level + 3),
+        };
+      }
+    }
+  }
+
+  return null;
 }
 
 function scheduleSoftRefresh() {
