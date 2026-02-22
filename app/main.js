@@ -12,6 +12,7 @@ import { PROTOCOL_VERSION } from "../shared/protocol.js";
 const canvas = document.getElementById("scene");
 const seedEl = document.getElementById("seed");
 const chunkEl = document.getElementById("chunk");
+const biomeEl = document.getElementById("biome");
 let backendModeEl = document.getElementById("backend-mode");
 const stateEl = document.getElementById("state");
 const chatLog = document.getElementById("chat-log");
@@ -78,6 +79,98 @@ const DEFAULT_WORLD = {
     density: 0.0012,
   },
   landmarks: [],
+};
+
+const BIOME_VARIANTS = {
+  cold: ["glacier", "tundra", "taiga"],
+  temperate: ["meadow", "forest", "wetland"],
+  hot: ["desert", "savanna", "badlands"],
+};
+
+const BIOME_DEFS = {
+  glacier: {
+    id: "glacier",
+    label: "Glacier",
+    category: "cold",
+    groundColor: new THREE.Color("#dfefff"),
+    hasTrees: false,
+  },
+  tundra: {
+    id: "tundra",
+    label: "Tundra",
+    category: "cold",
+    groundColor: new THREE.Color("#b8c8b3"),
+    hasTrees: false,
+  },
+  taiga: {
+    id: "taiga",
+    label: "Taiga",
+    category: "cold",
+    groundColor: new THREE.Color("#6f907f"),
+    hasTrees: true,
+    treeStyle: "conifer",
+    treeDensityMultiplier: 0.8,
+    trunkTint: new THREE.Color("#6d5844"),
+    canopyTint: new THREE.Color("#6aa296"),
+  },
+  meadow: {
+    id: "meadow",
+    label: "Meadow",
+    category: "temperate",
+    groundColor: new THREE.Color("#95b763"),
+    hasTrees: true,
+    treeStyle: "broadleaf",
+    treeDensityMultiplier: 0.38,
+    trunkTint: new THREE.Color("#6b5138"),
+    canopyTint: new THREE.Color("#8dba59"),
+  },
+  forest: {
+    id: "forest",
+    label: "Forest",
+    category: "temperate",
+    groundColor: new THREE.Color("#5e8a46"),
+    hasTrees: true,
+    treeStyle: "broadleaf",
+    treeDensityMultiplier: 1.1,
+    trunkTint: new THREE.Color("#664c34"),
+    canopyTint: new THREE.Color("#3f8144"),
+  },
+  wetland: {
+    id: "wetland",
+    label: "Wetland",
+    category: "temperate",
+    groundColor: new THREE.Color("#6f8d4f"),
+    hasTrees: true,
+    treeStyle: "wetland",
+    treeDensityMultiplier: 0.72,
+    trunkTint: new THREE.Color("#5a4637"),
+    canopyTint: new THREE.Color("#5f8f58"),
+  },
+  desert: {
+    id: "desert",
+    label: "Desert",
+    category: "hot",
+    groundColor: new THREE.Color("#d8bc86"),
+    hasTrees: false,
+  },
+  savanna: {
+    id: "savanna",
+    label: "Savanna",
+    category: "hot",
+    groundColor: new THREE.Color("#b7aa71"),
+    hasTrees: true,
+    treeStyle: "savanna",
+    treeDensityMultiplier: 0.48,
+    trunkTint: new THREE.Color("#73523a"),
+    canopyTint: new THREE.Color("#9ab248"),
+  },
+  badlands: {
+    id: "badlands",
+    label: "Badlands",
+    category: "hot",
+    groundColor: new THREE.Color("#b78768"),
+    hasTrees: false,
+  },
 };
 
 const DEFAULT_STATE = {
@@ -336,6 +429,7 @@ const dynamicLightColors = {
 
 const terrainMaterial = new THREE.MeshStandardMaterial({
   color: state.world.terrainColor,
+  vertexColors: true,
   roughness: 0.95,
   metalness: 0.05,
 });
@@ -384,7 +478,7 @@ terrainMaterial.onBeforeCompile = (shader) => {
       baseColor = mix(baseColor, rock, smoothstep(0.26, 0.72, slope));
       baseColor = mix(sand, baseColor, smoothstep(uWaterLevel - 0.4, uWaterLevel + 2.4, h));
       baseColor = mix(baseColor, snow, smoothstep(38.0, 56.0, h));
-      baseColor *= uTint;
+      baseColor = mix(baseColor, baseColor * uTint, 0.4);
       vec4 diffuseColor = vec4(baseColor, opacity);
       `
     );
@@ -407,6 +501,7 @@ const treeTrunkMaterial = new THREE.MeshStandardMaterial({
   metalness: 0.02,
 });
 const treeCanopyMaterials = [0, 1, 2].map(() => new THREE.MeshStandardMaterial({ roughness: 0.88, metalness: 0.01 }));
+const biomeTreeMaterialSets = new Map();
 const TERRAIN_HORIZONTAL_SCALE = 3;
 
 function buildCanopyPalette(baseHex) {
@@ -419,12 +514,45 @@ function buildCanopyPalette(baseHex) {
   return [darker, mid, lighter];
 }
 
+function blendColor(baseHex, tintColor, amount) {
+  const out = new THREE.Color(baseHex);
+  if (tintColor instanceof THREE.Color) {
+    out.lerp(tintColor, clampNumber(amount, 0, 1, 0));
+  }
+  return out;
+}
+
+function getBiomeTreeMaterialSet(biome) {
+  if (!biome?.hasTrees) {
+    return { trunk: treeTrunkMaterial, canopies: treeCanopyMaterials };
+  }
+  let set = biomeTreeMaterialSets.get(biome.id);
+  if (!set) {
+    set = {
+      trunk: new THREE.MeshStandardMaterial({ roughness: 0.94, metalness: 0.02 }),
+      canopies: [0, 1, 2].map(() => new THREE.MeshStandardMaterial({ roughness: 0.88, metalness: 0.01 })),
+    };
+    biomeTreeMaterialSets.set(biome.id, set);
+  }
+  return set;
+}
+
 function syncTreeMaterials() {
   treeTrunkMaterial.color.set(state.world.trees.trunkColor);
   const palette = buildCanopyPalette(state.world.trees.canopyColor);
   palette.forEach((color, index) => {
     treeCanopyMaterials[index].color.copy(color);
   });
+  for (const biome of Object.values(BIOME_DEFS)) {
+    if (!biome.hasTrees) continue;
+    const set = getBiomeTreeMaterialSet(biome);
+    set.trunk.color.copy(blendColor(state.world.trees.trunkColor, biome.trunkTint, 0.55));
+    const canopyBase = blendColor(state.world.trees.canopyColor, biome.canopyTint, 0.6);
+    const biomePalette = buildCanopyPalette(`#${canopyBase.getHexString()}`);
+    biomePalette.forEach((color, index) => {
+      set.canopies[index].color.copy(color);
+    });
+  }
 }
 syncTreeMaterials();
 
@@ -564,6 +692,44 @@ function seededHash2(x, z, seed) {
   return h - Math.floor(h);
 }
 
+function sampleBiomeClimate(x, z) {
+  const phaseA = noiseSeed * 0.000017;
+  const phaseB = noiseSeed * 0.000023;
+  const sx = x * 0.00115;
+  const sz = z * 0.00105;
+  const tempRaw =
+    0.5 +
+    Math.sin(sx + phaseA) * 0.22 +
+    Math.sin(sz * 1.18 - phaseA * 1.4) * 0.18 +
+    Math.sin((sx + sz) * 0.72 + phaseA * 0.7) * 0.14;
+  const moistureRaw =
+    0.5 +
+    Math.sin((sx * 0.84 - sz * 0.34) + phaseB) * 0.23 +
+    Math.sin((sz * 1.31 + sx * 0.22) - phaseB * 0.9) * 0.16 +
+    Math.sin((sx - sz) * 0.59 + phaseB * 0.4) * 0.11;
+  const detailRaw =
+    0.5 +
+    Math.sin(x * 0.0069 + z * 0.0042 + noiseSeed * 0.00019) * 0.22 +
+    Math.sin(x * -0.0044 + z * 0.0076 - noiseSeed * 0.00013) * 0.12;
+  return {
+    temperature: clampNumber(tempRaw, 0, 1, 0.5),
+    moisture: clampNumber(moistureRaw, 0, 1, 0.5),
+    detail: clampNumber(detailRaw, 0, 1, 0.5),
+  };
+}
+
+function getBiomeAt(x, z) {
+  const climate = sampleBiomeClimate(x, z);
+  let category = "temperate";
+  if (climate.temperature < 0.37) category = "cold";
+  else if (climate.temperature > 0.63) category = "hot";
+
+  const variants = BIOME_VARIANTS[category];
+  const selector = clampNumber(climate.moisture * 0.72 + climate.detail * 0.28, 0, 1, 0.5);
+  const index = Math.min(2, Math.floor(selector * 3));
+  return BIOME_DEFS[variants[index]];
+}
+
 function ensureChunks(cx, cz) {
   for (let dz = -CHUNK_RADIUS; dz <= CHUNK_RADIUS; dz += 1) {
     for (let dx = -CHUNK_RADIUS; dx <= CHUNK_RADIUS; dx += 1) {
@@ -653,15 +819,19 @@ function buildTreeChunk(cx, cz) {
     const worldX = chunkWorldX + localX;
     const worldZ = chunkWorldZ + localZ;
     const groundY = heightAt(worldX, worldZ);
+    const biome = getBiomeAt(worldX, worldZ);
 
     if (groundY <= state.world.water.level + 0.4) continue;
+    if (!biome.hasTrees) continue;
     const slope =
       Math.abs(heightAt(worldX + 1, worldZ) - groundY) + Math.abs(heightAt(worldX, worldZ + 1) - groundY);
     if (slope > 2.4) continue;
+    const treeChance = biome.treeDensityMultiplier ?? 1;
+    if (hash2(cx * 149 + i * 23 + 19, cz * 173 + i * 41 + 59) > treeChance) continue;
 
     const scale = 0.7 + hash2(cx * 97 + i * 13 + 7, cz * 83 + i * 11 + 17) * 0.9;
-
-    const trunk = new THREE.Mesh(treeTrunkGeometry, treeTrunkMaterial);
+    const materialSet = getBiomeTreeMaterialSet(biome);
+    const trunk = new THREE.Mesh(treeTrunkGeometry, materialSet.trunk);
     trunk.position.set(worldX, groundY + 2.0 * scale, worldZ);
     trunk.scale.set(1.5 * scale, scale, 1.5 * scale);
     trunk.receiveShadow = true;
@@ -669,16 +839,53 @@ function buildTreeChunk(cx, cz) {
     group.add(trunk);
 
     const canopyMaterial =
-      treeCanopyMaterials[Math.floor(hash2(cx * 181 + i * 9 + 17, cz * 223 + i * 13 + 43) * treeCanopyMaterials.length)];
+      materialSet.canopies[Math.floor(hash2(cx * 181 + i * 9 + 17, cz * 223 + i * 13 + 43) * materialSet.canopies.length)];
     const variant = Math.floor(hash2(cx * 131 + i * 7 + 31, cz * 197 + i * 5 + 61) * 3);
+    const treeStyle = biome.treeStyle ?? "broadleaf";
 
-    if (variant === 0) {
+    if (treeStyle === "conifer") {
       const canopy = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
-      canopy.position.set(worldX, groundY + 5.6 * scale, worldZ);
-      canopy.scale.set(1.95 * scale, scale, 1.95 * scale);
+      canopy.position.set(worldX, groundY + 5.8 * scale, worldZ);
+      canopy.scale.set(2.05 * scale, 1.15 * scale, 2.05 * scale);
       canopy.receiveShadow = true;
       canopy.castShadow = scale > 0.96;
       group.add(canopy);
+      const upper = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
+      upper.position.set(worldX, groundY + 7.3 * scale, worldZ);
+      upper.scale.set(1.28 * scale, 0.72 * scale, 1.28 * scale);
+      upper.receiveShadow = true;
+      upper.castShadow = false;
+      group.add(upper);
+    } else if (treeStyle === "savanna") {
+      const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+      canopyMain.position.set(worldX + 0.08 * scale, groundY + 6.1 * scale, worldZ - 0.06 * scale);
+      canopyMain.scale.set(1.9 * scale, 0.56 * scale, 1.65 * scale);
+      canopyMain.receiveShadow = true;
+      canopyMain.castShadow = scale > 1;
+      group.add(canopyMain);
+
+      if (variant !== 0) {
+        const canopySide = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+        canopySide.position.set(worldX - 0.85 * scale, groundY + 6.0 * scale, worldZ + 0.45 * scale);
+        canopySide.scale.set(0.92 * scale, 0.42 * scale, 0.84 * scale);
+        canopySide.receiveShadow = true;
+        canopySide.castShadow = false;
+        group.add(canopySide);
+      }
+    } else if (treeStyle === "wetland") {
+      const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+      canopyMain.position.set(worldX, groundY + 6.0 * scale, worldZ);
+      canopyMain.scale.set(1.68 * scale, 1.02 * scale, 1.68 * scale);
+      canopyMain.receiveShadow = true;
+      canopyMain.castShadow = scale > 0.92;
+      group.add(canopyMain);
+
+      const droop = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
+      droop.position.set(worldX, groundY + 4.85 * scale, worldZ);
+      droop.scale.set(1.65 * scale, 0.6 * scale, 1.65 * scale);
+      droop.receiveShadow = true;
+      droop.castShadow = false;
+      group.add(droop);
     } else if (variant === 1) {
       const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
       canopyMain.position.set(worldX, groundY + 6.1 * scale, worldZ);
@@ -744,13 +951,22 @@ function buildChunk(cx, cz) {
   const geometry = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE, CHUNK_RES, CHUNK_RES);
   geometry.rotateX(-Math.PI / 2);
   const vertices = geometry.attributes.position;
+  const colors = new Float32Array(vertices.count * 3);
   for (let i = 0; i < vertices.count; i += 1) {
     const x = vertices.getX(i) + cx * CHUNK_SIZE;
     const z = vertices.getZ(i) + cz * CHUNK_SIZE;
     const y = heightAt(x, z);
     vertices.setY(i, y);
+    const biome = getBiomeAt(x, z);
+    const color = biome.groundColor;
+    const n = hash2(Math.floor(x * 0.5), Math.floor(z * 0.5));
+    const brighten = 0.93 + n * 0.14;
+    colors[i * 3] = color.r * brighten;
+    colors[i * 3 + 1] = color.g * brighten;
+    colors[i * 3 + 2] = color.b * brighten;
   }
   vertices.needsUpdate = true;
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   geometry.computeVertexNormals();
   const mesh = new THREE.Mesh(geometry, terrainMaterial);
   mesh.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
@@ -946,9 +1162,16 @@ function updatePlayer(dt) {
   });
 }
 
+function updateBiomeHud() {
+  if (!biomeEl) return;
+  const biome = getBiomeAt(player.position.x, player.position.z);
+  biomeEl.textContent = biome?.label ?? biome?.id ?? "Unknown";
+}
+
 function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
   updatePlayer(dt);
+  updateBiomeHud();
   updateDayNightCycle(dt);
   sky.position.set(player.position.x, 0, player.position.z);
   if (cloudGroup.parent) {
