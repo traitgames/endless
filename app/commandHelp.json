@@ -1,0 +1,134 @@
+{
+  "version": 1,
+  "commands": [
+    {
+      "id": "help",
+      "category": "frontend",
+      "lookup": ["/help", "help"],
+      "summaryLines": ["/help <command>"],
+      "detailLines": [
+        "Show detailed help for a front-end-local command.",
+        "Examples: /help /time, /help /world style, /help tp",
+        "Tip: Use the Help button or /world help to see the command list."
+      ]
+    },
+    {
+      "id": "time",
+      "category": "frontend",
+      "lookup": ["/time", "time"],
+      "summaryLines": [
+        "/time",
+        "/time <0..1 | 0..24 | HH:MM [am|pm] | percent | preset>"
+      ],
+      "detailLines": [
+        "Read or set the local world time without sending a Codex request.",
+        "Accepted inputs: normalized cycle (0..1), hour (0..24), clock time (for example 6:30am), percent (for example 75%), or a preset.",
+        "Presets: dawn, sunrise, morning, noon, afternoon, sunset, dusk, evening, night, midnight",
+        "Examples: /time noon, /time 18.5, /time 6:30am, /time 75%"
+      ]
+    },
+    {
+      "id": "commit",
+      "category": "frontend",
+      "lookup": ["/commit", "commit"],
+      "summaryLines": ["/commit", "/commit <message hint>"],
+      "detailLines": [
+        "Sends a local repo commit request to the Codex backend route.",
+        "Use /commit <message hint> to suggest commit wording.",
+        "If no backend is connected, the command will not create a commit locally by itself."
+      ]
+    },
+    {
+      "id": "tp",
+      "category": "frontend",
+      "lookup": ["/tp", "tp"],
+      "summaryLines": ["/tp <biome-name>", "tp <biome-name>"],
+      "detailLines": [
+        "Teleport the player to a matching biome in the current world.",
+        "The slash form and bare alias both work.",
+        "Example: /tp forest"
+      ]
+    },
+    {
+      "id": "world-help",
+      "category": "world",
+      "lookup": ["/world", "world", "/world help", "world help", "/world commands", "world commands", "/world ?", "world ?"],
+      "summaryLines": ["/world help", "/world commands", "/world ?"],
+      "detailLines": [
+        "Show front-end-local world command help and available biome names.",
+        "Aliases: /world commands, /world ?",
+        "Use /help /world style for detailed style command help."
+      ]
+    },
+    {
+      "id": "world-biome",
+      "category": "world",
+      "lookup": ["/world biome", "world biome"],
+      "summaryLines": ["/world biome <biome-name>"],
+      "detailLines": [
+        "Teleport to a biome by name using the /world command namespace.",
+        "Example: /world biome forest"
+      ]
+    },
+    {
+      "id": "world-tp-biome",
+      "category": "world",
+      "lookup": ["/world tp biome", "world tp biome"],
+      "summaryLines": ["/world tp biome <biome-name>"],
+      "detailLines": [
+        "Explicit teleport form for biome travel.",
+        "Equivalent intent to /world biome <biome-name>."
+      ]
+    },
+    {
+      "id": "world-style",
+      "category": "world",
+      "lookup": ["/world style", "world style"],
+      "summaryLines": ["/world style <biome> <terrain|water|fog|trunk|canopy> <#rrggbb>"],
+      "detailLines": [
+        "Set a biome style override color for terrain, water, fog, tree trunk, or tree canopy.",
+        "Color must be in #rrggbb format.",
+        "Example: /world style forest terrain #335f2d"
+      ]
+    },
+    {
+      "id": "world-style-tree",
+      "category": "world",
+      "lookup": ["/world style tree", "world style tree"],
+      "summaryLines": ["/world style <biome> tree <trunk|canopy> <#rrggbb>"],
+      "detailLines": [
+        "Alternate /world style form that explicitly targets tree trunk or canopy colors.",
+        "Example: /world style forest tree canopy #3f8144"
+      ]
+    },
+    {
+      "id": "world-style-clear",
+      "category": "world",
+      "lookup": ["/world style clear", "world style clear", "/world style reset", "world style reset"],
+      "summaryLines": ["/world style clear <biome> [terrain|water|fog|trunk|canopy|all]"],
+      "detailLines": [
+        "Clear biome style overrides for one target or all targets.",
+        "The code also accepts 'reset' as an alias for 'clear'.",
+        "Examples: /world style clear forest, /world style clear forest fog"
+      ]
+    },
+    {
+      "id": "confirm-yes",
+      "category": "confirmation",
+      "lookup": ["yes"],
+      "summaryLines": ["yes"],
+      "detailLines": [
+        "Confirms a pending front-end world command clarification prompt."
+      ]
+    },
+    {
+      "id": "confirm-no",
+      "category": "confirmation",
+      "lookup": ["no"],
+      "summaryLines": ["no"],
+      "detailLines": [
+        "Declines a pending front-end world command clarification prompt."
+      ]
+    }
+  ]
+}

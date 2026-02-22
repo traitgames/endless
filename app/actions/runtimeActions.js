@@ -17,6 +17,8 @@ export function createRuntimeActionExecutor(deps) {
     rebuildTerrain,
     rebuildLandmarks,
     setNoiseSeed,
+    setTimeOfDay,
+    runLocalWorldCommand,
   } = deps;
 
   function setTerrainNumber(key, value, min, max) {
@@ -46,6 +48,15 @@ export function createRuntimeActionExecutor(deps) {
       if (!touched) return traceResult("rejected", "set_terrain", "no valid fields");
       rebuildTerrain();
       return traceResult("applied", "set_terrain", "terrain params updated");
+    },
+    set_time(action) {
+      if (typeof action.timeOfDay !== "number" || !Number.isFinite(action.timeOfDay)) {
+        return traceResult("rejected", "set_time", "invalid timeOfDay");
+      }
+      const applied = setTimeOfDay(action.timeOfDay, null, { silent: true });
+      return applied
+        ? traceResult("applied", "set_time", `time=${state.timeOfDay.toFixed(3)}`)
+        : traceResult("rejected", "set_time", "invalid timeOfDay");
     },
     set_water(action) {
       let touched = false;
@@ -134,6 +145,18 @@ export function createRuntimeActionExecutor(deps) {
       state.world.landmarks = [];
       rebuildLandmarks();
       return traceResult("applied", "clear_landmarks", "all landmarks cleared");
+    },
+    run_local_world_command(action) {
+      if (typeof action.command !== "string" || !action.command.trim()) {
+        return traceResult("rejected", "run_local_world_command", "invalid command");
+      }
+      if (typeof runLocalWorldCommand !== "function") {
+        return traceResult("rejected", "run_local_world_command", "handler unavailable");
+      }
+      const handled = runLocalWorldCommand(action.command);
+      return handled
+        ? traceResult("applied", "run_local_world_command", action.command.trim())
+        : traceResult("rejected", "run_local_world_command", "unhandled command");
     },
   };
 

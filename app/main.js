@@ -24,7 +24,33 @@ const chatPanel = document.getElementById("chat");
 const chatMinimizeBtn = document.getElementById("chat-minimize");
 const hudEl = document.getElementById("hud");
 const resetSaveBtn = document.getElementById("reset-save");
+const tracePanel = document.getElementById("action-trace");
 const traceLog = document.getElementById("trace-log");
+const traceToggleBtn = document.getElementById("trace-toggle");
+const traceClearBtn = document.getElementById("trace-clear");
+const traceOpenBtn = document.getElementById("action-trace-open");
+const LOCAL_COMMAND_HELP_URL = new URL("./commandHelp.json", import.meta.url);
+const FALLBACK_FRONTEND_COMMAND_HELP_LINES = [
+  "/help <command>",
+  "/time",
+  "/time <0..1 | 0..24 | HH:MM [am|pm] | percent | preset>",
+  "/commit",
+  "/commit <message hint>",
+  "/tp <biome-name>",
+  "tp <biome-name>",
+];
+const FALLBACK_WORLD_COMMAND_HELP_LINES = [
+  "/world help",
+  "/world commands",
+  "/world ?",
+  "/world biome <biome-name>",
+  "/world tp biome <biome-name>",
+  "/world style <biome> <terrain|water|fog|trunk|canopy> <#rrggbb>",
+  "/world style <biome> tree <trunk|canopy> <#rrggbb>",
+  "/world style clear <biome> [terrain|water|fog|trunk|canopy|all]",
+];
+let localCommandHelpCatalog = null;
+let localCommandHelpCatalogPromise = null;
 
 if (!backendModeEl) {
   const metrics = document.querySelector("#status .metrics");
@@ -181,6 +207,7 @@ const DEFAULT_STATE = {
   timeOfDay: 7 / 24,
   ui: {
     chatOpen: false,
+    actionTraceVisible: true,
   },
   player: {
     position: { x: 0, y: 12, z: 0 },
@@ -189,6 +216,17 @@ const DEFAULT_STATE = {
   },
   chat: [],
 };
+
+const LAND_TARGET_CLEARANCE_Y = 0.4;
+const PLAYER_TARGET_HEIGHT_OFFSET = 3;
+const BIOME_TP_MAX_ATTEMPTS = 5000;
+const BIOME_TP_EXTRA_RINGS_AFTER_FIRST_MATCH = 6;
+const BIOME_CENTER_TARGET_SCORE = 12;
+const BIOME_TP_SUNFLOWER_GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+const SPAWN_SEARCH_MAX_ATTEMPTS = 700;
+const SPAWN_SEARCH_MAX_RADIUS = 1536;
+const SPAWN_SEARCH_STEP = 24;
+const SPAWN_MAX_SLOPE_SCORE = 3.4;
 
 const state = loadPersistedState({
   storageKey: STORAGE_KEY,
@@ -725,6 +763,115 @@ function updateDayNightCycle(dt) {
     .lerp(dynamicLightColors.moonWarm, twilight * 0.2);
 }
 
+function normalizeTimeCycle(value) {
+  if (!Number.isFinite(value)) return null;
+  return ((value % 1) + 1) % 1;
+}
+
+function formatTimeOfDayClock(cycle) {
+  const normalized = normalizeTimeCycle(cycle);
+  if (normalized == null) return "00:00";
+  let totalMinutes = Math.round(normalized * 24 * 60) % (24 * 60);
+  if (totalMinutes < 0) totalMinutes += 24 * 60;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function parseTimeOfDayInput(raw) {
+  const input = String(raw || "").trim().toLowerCase();
+  if (!input) return null;
+
+  const preset = {
+    midnight: 0,
+    dawn: 0.22,
+    sunrise: 0.25,
+    morning: 1 / 3,
+    noon: 0.5,
+    afternoon: 0.625,
+    sunset: 0.75,
+    dusk: 0.8,
+    evening: 0.875,
+    night: 0.92,
+  }[input];
+  if (preset != null) return { cycle: preset, label: input };
+
+  const percentMatch = input.match(/^(-?\d+(?:\.\d+)?)%$/);
+  if (percentMatch) {
+    const percent = Number(percentMatch[1]);
+    if (Number.isFinite(percent)) return { cycle: percent / 100, label: `${percent}%` };
+  }
+
+  const clockMatch = input.match(/^(\d{1,2})(?::(\d{1,2}))?\s*(am|pm)?$/);
+  if (clockMatch) {
+    let hours = Number(clockMatch[1]);
+    const minutes = clockMatch[2] == null ? 0 : Number(clockMatch[2]);
+    const meridiem = clockMatch[3];
+    if (Number.isFinite(hours) && Number.isFinite(minutes) && minutes >= 0 && minutes < 60) {
+      if (meridiem) {
+        if (hours < 1 || hours > 12) return null;
+        hours %= 12;
+        if (meridiem === "pm") hours += 12;
+      } else if (hours < 0 || hours > 24 || (hours === 24 && minutes > 0)) {
+        return null;
+      }
+      return { cycle: (hours + minutes / 60) / 24, label: `${clockMatch[1]}${clockMatch[2] ? `:${clockMatch[2]}` : ""}${meridiem ? ` ${meridiem}` : ""}` };
+    }
+  }
+
+  const numeric = Number(input);
+  if (!Number.isFinite(numeric)) return null;
+  if (numeric >= 0 && numeric <= 1) return { cycle: numeric, label: input };
+  if (numeric >= 0 && numeric <= 24) return { cycle: numeric / 24, label: `${numeric}h` };
+  return null;
+}
+
+function setTimeOfDay(cycle, sourceLabel = null, options = {}) {
+  const normalized = normalizeTimeCycle(cycle);
+  if (normalized == null) return false;
+  state.timeOfDay = normalized;
+  worldTime = normalized * DAY_NIGHT.dayLengthSeconds;
+  updateDayNightCycle(0);
+  saveState();
+  if (!options?.silent) {
+    addChatEntry({
+      role: "codex_output",
+      content: `Time set to ${formatTimeOfDayClock(normalized)}${sourceLabel ? ` (${sourceLabel})` : ""}.`,
+      ts: Date.now(),
+    });
+  }
+  return true;
+}
+
+function handleTimeCommand(message) {
+  const match = String(message || "").trim().match(/^\/time(?:\s+(.+))?$/i);
+  if (!match) return false;
+  const arg = (match[1] || "").trim();
+  if (!arg) {
+    addChatEntry({
+      role: "codex_output",
+      content: [
+        `Current time: ${formatTimeOfDayClock(state.timeOfDay)}.`,
+        "Usage: /time <0..1 | 0..24 | HH:MM [am|pm] | percent | preset>",
+        "Presets: dawn, sunrise, morning, noon, afternoon, sunset, dusk, evening, night, midnight",
+      ].join("\n"),
+      ts: Date.now(),
+    });
+    return true;
+  }
+  const parsed = parseTimeOfDayInput(arg);
+  if (!parsed) {
+    addChatEntry({
+      role: "codex_output",
+      content: `Invalid time "${arg}". Try examples: /time noon, /time 18.5, /time 6:30am, /time 75%.`,
+      ts: Date.now(),
+    });
+    return true;
+  }
+  setTimeOfDay(parsed.cycle, parsed.label);
+  return true;
+}
+
 const heightAt = createTerrainHeightSampler({
   getNoiseSeed: () => noiseSeed,
   getTerrain: () => state.world.terrain,
@@ -776,6 +923,156 @@ function getBiomeAt(x, z) {
   const selector = clampNumber(climate.moisture * 0.72 + climate.detail * 0.28, 0, 1, 0.5);
   const index = Math.min(2, Math.floor(selector * 3));
   return BIOME_DEFS[variants[index]];
+}
+
+function getGroundPointInfo(x, z) {
+  const groundY = heightAt(x, z);
+  const waterLevel = state.world.water.level;
+  const slope =
+    Math.abs(heightAt(x + 4, z) - groundY) +
+    Math.abs(heightAt(x - 4, z) - groundY) +
+    Math.abs(heightAt(x, z + 4) - groundY) +
+    Math.abs(heightAt(x, z - 4) - groundY);
+  const landClearance = groundY - waterLevel;
+  return {
+    groundY,
+    slope,
+    landClearance,
+    isDryLand: landClearance > LAND_TARGET_CLEARANCE_Y,
+  };
+}
+
+function toPlayerPlacementTarget(x, z, groundY) {
+  return {
+    x,
+    z,
+    y: Math.max(groundY + PLAYER_TARGET_HEIGHT_OFFSET, state.world.water.level + PLAYER_TARGET_HEIGHT_OFFSET),
+  };
+}
+
+function estimateBiomeCenterScore(targetBiomeId, x, z) {
+  const offsets = [
+    [0, 0],
+    [32, 0],
+    [-32, 0],
+    [0, 32],
+    [0, -32],
+    [32, 32],
+    [32, -32],
+    [-32, 32],
+    [-32, -32],
+    [80, 0],
+    [-80, 0],
+    [0, 80],
+    [0, -80],
+  ];
+  let score = 0;
+  for (const [dx, dz] of offsets) {
+    const biome = getBiomeAt(x + dx, z + dz);
+    if (biome?.id === targetBiomeId) score += 1;
+    else score -= 1;
+  }
+  return score;
+}
+
+function pickBetterBiomeTeleportCandidate(best, next) {
+  if (!next) return best;
+  if (!best) return next;
+  if (best.isDryLand !== next.isDryLand) return next.isDryLand ? next : best;
+  if (best.centerScore !== next.centerScore) return next.centerScore > best.centerScore ? next : best;
+  if (best.radius !== next.radius) return next.radius < best.radius ? next : best;
+  if (best.slope !== next.slope) return next.slope < best.slope ? next : best;
+  return best;
+}
+
+function pickBetterSpawnCandidate(best, next) {
+  if (!next) return best;
+  if (!best) return next;
+  if (best.radius !== next.radius) return next.radius < best.radius ? next : best;
+  if (best.isDryLand !== next.isDryLand) return next.isDryLand ? next : best;
+  if (best.slope !== next.slope) return next.slope < best.slope ? next : best;
+  if (best.landClearance !== next.landClearance) return next.landClearance > best.landClearance ? next : best;
+  return best;
+}
+
+function tryFindLandSpawnNearOrigin() {
+  let attempts = 0;
+  let best = null;
+
+  const inspect = (x, z, radius) => {
+    if (attempts >= SPAWN_SEARCH_MAX_ATTEMPTS) return "stop";
+    attempts += 1;
+    const info = getGroundPointInfo(x, z);
+    const candidate = { x, z, radius, ...info };
+    best = pickBetterSpawnCandidate(best, candidate);
+    if (info.isDryLand && info.slope <= SPAWN_MAX_SLOPE_SCORE) {
+      return toPlayerPlacementTarget(x, z, info.groundY);
+    }
+    return null;
+  };
+
+  for (let radius = 0; radius <= SPAWN_SEARCH_MAX_RADIUS; radius += SPAWN_SEARCH_STEP) {
+    if (radius === 0) {
+      const result = inspect(0, 0, 0);
+      if (result === "stop") break;
+      if (result) return result;
+      continue;
+    }
+    let ringBestDry = null;
+    for (let offset = -radius; offset <= radius; offset += SPAWN_SEARCH_STEP) {
+      const candidates = [
+        [offset, -radius],
+        [radius, offset],
+        [offset, radius],
+        [-radius, offset],
+      ];
+      for (const [x, z] of candidates) {
+        const result = inspect(x, z, radius);
+        if (result === "stop") {
+          if (ringBestDry) return ringBestDry.placement;
+          return best?.isDryLand ? toPlayerPlacementTarget(best.x, best.z, best.groundY) : null;
+        }
+        if (result) {
+          const info = getGroundPointInfo(x, z);
+          const placement = toPlayerPlacementTarget(x, z, info.groundY);
+          ringBestDry = ringBestDry
+            ? pickBetterSpawnCandidate(ringBestDry, { x, z, radius, ...info, placement })
+            : { x, z, radius, ...info, placement };
+        }
+      }
+    }
+    if (ringBestDry) return ringBestDry.placement;
+  }
+
+  if (best?.isDryLand) {
+    return toPlayerPlacementTarget(best.x, best.z, best.groundY);
+  }
+  return null;
+}
+
+function resetPlayerToLandSpawnNearOrigin() {
+  const target = tryFindLandSpawnNearOrigin();
+  if (target) {
+    player.position.set(target.x, target.y, target.z);
+  } else {
+    player.position.set(0, 12, 0);
+  }
+  player.velocity.set(0, 0, 0);
+  player.grounded = false;
+}
+
+function maybeRetargetInitialSpawnToLand() {
+  const current = state.player?.position;
+  if (!current) return;
+  const defaultSpawn = DEFAULT_STATE.player.position;
+  const isDefaultSpawn =
+    Math.abs(current.x - defaultSpawn.x) < 0.001 &&
+    Math.abs(current.y - defaultSpawn.y) < 0.001 &&
+    Math.abs(current.z - defaultSpawn.z) < 0.001;
+  if (!isDefaultSpawn) return;
+  const target = tryFindLandSpawnNearOrigin();
+  if (!target) return;
+  state.player.position = { x: target.x, y: target.y, z: target.z };
 }
 
 function ensureChunks(cx, cz) {
@@ -1030,12 +1327,15 @@ const player = {
   pitch: state.player.pitch,
   grounded: false,
 };
+maybeRetargetInitialSpawnToLand();
+player.position.set(state.player.position.x, state.player.position.y, state.player.position.z);
 syncAtmosphereFromState();
 syncWaterColorFromState();
 
 const keys = new Set();
 let pointerLocked = false;
 let chatOpen = false;
+let actionTraceVisible = true;
 let suppressNextUnlockChatOpen = false;
 let resumePointerLockAfterUnlock = false;
 let lastEscapeChatCloseAt = -Infinity;
@@ -1060,6 +1360,25 @@ function setChatOpen(open, { focusInput = false } = {}) {
 
   if (open && focusInput && document.activeElement !== chatInput) {
     chatInput.focus();
+  }
+}
+
+function setActionTraceVisible(visible) {
+  actionTraceVisible = Boolean(visible);
+  if (state.ui) {
+    state.ui.actionTraceVisible = actionTraceVisible;
+  }
+  if (tracePanel) {
+    tracePanel.hidden = !actionTraceVisible;
+  }
+  if (traceOpenBtn) {
+    traceOpenBtn.hidden = actionTraceVisible;
+    traceOpenBtn.setAttribute("aria-expanded", String(actionTraceVisible));
+  }
+  if (traceToggleBtn) {
+    traceToggleBtn.textContent = "Hide";
+    traceToggleBtn.setAttribute("aria-expanded", String(actionTraceVisible));
+    traceToggleBtn.setAttribute("aria-label", "Hide action trace");
   }
 }
 
@@ -1128,8 +1447,7 @@ window.addEventListener("keydown", (event) => {
   keys.add(event.code);
 
   if (event.code === "KeyR") {
-    player.position.set(0, 12, 0);
-    player.velocity.set(0, 0, 0);
+    resetPlayerToLandSpawnNearOrigin();
   }
 }, true);
 
@@ -1261,6 +1579,8 @@ const chatStore = createChatStore({
 const chatState = chatStore.entries;
 const trace = createTraceLogger(traceLog, 80);
 let pendingWorldCommandConfirmation = null;
+preloadLocalCommandHelpCatalog();
+setActionTraceVisible(state.ui?.actionTraceVisible !== false);
 
 chatForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -1291,6 +1611,20 @@ chatClear.addEventListener("click", () => {
 worldCommandsBtn?.addEventListener("click", () => {
   showWorldCommandHelp();
   setChatOpen(true, { focusInput: true });
+});
+
+traceToggleBtn?.addEventListener("click", () => {
+  setActionTraceVisible(!actionTraceVisible);
+  saveState();
+});
+
+traceOpenBtn?.addEventListener("click", () => {
+  setActionTraceVisible(true);
+  saveState();
+});
+
+traceClearBtn?.addEventListener("click", () => {
+  trace.clear();
 });
 
 function addChatEntry(entry) {
@@ -1418,7 +1752,7 @@ async function sendToCodex(message) {
       if (reply?.update) {
         applyUpdate(reply.update);
       }
-      if (reply?.taskComplete && AUTO_SOFT_REFRESH) {
+      if (reply?.taskComplete && AUTO_SOFT_REFRESH && !reply?.skipSoftRefresh) {
         scheduleSoftRefresh();
       }
       stateEl.textContent = "ready";
@@ -1465,6 +1799,8 @@ function tryHandleLocalChatCommand(message) {
   const trimmed = typeof message === "string" ? message.trim() : "";
   if (!trimmed) return false;
   if (handlePendingWorldCommandConfirmation(trimmed)) return true;
+  if (handleLocalHelpCommand(trimmed)) return true;
+  if (handleTimeCommand(trimmed)) return true;
   const tpAliasMatch = trimmed.match(/^\/?tp\s+(.+)$/i);
   if (tpAliasMatch) {
     teleportPlayerToBiome(tpAliasMatch[1]);
@@ -1528,6 +1864,132 @@ function handleLocalWorldCommand(message) {
   return false;
 }
 
+function preloadLocalCommandHelpCatalog() {
+  if (localCommandHelpCatalogPromise) return localCommandHelpCatalogPromise;
+  localCommandHelpCatalogPromise = fetch(LOCAL_COMMAND_HELP_URL)
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return response.json();
+    })
+    .then((data) => {
+      const commands = Array.isArray(data?.commands) ? data.commands : null;
+      if (!commands) {
+        throw new Error("Invalid help metadata");
+      }
+      localCommandHelpCatalog = { commands };
+      return localCommandHelpCatalog;
+    })
+    .catch((err) => {
+      console.warn("Failed to load local command help metadata.", err);
+      return null;
+    });
+  return localCommandHelpCatalogPromise;
+}
+
+function normalizeHelpLookupText(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function getLocalCommandHelpCatalog() {
+  return localCommandHelpCatalog;
+}
+
+function getLocalCommandHelpEntriesByCategory(category) {
+  const catalog = getLocalCommandHelpCatalog();
+  if (!catalog) return [];
+  return catalog.commands.filter((entry) => entry?.category === category);
+}
+
+function getLocalFrontendCommandHelpLines() {
+  const entries = getLocalCommandHelpEntriesByCategory("frontend");
+  if (!entries.length) {
+    return [...FALLBACK_FRONTEND_COMMAND_HELP_LINES];
+  }
+  return entries.flatMap((entry) => (Array.isArray(entry.summaryLines) ? entry.summaryLines : []));
+}
+
+function getLocalWorldCommandHelpLines() {
+  const entries = getLocalCommandHelpEntriesByCategory("world");
+  if (!entries.length) {
+    return [...FALLBACK_WORLD_COMMAND_HELP_LINES];
+  }
+  return entries.flatMap((entry) => (Array.isArray(entry.summaryLines) ? entry.summaryLines : []));
+}
+
+function getLocalWorldStyleCommandHelpLines() {
+  return getLocalWorldCommandHelpLines().filter((line) => line.startsWith("/world style "));
+}
+
+function findLocalCommandHelpEntry(query) {
+  const normalizedQuery = normalizeHelpLookupText(query);
+  const catalog = getLocalCommandHelpCatalog();
+  if (!normalizedQuery || !catalog) return null;
+
+  let bestMatch = null;
+  let bestLength = -1;
+  for (const entry of catalog.commands) {
+    const lookups = Array.isArray(entry?.lookup) ? entry.lookup : [];
+    for (const lookup of lookups) {
+      const normalizedLookup = normalizeHelpLookupText(lookup);
+      if (!normalizedLookup) continue;
+      if (normalizedQuery === normalizedLookup || normalizedQuery.startsWith(`${normalizedLookup} `)) {
+        if (normalizedLookup.length > bestLength) {
+          bestMatch = entry;
+          bestLength = normalizedLookup.length;
+        }
+      }
+    }
+  }
+  return bestMatch;
+}
+
+function formatLocalCommandHelpDetail(entry) {
+  const title = Array.isArray(entry?.summaryLines) && entry.summaryLines.length ? entry.summaryLines[0] : null;
+  const detailLines = Array.isArray(entry?.detailLines) ? entry.detailLines : [];
+  return [title ? `Help: ${title}` : "Command help", ...detailLines].join("\n");
+}
+
+function handleLocalHelpCommand(message) {
+  const match = String(message || "").trim().match(/^\/help(?:\s+(.+))?$/i);
+  if (!match) return false;
+  const query = (match[1] || "").trim();
+  if (!query) {
+    addChatEntry({
+      role: "codex_output",
+      content: "Usage: /help <command>\nExamples: /help /time, /help /world style, /help tp",
+      ts: Date.now(),
+    });
+    return true;
+  }
+
+  const renderEntry = (entry) => {
+    addChatEntry({
+      role: "codex_output",
+      content: entry
+        ? formatLocalCommandHelpDetail(entry)
+        : `No local help found for "${query}". Try /world help to list available commands.`,
+      ts: Date.now(),
+    });
+  };
+
+  const cachedEntry = findLocalCommandHelpEntry(query);
+  if (cachedEntry) {
+    renderEntry(cachedEntry);
+    return true;
+  }
+
+  preloadLocalCommandHelpCatalog().then(() => {
+    renderEntry(findLocalCommandHelpEntry(query));
+  });
+  return true;
+}
+
 function showWorldCommandHelp() {
   const biomeNames = Object.values(BIOME_DEFS)
     .map((biome) => biome.id)
@@ -1536,13 +1998,13 @@ function showWorldCommandHelp() {
   addChatEntry({
     role: "codex_output",
     content: [
+      "Front-end commands (local):",
+      ...getLocalFrontendCommandHelpLines(),
+      "",
       "World commands (local):",
-      "/world help",
-      "/world biome <biome-name>",
-      "/world tp biome <biome-name>",
-      "/world style <biome> <terrain|water|fog|trunk|canopy> <#rrggbb>",
-      "/world style <biome> tree <trunk|canopy> <#rrggbb>",
-      "/world style clear <biome> [terrain|water|fog|trunk|canopy|all]",
+      ...getLocalWorldCommandHelpLines(),
+      "",
+      "World command confirmations (when prompted): yes / no",
       "",
       `Biomes: ${biomeNames}`,
     ].join("\n"),
@@ -1613,13 +2075,14 @@ function handleWorldBiomeStyleCommand(parts) {
 }
 
 function addWorldStyleUsage(prefix) {
+  const [styleSetLine, styleTreeLine, styleClearLine] = getLocalWorldStyleCommandHelpLines();
   addChatEntry({
     role: "codex_output",
     content: [
       prefix || "Biome style commands:",
-      "Set: /world style <biome> <terrain|water|fog|trunk|canopy> <#rrggbb>",
-      "Set: /world style <biome> tree <trunk|canopy> <#rrggbb>",
-      "Clear: /world style clear <biome> [terrain|water|fog|trunk|canopy|all]",
+      `Set: ${styleSetLine}`,
+      `Set: ${styleTreeLine}`,
+      `Clear: ${styleClearLine}`,
     ].join("\n"),
     ts: Date.now(),
   });
@@ -1980,43 +2443,83 @@ function levenshteinDistance(a, b) {
 
 function findNearestBiomeTarget(targetBiomeId, originX, originZ) {
   const maxRadius = 8192;
-  const step = 48;
+  const radialBandSize = 48;
+  let attempts = 0;
+  let bestDry = null;
+  let bestAny = null;
+  let firstMatchBand = null;
+  let currentBand = 0;
+  let bandBestDry = null;
 
-  for (let radius = 0; radius <= maxRadius; radius += step) {
-    if (radius === 0) {
-      const centerBiome = getBiomeAt(originX, originZ);
-      if (centerBiome?.id === targetBiomeId) {
-        const groundY = heightAt(originX, originZ);
-        return {
-          x: originX,
-          z: originZ,
-          y: Math.max(groundY + 3, state.world.water.level + 3),
-        };
-      }
-      continue;
+  const considerCandidate = (x, z, radius) => {
+    if (attempts >= BIOME_TP_MAX_ATTEMPTS) return "stop";
+    attempts += 1;
+    const biome = getBiomeAt(x, z);
+    if (biome?.id !== targetBiomeId) return null;
+    const info = getGroundPointInfo(x, z);
+    const candidate = {
+      x,
+      z,
+      radius,
+      centerScore: estimateBiomeCenterScore(targetBiomeId, x, z),
+      ...info,
+    };
+    bestAny = pickBetterBiomeTeleportCandidate(bestAny, candidate);
+    if (candidate.isDryLand) {
+      bestDry = pickBetterBiomeTeleportCandidate(bestDry, candidate);
+      if (firstMatchBand == null) firstMatchBand = Math.ceil(radius / radialBandSize);
     }
+    return candidate;
+  };
 
-    for (let offset = -radius; offset <= radius; offset += step) {
-      const candidates = [
-        [originX + offset, originZ - radius],
-        [originX + radius, originZ + offset],
-        [originX + offset, originZ + radius],
-        [originX - radius, originZ + offset],
-      ];
-      for (const [x, z] of candidates) {
-        const biome = getBiomeAt(x, z);
-        if (biome?.id !== targetBiomeId) continue;
-        const groundY = heightAt(x, z);
-        return {
-          x,
-          z,
-          y: Math.max(groundY + 3, state.world.water.level + 3),
-        };
-      }
+  const finalizeBand = (band) => {
+    if (bandBestDry?.centerScore >= BIOME_CENTER_TARGET_SCORE) {
+      return toPlayerPlacementTarget(bandBestDry.x, bandBestDry.z, bandBestDry.groundY);
     }
+    if (
+      firstMatchBand != null &&
+      band >= firstMatchBand + BIOME_TP_EXTRA_RINGS_AFTER_FIRST_MATCH
+    ) {
+      return "stop";
+    }
+    bandBestDry = null;
+    return null;
+  };
+
+  const originCandidate = considerCandidate(originX, originZ, 0);
+  if (originCandidate?.isDryLand && originCandidate.centerScore >= BIOME_CENTER_TARGET_SCORE) {
+    return toPlayerPlacementTarget(originCandidate.x, originCandidate.z, originCandidate.groundY);
   }
 
-  return null;
+  // Vogel/sunflower spiral sampling spreads points with near-uniform disk density.
+  for (let sampleIndex = 1; attempts < BIOME_TP_MAX_ATTEMPTS; sampleIndex += 1) {
+    const t = sampleIndex / (BIOME_TP_MAX_ATTEMPTS - 1);
+    const radius = Math.sqrt(t) * maxRadius;
+    if (radius > maxRadius) break;
+    const band = Math.ceil(radius / radialBandSize);
+    if (band !== currentBand) {
+      const bandResult = finalizeBand(currentBand);
+      if (bandResult === "stop") break;
+      if (bandResult) return bandResult;
+      currentBand = band;
+    }
+
+    const angle = sampleIndex * BIOME_TP_SUNFLOWER_GOLDEN_ANGLE;
+    const x = originX + Math.cos(angle) * radius;
+    const z = originZ + Math.sin(angle) * radius;
+    const candidate = considerCandidate(x, z, radius);
+    if (candidate === "stop") break;
+    if (!candidate?.isDryLand) continue;
+    bandBestDry = pickBetterBiomeTeleportCandidate(bandBestDry, candidate);
+  }
+
+  const finalBandResult = finalizeBand(currentBand);
+  if (finalBandResult && finalBandResult !== "stop") {
+    return finalBandResult;
+  }
+
+  const fallback = bestDry || bestAny;
+  return fallback ? toPlayerPlacementTarget(fallback.x, fallback.z, fallback.groundY) : null;
 }
 
 function scheduleSoftRefresh() {
@@ -2065,6 +2568,8 @@ const runtimeActionExecutor = createRuntimeActionExecutor({
   setNoiseSeed: (seed) => {
     noiseSeed = seed;
   },
+  setTimeOfDay,
+  runLocalWorldCommand: (command) => tryHandleLocalChatCommand(command),
 });
 
 function applyUpdate(update) {

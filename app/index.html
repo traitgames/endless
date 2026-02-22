@@ -39,7 +39,10 @@
       <div id="chat" class="minimized" aria-live="polite" aria-expanded="false">
         <div id="chat-header">
           <span class="chat-title">Create</span>
-          <button id="chat-minimize" type="button" aria-label="Open create panel">Create</button>
+          <div class="panel-header-actions">
+            <button id="chat-minimize" type="button" aria-label="Open create panel">Create</button>
+            <button id="chat-clear" type="button">Clear</button>
+          </div>
         </div>
         <div id="chat-body">
           <div id="chat-log"></div>
@@ -47,8 +50,7 @@
             <input id="chat-input" type="text" placeholder="Describe the change you want..." />
             <div id="chat-actions">
               <button type="submit">Send</button>
-              <button id="world-commands" type="button">World Cmds</button>
-              <button id="chat-clear" type="button">Clear</button>
+              <button id="world-commands" type="button">Help</button>
               <button id="reset-save" type="button">Reset</button>
             </div>
           </form>
@@ -56,9 +58,24 @@
       </div>
     </div>
     <div id="action-trace" aria-live="polite">
-      <div class="trace-title">Action Trace</div>
+      <div class="trace-header">
+        <div class="trace-title">Action Trace</div>
+        <div class="panel-header-actions trace-actions">
+          <button id="trace-toggle" type="button" aria-controls="trace-log" aria-expanded="true">Hide</button>
+          <button id="trace-clear" type="button">Clear</button>
+        </div>
+      </div>
       <div id="trace-log"></div>
     </div>
+    <button
+      id="action-trace-open"
+      type="button"
+      aria-controls="action-trace"
+      aria-expanded="false"
+      hidden
+    >
+      Action Trace
+    </button>
     <div id="crosshair"></div>
     <div id="help">
       <div>WASD: move · Space: jump · Mouse: look · Shift: sprint · R: reset position</div>

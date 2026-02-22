@@ -26,6 +26,9 @@ export function createTraceLogger(traceLogEl, maxEntries = 80) {
       node.append(meta, detail);
       append(node);
     },
+    clear() {
+      traceLogEl.replaceChildren();
+    },
   };
 
   function append(node) {

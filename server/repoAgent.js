@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { renderPromptMarkdown } from "./prompts/index.js";
 
 const DEFAULT_TIMEOUT_MS = 180000;
 const DEFAULT_MAX_CHANGED_FILES = 20;
@@ -135,19 +136,13 @@ export async function handleRepoMessage(payload, send, options) {
 
 function buildPrompt(message, snapshot, plan) {
   const protectedText = plan.protectedPaths.length > 0 ? plan.protectedPaths.join(", ") : "(none)";
-  return [
-    "You are modifying the local repo for the Endless project.",
-    "Make concrete code changes in the working tree when requested.",
-    "Do not ask for approval prompts; proceed with edits and commands needed.",
-    "Keep changes minimal and focused.",
-    `Hard safety budget: touch at most ${plan.maxFiles} files and ${plan.maxDiffLines} changed lines.`,
-    `Protected paths (avoid edits unless explicitly requested): ${protectedText}`,
-    "At the end, provide a concise summary and include changed file paths.",
-    "",
-    `User request: ${message}`,
-    "",
-    `Runtime snapshot for context: ${JSON.stringify(snapshot).slice(0, 6000)}`,
-  ].join("\n");
+  return renderPromptMarkdown("repo-agent", {
+    max_files: plan.maxFiles,
+    max_diff_lines: plan.maxDiffLines,
+    protected_paths: protectedText,
+    user_request: message,
+    runtime_snapshot: JSON.stringify(snapshot).slice(0, 6000),
+  });
 }
 
 function loadPolicy() {
@@ -279,8 +274,7 @@ function getChangedFilesSync(repoRoot) {
   if (out.status !== 0) return [];
   return out.stdout
     .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
+    .filter((line) => line.trim().length > 0)
     .map((line) => line.slice(3).trim());
 }
 

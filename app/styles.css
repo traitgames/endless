@@ -98,6 +98,7 @@ canvas {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
   font-family: var(--font-title);
   font-size: 12px;
   letter-spacing: 0.08em;
@@ -105,7 +106,13 @@ canvas {
   color: var(--accent);
 }
 
-#chat-minimize {
+.panel-header-actions {
+  display: flex;
+  gap: 6px;
+}
+
+#chat-minimize,
+#chat-header #chat-clear {
   background: rgba(255, 255, 255, 0.1);
   color: var(--text);
   border: 1px solid rgba(255, 255, 255, 0.18);
@@ -138,6 +145,10 @@ canvas {
   justify-content: flex-end;
   gap: 0;
   padding: 0;
+}
+
+#chat.minimized #chat-clear {
+  display: none;
 }
 
 #chat.minimized .chat-title {
@@ -233,7 +244,7 @@ canvas {
 
 #chat-actions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -303,12 +314,61 @@ canvas {
   gap: 10px;
 }
 
+#action-trace[hidden] {
+  display: none;
+}
+
+#action-trace-open {
+  position: fixed;
+  left: 24px;
+  top: 24px;
+  z-index: 5;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--panel-edge);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 20px 50px var(--shadow);
+  backdrop-filter: blur(10px);
+}
+
+#action-trace-open:hover {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.trace-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 .trace-title {
   font-family: var(--font-title);
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.1em;
   color: var(--accent-2);
+}
+
+.trace-actions button {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  padding: 5px 9px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.trace-actions button:hover {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.1);
 }
 
 #trace-log {
@@ -405,5 +465,11 @@ canvas {
     top: auto;
     bottom: 98px;
     max-height: 28vh;
+  }
+
+  #action-trace-open {
+    left: 16px;
+    top: auto;
+    bottom: 98px;
   }
 }

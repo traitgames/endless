@@ -12,6 +12,7 @@ Project goal: a self-building 3D world that can be explored and updated live wit
 - `app/index.html`: entry point and HUD layout.
 - `app/styles.css`: visual system for HUD + chat.
 - `app/main.js`: world generation, controls, persistence, and Codex bridge.
+- `app/commandHelp.json`: front-end local command help summaries/details used by in-app help and `/help <command>`.
 - `app/actions/runtimeActions.js`: action handler registry for runtime world mutations.
 - `app/trace/traceLog.js`: bounded action trace rendering helpers.
 - `app/worker.js`: simulated Codex worker for now.
@@ -37,6 +38,12 @@ Implement one of these without breaking the UI:
 - Put `OPENAI_API_KEY` in repo `.env` (or `server/.env`) to enable real Codex responses.
 - Bridge backend mode defaults to `repo` so chat can apply real file edits via local `codex exec`.
 - Use `CODEX_BACKEND_MODE=world` to force runtime action updates; `hybrid` allows `/world ...` commands.
+
+## Help convention
+- When adding or changing any front-end-local command (especially `/world ...`, `/tp`, `/time`, `/commit`), update the in-app help output in the same change.
+- Update `app/commandHelp.json` in the same change so `/help <command>` detailed help stays in sync with command behavior and visible help menus.
+- Prefer a single source of truth for help text/lines so command parsing, usage output, and help menus stay in sync.
+- If a command has aliases or confirmation responses (for example `yes` / `no` prompts), document them in help when they are user-facing.
 
 ## Next improvements
 - Replace worker with real Codex bridge (server or extension).

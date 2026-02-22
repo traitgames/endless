@@ -14,7 +14,22 @@ test("negotiateProtocol picks common version", () => {
 
 test("normalizeAction rejects malformed action", () => {
   assert.equal(normalizeAction({ type: "set_seed", seed: "bad" }), null);
+  assert.equal(normalizeAction({ type: "set_time", timeOfDay: "nope" }), null);
   assert.equal(normalizeAction({ type: "unknown" }), null);
+});
+
+test("normalizeAction accepts set_time", () => {
+  assert.deepEqual(normalizeAction({ type: "set_time", timeOfDay: 17 / 24 }), {
+    type: "set_time",
+    timeOfDay: 17 / 24,
+  });
+});
+
+test("normalizeAction accepts local world command passthrough", () => {
+  assert.deepEqual(normalizeAction({ type: "run_local_world_command", command: "/time noon" }), {
+    type: "run_local_world_command",
+    command: "/time noon",
+  });
 });
 
 test("normalizeUpdate supports legacy keys", () => {

@@ -54,7 +54,20 @@ npm install
 
 ## Quick Start
 
-Run in two terminals.
+Single-command option (starts bridge + app server together):
+
+```sh
+cd /path/to/endless
+bin/dev.sh
+```
+
+Then open:
+
+```text
+http://localhost:8000/app/
+```
+
+Alternative: run in two terminals.
 
 1. Start bridge server:
 
@@ -109,6 +122,7 @@ Set in `.env`:
 OPENAI_API_KEY=...
 PORT=8787
 CODEX_MODEL=gpt-5.3-codex
+CODEX_ROUTER_MODEL=gpt-5-mini
 
 # Backend route
 CODEX_BACKEND_MODE=repo
@@ -122,6 +136,8 @@ CODEX_MAX_DIFF_LINES=1200
 CODEX_PROTECTED_PATHS=shared/,server/index.js
 CODEX_POST_CHECK_CMD=
 ```
+
+`CODEX_ROUTER_MODEL` is optional and only used for hybrid route classification. If unset, the server falls back to `CODEX_MODEL` and then `gpt-5-mini`.
 
 Bridge health endpoint:
 
