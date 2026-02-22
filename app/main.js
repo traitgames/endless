@@ -747,7 +747,8 @@ function updateDayNightCycle(dt) {
   moonLight.position.copy(moonPos);
   shadowFillLight.position.copy(fillPos);
   moon.position.copy(moonPos);
-  moon.position.y = Math.max(moon.position.y, 14);
+  // Hide the moon mesh once it drops below the horizon instead of clamping it above the ground.
+  moon.visible = moonVector.y > 0;
   sunLight.target.position.set(player.position.x, 0, player.position.z);
   moonLight.target.position.set(player.position.x, 0, player.position.z);
   shadowFillLight.target.position.set(player.position.x, 0, player.position.z);
