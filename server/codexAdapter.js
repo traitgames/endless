@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { normalizeActions, randomId } from "../shared/protocol.js";
 
 const MODEL = process.env.CODEX_MODEL || "gpt-5";
 
@@ -25,7 +26,7 @@ export async function handleCodexMessage(payload, send) {
   const client = getClient();
   if (!client) {
     send({ type: "output", content: "OPENAI_API_KEY is not set on the server." });
-    return;
+    return { ok: false, taskComplete: false };
   }
 
   send({ type: "thinking", content: "Codex is planning updates..." });
@@ -59,7 +60,7 @@ export async function handleCodexMessage(payload, send) {
       type: "output",
       content: `Model output parse failed: ${parsed.error}. Raw: ${truncate(text, 800)}`,
     });
-    return;
+    return { ok: false, taskComplete: false };
   }
 
   const thinking = safeText(parsed.data.thinking);
@@ -76,6 +77,7 @@ export async function handleCodexMessage(payload, send) {
     send({
       type: "update",
       update: {
+        updateId: randomId("upd"),
         actions: normalized.actions,
         chatNote:
           normalized.rejected.length > 0
@@ -89,6 +91,7 @@ export async function handleCodexMessage(payload, send) {
       content: `No valid actions generated. Rejected ${normalized.rejected.length} invalid action(s).`,
     });
   }
+  return { ok: true, taskComplete: true };
 }
 
 function getClient() {
@@ -110,116 +113,6 @@ function parseModelJson(raw) {
 function stripCodeFences(text) {
   const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
   return fenced ? fenced[1] : text;
-}
-
-function normalizeActions(actions) {
-  const accepted = [];
-  const rejected = [];
-  const list = Array.isArray(actions) ? actions : [];
-  for (const action of list) {
-    const normalized = normalizeAction(action);
-    if (normalized) accepted.push(normalized);
-    else rejected.push(action);
-  }
-  return { actions: accepted, rejected };
-}
-
-function normalizeAction(action) {
-  if (!action || typeof action !== "object") return null;
-  const type = safeText(action.type);
-  if (!type) return null;
-
-  if (type === "set_seed") {
-    const seed = toInt(action.seed);
-    if (seed === null) return null;
-    return { type, seed };
-  }
-
-  if (type === "set_terrain") {
-    const out = { type };
-    maybeNumber(action, out, "noiseScale");
-    maybeNumber(action, out, "baseHeight");
-    maybeNumber(action, out, "ridgeScale");
-    maybeNumber(action, out, "ridgeHeight");
-    return Object.keys(out).length > 1 ? out : null;
-  }
-
-  if (type === "set_water") {
-    const out = { type };
-    maybeNumber(action, out, "level");
-    maybeNumber(action, out, "opacity");
-    maybeColor(action, out, "colorHex");
-    return Object.keys(out).length > 1 ? out : null;
-  }
-
-  if (type === "set_fog") {
-    const out = { type };
-    maybeNumber(action, out, "density");
-    maybeColor(action, out, "colorHex");
-    return Object.keys(out).length > 1 ? out : null;
-  }
-
-  if (type === "set_terrain_color") {
-    const colorHex = toColor(action.colorHex);
-    if (!colorHex) return null;
-    return { type, colorHex };
-  }
-
-  if (type === "set_trees") {
-    const out = { type };
-    maybeNumber(action, out, "density");
-    maybeColor(action, out, "trunkColor");
-    maybeColor(action, out, "canopyColor");
-    return Object.keys(out).length > 1 ? out : null;
-  }
-
-  if (type === "spawn_landmark") {
-    const kind = safeText(action.kind);
-    if (kind !== "pillar" && kind !== "beacon") return null;
-    const out = { type, kind };
-    maybeNumber(action, out, "x");
-    maybeNumber(action, out, "z");
-    maybeNumber(action, out, "yOffset");
-    maybeNumber(action, out, "scale");
-    maybeColor(action, out, "colorHex");
-    if (typeof out.x !== "number") out.x = 0;
-    if (typeof out.z !== "number") out.z = 0;
-    return out;
-  }
-
-  if (type === "clear_landmarks") {
-    return { type };
-  }
-
-  return null;
-}
-
-function maybeNumber(src, target, key) {
-  const value = toNumber(src[key]);
-  if (value !== null) target[key] = value;
-}
-
-function maybeColor(src, target, key) {
-  const value = toColor(src[key]);
-  if (value) target[key] = value;
-}
-
-function toNumber(value) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return null;
-  return value;
-}
-
-function toInt(value) {
-  const n = toNumber(value);
-  if (n === null) return null;
-  return Math.trunc(n);
-}
-
-function toColor(value) {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  if (!/^#[0-9a-fA-F]{6}$/.test(trimmed)) return null;
-  return trimmed.toLowerCase();
 }
 
 function safeText(value) {

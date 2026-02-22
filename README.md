@@ -15,7 +15,10 @@ Endless is a browser-based 3D world you can explore while a Codex-backed chat mo
 ## Repo Structure
 
 - `app/`: browser client (Three.js world + HUD/chat)
+- `app/chat`, `app/state`, `app/player`, `app/world`: focused runtime modules extracted from `main.js`
+- `app/actions`, `app/trace`: action execution and trace rendering modules
 - `server/`: WebSocket bridge + Codex integration
+- `shared/`: protocol/versioned action validation shared by app and server
 - `AGENTS.md`: project guidance for agent-driven updates
 
 ## Requirements
@@ -114,6 +117,16 @@ CODEX_BACKEND_MODE=repo
 CODEX_CLI_SANDBOX=workspace-write
 CODEX_CLI_FULL_AUTO=1
 CODEX_CLI_TIMEOUT_MS=180000
+CODEX_MAX_CHANGED_FILES=20
+CODEX_MAX_DIFF_LINES=1200
+CODEX_PROTECTED_PATHS=shared/,server/index.js
+CODEX_POST_CHECK_CMD=
+```
+
+Bridge health endpoint:
+
+```text
+http://localhost:8787/health
 ```
 
 Client local storage flags:
