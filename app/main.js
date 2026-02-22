@@ -736,6 +736,113 @@ function updateDayNightCycle(dt) {
     .lerp(dynamicLightColors.moonWarm, twilight * 0.2);
 }
 
+function normalizeTimeCycle(value) {
+  if (!Number.isFinite(value)) return null;
+  return ((value % 1) + 1) % 1;
+}
+
+function formatTimeOfDayClock(cycle) {
+  const normalized = normalizeTimeCycle(cycle);
+  if (normalized == null) return "00:00";
+  let totalMinutes = Math.round(normalized * 24 * 60) % (24 * 60);
+  if (totalMinutes < 0) totalMinutes += 24 * 60;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function parseTimeOfDayInput(raw) {
+  const input = String(raw || "").trim().toLowerCase();
+  if (!input) return null;
+
+  const preset = {
+    midnight: 0,
+    dawn: 0.22,
+    sunrise: 0.25,
+    morning: 1 / 3,
+    noon: 0.5,
+    afternoon: 0.625,
+    sunset: 0.75,
+    dusk: 0.8,
+    evening: 0.875,
+    night: 0.92,
+  }[input];
+  if (preset != null) return { cycle: preset, label: input };
+
+  const percentMatch = input.match(/^(-?\d+(?:\.\d+)?)%$/);
+  if (percentMatch) {
+    const percent = Number(percentMatch[1]);
+    if (Number.isFinite(percent)) return { cycle: percent / 100, label: `${percent}%` };
+  }
+
+  const clockMatch = input.match(/^(\d{1,2})(?::(\d{1,2}))?\s*(am|pm)?$/);
+  if (clockMatch) {
+    let hours = Number(clockMatch[1]);
+    const minutes = clockMatch[2] == null ? 0 : Number(clockMatch[2]);
+    const meridiem = clockMatch[3];
+    if (Number.isFinite(hours) && Number.isFinite(minutes) && minutes >= 0 && minutes < 60) {
+      if (meridiem) {
+        if (hours < 1 || hours > 12) return null;
+        hours %= 12;
+        if (meridiem === "pm") hours += 12;
+      } else if (hours < 0 || hours > 24 || (hours === 24 && minutes > 0)) {
+        return null;
+      }
+      return { cycle: (hours + minutes / 60) / 24, label: `${clockMatch[1]}${clockMatch[2] ? `:${clockMatch[2]}` : ""}${meridiem ? ` ${meridiem}` : ""}` };
+    }
+  }
+
+  const numeric = Number(input);
+  if (!Number.isFinite(numeric)) return null;
+  if (numeric >= 0 && numeric <= 1) return { cycle: numeric, label: input };
+  if (numeric >= 0 && numeric <= 24) return { cycle: numeric / 24, label: `${numeric}h` };
+  return null;
+}
+
+function setTimeOfDay(cycle, sourceLabel = null) {
+  const normalized = normalizeTimeCycle(cycle);
+  if (normalized == null) return false;
+  state.timeOfDay = normalized;
+  worldTime = normalized * DAY_NIGHT.dayLengthSeconds;
+  updateDayNightCycle(0);
+  saveState();
+  addChatEntry({
+    role: "codex_output",
+    content: `Time set to ${formatTimeOfDayClock(normalized)}${sourceLabel ? ` (${sourceLabel})` : ""}.`,
+    ts: Date.now(),
+  });
+  return true;
+}
+
+function handleTimeCommand(message) {
+  const match = String(message || "").trim().match(/^\/time(?:\s+(.+))?$/i);
+  if (!match) return false;
+  const arg = (match[1] || "").trim();
+  if (!arg) {
+    addChatEntry({
+      role: "codex_output",
+      content: [
+        `Current time: ${formatTimeOfDayClock(state.timeOfDay)}.`,
+        "Usage: /time <0..1 | 0..24 | HH:MM [am|pm] | percent | preset>",
+        "Presets: dawn, sunrise, morning, noon, afternoon, sunset, dusk, evening, night, midnight",
+      ].join("\n"),
+      ts: Date.now(),
+    });
+    return true;
+  }
+  const parsed = parseTimeOfDayInput(arg);
+  if (!parsed) {
+    addChatEntry({
+      role: "codex_output",
+      content: `Invalid time "${arg}". Try examples: /time noon, /time 18.5, /time 6:30am, /time 75%.`,
+      ts: Date.now(),
+    });
+    return true;
+  }
+  setTimeOfDay(parsed.cycle, parsed.label);
+  return true;
+}
+
 const heightAt = createTerrainHeightSampler({
   getNoiseSeed: () => noiseSeed,
   getTerrain: () => state.world.terrain,
@@ -1627,6 +1734,7 @@ function tryHandleLocalChatCommand(message) {
   const trimmed = typeof message === "string" ? message.trim() : "";
   if (!trimmed) return false;
   if (handlePendingWorldCommandConfirmation(trimmed)) return true;
+  if (handleTimeCommand(trimmed)) return true;
   const tpAliasMatch = trimmed.match(/^\/?tp\s+(.+)$/i);
   if (tpAliasMatch) {
     teleportPlayerToBiome(tpAliasMatch[1]);
@@ -1700,6 +1808,7 @@ function showWorldCommandHelp() {
     content: [
       "World commands (local):",
       "/world help",
+      "tp <biome-name>",
       "/world biome <biome-name>",
       "/world tp biome <biome-name>",
       "/world style <biome> <terrain|water|fog|trunk|canopy> <#rrggbb>",
