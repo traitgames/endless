@@ -50,7 +50,7 @@ const DEFAULT_WORLD = {
   },
   fog: {
     colorHex: "#0b1112",
-    density: 0.015,
+    density: 0.0015,
   },
   landmarks: [],
 };
@@ -80,7 +80,7 @@ renderer.setClearColor(state.world.fog.colorHex, 1);
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(state.world.fog.colorHex, state.world.fog.density);
 
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
 
 const light = new THREE.DirectionalLight(0xdff6ff, 1.2);
 light.position.set(12, 24, 8);
@@ -88,7 +88,7 @@ scene.add(light);
 scene.add(new THREE.AmbientLight(0x4a5c61, 0.6));
 
 const water = new THREE.Mesh(
-  new THREE.PlaneGeometry(400, 400),
+  new THREE.PlaneGeometry(4000, 4000),
   new THREE.MeshPhongMaterial({
     color: state.world.water.colorHex,
     transparent: true,
@@ -107,7 +107,7 @@ const terrainMaterial = new THREE.MeshStandardMaterial({
 
 const CHUNK_SIZE = 64;
 const CHUNK_RES = 32;
-const CHUNK_RADIUS = 2;
+const CHUNK_RADIUS = 8;
 const chunks = new Map();
 const treeChunks = new Map();
 const landmarkGroup = new THREE.Group();
@@ -479,7 +479,7 @@ chatForm.addEventListener("submit", (event) => {
   if (!message) return;
   addChatEntry({ role: "user", content: message, ts: Date.now() });
   chatInput.value = "";
-  sendToCodex(message);
+  sendToCodex(resolveChatCommand(message));
 });
 
 resetSaveBtn?.addEventListener("click", () => {
@@ -709,6 +709,20 @@ async function sendToCodex(message) {
     ts: Date.now(),
   });
   worker.postMessage({ type: "message", message, snapshot: state });
+}
+
+function resolveChatCommand(message) {
+  const trimmed = typeof message === "string" ? message.trim() : "";
+  if (!trimmed) return trimmed;
+  if (trimmed === "/commit") {
+    return "Commit the current git working tree changes with an appropriate concise commit message. Run git status first, stage relevant changes, then create the commit. Return the commit summary and changed file paths.";
+  }
+  if (trimmed.startsWith("/commit ")) {
+    const hint = trimmed.slice("/commit ".length).trim();
+    if (!hint) return resolveChatCommand("/commit");
+    return `Commit the current git working tree changes with an appropriate concise commit message. Use this user hint when crafting the message: "${hint}". Run git status first, stage relevant changes, then create the commit. Return the commit summary and changed file paths.`;
+  }
+  return message;
 }
 
 function scheduleSoftRefresh() {
@@ -951,6 +965,8 @@ function normalizeWorld(value) {
   const fogCfg = source.fog && typeof source.fog === "object" ? source.fog : {};
   const treesCfg = source.trees && typeof source.trees === "object" ? source.trees : {};
   const landmarks = Array.isArray(source.landmarks) ? source.landmarks : [];
+  const rawFogDensity = clampNumber(fogCfg.density, 0.001, 0.08, DEFAULT_WORLD.fog.density);
+  const fogDensity = rawFogDensity === 0.015 ? DEFAULT_WORLD.fog.density : rawFogDensity;
   return {
     terrain: {
       noiseScale: clampNumber(terrain.noiseScale, 0.005, 0.25, DEFAULT_WORLD.terrain.noiseScale),
@@ -971,7 +987,7 @@ function normalizeWorld(value) {
     },
     fog: {
       colorHex: toColorHex(fogCfg.colorHex, DEFAULT_WORLD.fog.colorHex),
-      density: clampNumber(fogCfg.density, 0.001, 0.08, DEFAULT_WORLD.fog.density),
+      density: fogDensity,
     },
     landmarks: landmarks
       .map((entry) => ({
