@@ -54,7 +54,20 @@ npm install
 
 ## Quick Start
 
-Run in two terminals.
+Single-command option (starts bridge + app server together):
+
+```sh
+cd /path/to/endless
+bin/dev.sh
+```
+
+Then open:
+
+```text
+http://localhost:8000/app/
+```
+
+Alternative: run in two terminals.
 
 1. Start bridge server:
 
