@@ -81,6 +81,25 @@
       ]
     },
     {
+      "id": "world-detail",
+      "category": "world",
+      "lookup": [
+        "/world detail",
+        "world detail",
+        "/world detail distance",
+        "world detail distance",
+        "/world detail intensity",
+        "world detail intensity"
+      ],
+      "summaryLines": ["/world detail", "/world detail <meters|off>", "/world detail intensity <0..3>"],
+      "detailLines": [
+        "Show or set the terrain detail overlay render distance (in meters/world units).",
+        "Biome-specific close-range detail is faded out beyond this distance.",
+        "Adjust the intensity to amplify or soften the biome-specific detail textures.",
+        "Examples: /world detail 50, /world detail off, /world detail distance 80, /world detail intensity 1.5"
+      ]
+    },
+    {
       "id": "world-style",
       "category": "world",
       "lookup": ["/world style", "world style"],

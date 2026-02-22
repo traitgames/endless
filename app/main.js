@@ -7,11 +7,13 @@ import { loadPersistedState, savePersistedState, clampNumber, toColorHex } from 
 import { createTerrainHeightSampler } from "./world/terrainNoise.js";
 import { createRuntimeActionExecutor } from "./actions/runtimeActions.js";
 import { createTraceLogger } from "./trace/traceLog.js";
+import { configureTerrainMaterial } from "./world/terrainShader.js";
 import { PROTOCOL_VERSION } from "../shared/protocol.js";
 
 const canvas = document.getElementById("scene");
 const seedEl = document.getElementById("seed");
 const chunkEl = document.getElementById("chunk");
+
 const biomeEl = document.getElementById("biome");
 const clockTimeEl = document.getElementById("clock-time");
 let backendModeEl = document.getElementById("backend-mode");
@@ -46,6 +48,9 @@ const FALLBACK_WORLD_COMMAND_HELP_LINES = [
   "/world ?",
   "/world biome <biome-name>",
   "/world tp biome <biome-name>",
+  "/world detail",
+  "/world detail <meters|off>",
+  "/world detail intensity <0..3>",
   "/world style <biome> <terrain|water|fog|trunk|canopy> <#rrggbb>",
   "/world style <biome> tree <trunk|canopy> <#rrggbb>",
   "/world style clear <biome> [terrain|water|fog|trunk|canopy|all]",
@@ -121,6 +126,10 @@ const DEFAULT_WORLD = {
     baseHeight: 14,
     ridgeScale: 1.8,
     ridgeHeight: 6,
+  },
+  terrainDetail: {
+    renderDistance: 50,
+    intensity: 1.2,
   },
   terrainColor: "#4f8b50",
   biomeStyles: {},
@@ -505,61 +514,12 @@ const terrainMaterial = new THREE.MeshStandardMaterial({
   roughness: 0.95,
   metalness: 0.05,
 });
-const terrainShaderState = { shader: null };
-terrainMaterial.onBeforeCompile = (shader) => {
-  shader.uniforms.uWaterLevel = { value: state.world.water.level };
-  shader.uniforms.uTint = { value: new THREE.Color(state.world.terrainColor) };
-  terrainShaderState.shader = shader;
-  shader.vertexShader = shader.vertexShader
-    .replace(
-      "#include <common>",
-      `#include <common>
-      varying vec3 vWorldPos;
-      varying vec3 vObjectNormal;
-      `
-    )
-    .replace(
-      "#include <begin_vertex>",
-      `#include <begin_vertex>
-      vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
-      vObjectNormal = normal;
-      `
-    );
-  shader.fragmentShader = shader.fragmentShader
-    .replace(
-      "#include <common>",
-      `#include <common>
-      uniform float uWaterLevel;
-      uniform vec3 uTint;
-      varying vec3 vWorldPos;
-      varying vec3 vObjectNormal;
-      `
-    )
-    .replace(
-      "vec4 diffuseColor = vec4( diffuse, opacity );",
-      `
-      float h = vWorldPos.y;
-      float slope = 1.0 - clamp(abs(normalize(vObjectNormal).y), 0.0, 1.0);
-      float n = fract(sin(dot(vWorldPos.xz, vec2(12.9898, 78.233))) * 43758.5453);
-      vec3 grass = vec3(0.34, 0.57, 0.30);
-      vec3 denseGrass = vec3(0.23, 0.45, 0.22);
-      vec3 rock = vec3(0.44, 0.42, 0.39);
-      vec3 sand = vec3(0.71, 0.65, 0.50);
-      vec3 snow = vec3(0.85, 0.88, 0.9);
-      vec3 baseColor = mix(grass, denseGrass, smoothstep(0.0, 1.0, n));
-      baseColor = mix(baseColor, rock, smoothstep(0.26, 0.72, slope));
-      baseColor = mix(sand, baseColor, smoothstep(uWaterLevel - 0.4, uWaterLevel + 2.4, h));
-      #ifdef USE_COLOR
-      float biomeColorBlend = smoothstep(uWaterLevel + 0.2, uWaterLevel + 7.5, h);
-      baseColor = mix(baseColor, vColor.rgb, 0.58 * biomeColorBlend);
-      #endif
-      baseColor = mix(baseColor, snow, smoothstep(38.0, 56.0, h));
-      baseColor = mix(baseColor, baseColor * uTint, 0.16);
-      vec4 diffuseColor = vec4(baseColor, opacity);
-      `
-    );
-};
-terrainMaterial.needsUpdate = true;
+const terrainShaderState = configureTerrainMaterial({
+  material: terrainMaterial,
+  state,
+  getDetailRenderDistance: getTerrainDetailRenderDistance,
+  THREE,
+});
 
 const CHUNK_SIZE = 64;
 const CHUNK_RES = 32;
@@ -597,6 +557,63 @@ function blendColor(baseHex, tintColor, amount) {
     out.lerp(tintColor, clampNumber(amount, 0, 1, 0));
   }
   return out;
+}
+
+function getTerrainDetailRenderDistance() {
+  return clampNumber(state.world?.terrainDetail?.renderDistance, 0, 300, DEFAULT_WORLD.terrainDetail.renderDistance);
+}
+
+function getTerrainDetailIntensity() {
+  return clampNumber(state.world?.terrainDetail?.intensity, 0, 3, DEFAULT_WORLD.terrainDetail.intensity ?? 1);
+}
+
+function setTerrainDetailRenderDistance(distanceMeters) {
+  if (!state.world.terrainDetail || typeof state.world.terrainDetail !== "object") {
+    state.world.terrainDetail = {
+      renderDistance: DEFAULT_WORLD.terrainDetail.renderDistance,
+      intensity: DEFAULT_WORLD.terrainDetail.intensity ?? 1,
+    };
+  }
+  state.world.terrainDetail.renderDistance = clampNumber(distanceMeters, 0, 300, DEFAULT_WORLD.terrainDetail.renderDistance);
+  syncTerrainShaderUniforms();
+  saveState();
+}
+
+function setTerrainDetailIntensity(intensity) {
+  if (!state.world.terrainDetail || typeof state.world.terrainDetail !== "object") {
+    state.world.terrainDetail = {
+      renderDistance: DEFAULT_WORLD.terrainDetail.renderDistance,
+      intensity: DEFAULT_WORLD.terrainDetail.intensity ?? 1,
+    };
+  }
+  state.world.terrainDetail.intensity = clampNumber(intensity, 0, 3, DEFAULT_WORLD.terrainDetail.intensity ?? 1);
+  syncTerrainShaderUniforms();
+  saveState();
+}
+
+function getTerrainDetailBiomeId(biome) {
+  switch (biome?.id) {
+    case "glacier":
+      return 1; // crystalline ice facets
+    case "tundra":
+      return 2; // lichen speckle
+    case "taiga":
+      return 3; // needle mats
+    case "meadow":
+      return 4; // flowered grass clumps
+    case "forest":
+      return 5; // leaf litter
+    case "wetland":
+      return 6; // muddy pools + moss
+    case "desert":
+      return 7; // dune ripples
+    case "savanna":
+      return 8; // dry grass streaks
+    case "badlands":
+      return 9; // red striations
+    default:
+      return 0;
+  }
 }
 
 function getBiomeStyleOverride(biomeOrId) {
@@ -673,6 +690,10 @@ function syncTerrainShaderUniforms() {
   if (!terrainShaderState.shader) return;
   terrainShaderState.shader.uniforms.uWaterLevel.value = state.world.water.level;
   terrainShaderState.shader.uniforms.uTint.value.set(state.world.terrainColor);
+  terrainShaderState.shader.uniforms.uDetailRenderDistance.value = getTerrainDetailRenderDistance();
+  if (terrainShaderState.shader.uniforms.uDetailIntensity) {
+    terrainShaderState.shader.uniforms.uDetailIntensity.value = getTerrainDetailIntensity();
+  }
 }
 
 function syncAtmosphereFromState() {
@@ -1329,6 +1350,7 @@ function buildChunk(cx, cz) {
   geometry.rotateX(-Math.PI / 2);
   const vertices = geometry.attributes.position;
   const colors = new Float32Array(vertices.count * 3);
+  const detailBiomes = new Float32Array(vertices.count);
   for (let i = 0; i < vertices.count; i += 1) {
     const x = vertices.getX(i) + cx * CHUNK_SIZE;
     const z = vertices.getZ(i) + cz * CHUNK_SIZE;
@@ -1341,9 +1363,11 @@ function buildChunk(cx, cz) {
     colors[i * 3] = color.r * brighten;
     colors[i * 3 + 1] = color.g * brighten;
     colors[i * 3 + 2] = color.b * brighten;
+    detailBiomes[i] = getTerrainDetailBiomeId(biome);
   }
   vertices.needsUpdate = true;
   geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  geometry.setAttribute("detailBiome", new THREE.BufferAttribute(detailBiomes, 1));
   geometry.computeVertexNormals();
   const mesh = new THREE.Mesh(geometry, terrainMaterial);
   mesh.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
@@ -1874,6 +1898,10 @@ function handleLocalWorldCommand(message) {
     return handleWorldBiomeStyleCommand(parts);
   }
 
+  if (sub === "detail") {
+    return handleWorldDetailCommand(parts);
+  }
+
   if (parts.length === 2) {
     const guessedBiome = resolveBiomeName(parts[1]) || guessBiomeName(parts[1])?.biome;
     if (guessedBiome) {
@@ -2120,6 +2148,80 @@ function addWorldStyleUsage(prefix) {
     ].join("\n"),
     ts: Date.now(),
   });
+}
+
+function handleWorldDetailCommand(parts) {
+  const sub = (parts[2] || "").toLowerCase();
+  if (sub === "distance") {
+    parts = [parts[0], parts[1], ...parts.slice(3)];
+  }
+
+  if (sub === "intensity" || sub === "strength" || sub === "power") {
+    const rawIntensity = (parts[3] || "").trim().toLowerCase();
+    if (!rawIntensity) {
+      addChatEntry({
+        role: "codex_output",
+        content: `Terrain detail intensity: ${getTerrainDetailIntensity().toFixed(2)}\nUsage: /world detail intensity <0..3>`,
+        ts: Date.now(),
+      });
+      return true;
+    }
+    const nextIntensity = Number(parts[3]);
+    if (!Number.isFinite(nextIntensity)) {
+      addChatEntry({
+        role: "codex_output",
+        content: `Invalid terrain detail intensity "${parts[3]}". Usage: /world detail intensity <0..3>`,
+        ts: Date.now(),
+      });
+      return true;
+    }
+    const clamped = clampNumber(nextIntensity, 0, 3, getTerrainDetailIntensity());
+    setTerrainDetailIntensity(clamped);
+    addChatEntry({
+      role: "codex_output",
+      content: `Set terrain detail intensity to ${clamped.toFixed(2)}.`,
+      ts: Date.now(),
+    });
+    return true;
+  }
+
+  const rawArg = sub.trim();
+  if (!rawArg) {
+    addChatEntry({
+      role: "codex_output",
+      content: `Terrain detail render distance: ${getTerrainDetailRenderDistance().toFixed(0)}m\nTerrain detail intensity: ${getTerrainDetailIntensity().toFixed(2)}\nUsage: /world detail <meters|off>\nUsage: /world detail intensity <0..3>`,
+      ts: Date.now(),
+    });
+    return true;
+  }
+  if (rawArg === "off" || rawArg === "none" || rawArg === "disable") {
+    setTerrainDetailRenderDistance(0);
+    addChatEntry({
+      role: "codex_output",
+      content: "Disabled terrain detail overlay (render distance 0m).",
+      ts: Date.now(),
+    });
+    return true;
+  }
+
+  const meters = Number(parts[2]);
+  if (!Number.isFinite(meters)) {
+    addChatEntry({
+      role: "codex_output",
+      content: `Invalid terrain detail distance "${parts[2]}". Usage: /world detail <meters|off>`,
+      ts: Date.now(),
+    });
+    return true;
+  }
+
+  const nextDistance = clampNumber(meters, 0, 300, getTerrainDetailRenderDistance());
+  setTerrainDetailRenderDistance(nextDistance);
+  addChatEntry({
+    role: "codex_output",
+    content: `Set terrain detail render distance to ${nextDistance.toFixed(0)}m.`,
+    ts: Date.now(),
+  });
+  return true;
 }
 
 function resolveBiomeStyleTarget(tokens) {

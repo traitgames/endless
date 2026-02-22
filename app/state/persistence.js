@@ -85,6 +85,7 @@ function migrateState(parsed, { defaultState, stateVersion }) {
 function normalizeWorld(value, { defaultWorld, legacyWorld }) {
   const source = value && typeof value === "object" ? value : {};
   const terrain = source.terrain && typeof source.terrain === "object" ? source.terrain : {};
+  const terrainDetailCfg = source.terrainDetail && typeof source.terrainDetail === "object" ? source.terrainDetail : {};
   const biomeStylesCfg = source.biomeStyles && typeof source.biomeStyles === "object" ? source.biomeStyles : {};
   const waterCfg = source.water && typeof source.water === "object" ? source.water : {};
   const fogCfg = source.fog && typeof source.fog === "object" ? source.fog : {};
@@ -123,6 +124,10 @@ function normalizeWorld(value, { defaultWorld, legacyWorld }) {
       baseHeight: clampNumber(terrain.baseHeight, 1, 80, defaultWorld.terrain.baseHeight),
       ridgeScale: clampNumber(terrain.ridgeScale, 0.5, 6, defaultWorld.terrain.ridgeScale),
       ridgeHeight: clampNumber(terrain.ridgeHeight, 0, 50, defaultWorld.terrain.ridgeHeight),
+    },
+    terrainDetail: {
+      renderDistance: clampNumber(terrainDetailCfg.renderDistance, 0, 300, defaultWorld.terrainDetail.renderDistance),
+      intensity: clampNumber(terrainDetailCfg.intensity, 0, 3, defaultWorld.terrainDetail.intensity ?? 1),
     },
     terrainColor,
     biomeStyles: normalizeBiomeStyles(biomeStylesCfg),
