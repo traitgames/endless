@@ -13,6 +13,7 @@ const canvas = document.getElementById("scene");
 const seedEl = document.getElementById("seed");
 const chunkEl = document.getElementById("chunk");
 const biomeEl = document.getElementById("biome");
+const clockTimeEl = document.getElementById("clock-time");
 let backendModeEl = document.getElementById("backend-mode");
 const stateEl = document.getElementById("state");
 const chatLog = document.getElementById("chat-log");
@@ -51,6 +52,7 @@ const FALLBACK_WORLD_COMMAND_HELP_LINES = [
 ];
 let localCommandHelpCatalog = null;
 let localCommandHelpCatalogPromise = null;
+let lastStatusClockMinuteKey = "";
 
 if (!backendModeEl) {
   const metrics = document.querySelector("#status .metrics");
@@ -63,6 +65,36 @@ if (!backendModeEl) {
     line.appendChild(backendModeEl);
     metrics.appendChild(line);
   }
+}
+
+function formatStatusClockTime(cycle = state.timeOfDay) {
+  const normalized = normalizeTimeCycle(cycle);
+  if (normalized == null) return "--:-- --";
+  let totalMinutes = Math.round(normalized * 24 * 60) % (24 * 60);
+  if (totalMinutes < 0) totalMinutes += 24 * 60;
+  const hours24 = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  const suffix = hours24 >= 12 ? "PM" : "AM";
+  const hours12 = hours24 % 12 || 12;
+  return `${String(hours12).padStart(2, "0")}:${String(minutes).padStart(2, "0")} ${suffix}`;
+}
+
+function updateStatusClock() {
+  if (!clockTimeEl) return;
+  const normalized = normalizeTimeCycle(state.timeOfDay);
+  if (normalized == null) {
+    if (lastStatusClockMinuteKey !== "invalid") {
+      lastStatusClockMinuteKey = "invalid";
+      clockTimeEl.textContent = "--:-- --";
+    }
+    return;
+  }
+  let totalMinutes = Math.round(normalized * 24 * 60) % (24 * 60);
+  if (totalMinutes < 0) totalMinutes += 24 * 60;
+  const minuteKey = String(totalMinutes);
+  if (minuteKey === lastStatusClockMinuteKey) return;
+  lastStatusClockMinuteKey = minuteKey;
+  clockTimeEl.textContent = formatStatusClockTime(normalized);
 }
 
 const STORAGE_KEY = "endless_state_v1";
@@ -1543,6 +1575,7 @@ function animate() {
   updatePlayer(dt);
   updateBiomeHud();
   updateDayNightCycle(dt);
+  updateStatusClock();
   sky.position.set(player.position.x, 0, player.position.z);
   if (cloudGroup.parent) {
     cloudGroup.position.set(
@@ -1581,6 +1614,7 @@ const trace = createTraceLogger(traceLog, 80);
 let pendingWorldCommandConfirmation = null;
 preloadLocalCommandHelpCatalog();
 setActionTraceVisible(state.ui?.actionTraceVisible !== false);
+updateStatusClock();
 
 chatForm.addEventListener("submit", (event) => {
   event.preventDefault();

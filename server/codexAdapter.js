@@ -116,10 +116,8 @@ export async function handleCodexMessage(payload, send) {
       content: `No valid actions generated. Rejected ${normalized.rejected.length} invalid action(s).`,
     });
   }
-  const onlyLocalFrontendCommands =
-    normalized.actions.length > 0 &&
-    normalized.actions.every((action) => action.type === "run_local_world_command");
-  return { ok: true, taskComplete: true, skipSoftRefresh: onlyLocalFrontendCommands };
+  // World-route requests apply runtime changes without requiring a page reload.
+  return { ok: true, taskComplete: true, skipSoftRefresh: true };
 }
 
 function getClient() {
