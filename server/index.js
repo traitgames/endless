@@ -4,8 +4,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import OpenAI from "openai";
-import { handleCodexMessage } from "./codexAdapter.js";
+import { getWorldRouterCapabilitiesText, handleCodexMessage } from "./codexAdapter.js";
 import { handleRepoMessage } from "./repoAgent.js";
+import { renderPromptMarkdown } from "./prompts/index.js";
 import {
   PROTOCOL_VERSION,
   SERVER_CAPABILITIES,
@@ -23,7 +24,16 @@ dotenv.config({ path: path.join(__dirname, ".env"), override: false, quiet: true
 
 const port = Number(process.env.PORT || 8787);
 const backendMode = (process.env.CODEX_BACKEND_MODE || "repo").trim().toLowerCase();
-const routerModel = (process.env.CODEX_ROUTER_MODEL || process.env.CODEX_MODEL || "gpt-5-mini").trim();
+const WORLD_ROUTER_CAPABILITIES_TEXT = getWorldRouterCapabilitiesText();
+const ROUTER_SYSTEM_PROMPT = renderPromptMarkdown("router-system", {
+  world_router_capabilities: WORLD_ROUTER_CAPABILITIES_TEXT,
+});
+const routerModel = firstNonEmptyEnv(
+  process.env.CODEX_ROUTER_MODEL,
+  process.env.CODEX_ROUTE_CLASSIFIER_MODEL,
+  process.env.CODEX_MODEL,
+  "gpt-5-mini"
+);
 
 const server = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/health") {
@@ -44,7 +54,7 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocketServer({ server });
 server.listen(port, () => {
-  log("info", "server_started", { port, mode: backendMode, protocolVersion: PROTOCOL_VERSION });
+  log("info", "server_started", { port, mode: backendMode, protocolVersion: PROTOCOL_VERSION, routerModel });
   console.log(`Codex bridge listening on ws://localhost:${port} (mode=${backendMode})`);
 });
 
@@ -141,6 +151,15 @@ function normalizeText(value) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
+function firstNonEmptyEnv(...values) {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed) return trimmed;
+  }
+  return "";
+}
+
 let openaiClient = null;
 let openaiClientInitialized = false;
 
@@ -166,15 +185,7 @@ async function classifyHybridRouteWithLlm(incoming) {
       input: [
         {
           role: "system",
-          content: [
-            "You route requests for the Endless project.",
-            "Choose exactly one label: world or repo.",
-            "Return only the single word label with no punctuation.",
-            "world = runtime/in-world changes, terrain, biomes, teleporting, world command help, player/world state actions.",
-            "repo = code edits, code review, implementation changes, tests, debugging source files, explaining code paths.",
-            "If the latest user message is ambiguous, use recent chat context to infer intent.",
-            "If unsure between repo and world after using context, prefer world only when the message is about game behavior or world commands; otherwise repo.",
-          ].join(" "),
+          content: ROUTER_SYSTEM_PROMPT,
         },
         {
           role: "user",
@@ -205,6 +216,7 @@ function buildRouteClassifierContext(incoming) {
   return [
     `Latest user message: ${JSON.stringify(message)}`,
     `Recent chat context: ${JSON.stringify(recentChat)}`,
+    WORLD_ROUTER_CAPABILITIES_TEXT,
     `Snapshot hints: ${JSON.stringify({
       hasWorld: Boolean(snapshot.world),
       hasPlayer: Boolean(snapshot.player),

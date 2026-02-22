@@ -1,28 +1,53 @@
 import OpenAI from "openai";
 import { normalizeActions, randomId } from "../shared/protocol.js";
+import { loadPromptMarkdown } from "./prompts/index.js";
 
 const MODEL = process.env.CODEX_MODEL || "gpt-5";
+const SYSTEM_PROMPT = loadPromptMarkdown("world-system");
+const LOCAL_WORLD_COMMAND_CAPABILITIES = Object.freeze([
+  {
+    pattern: "/world ...",
+    routeHint: "World command handler for local runtime commands (help, biome teleport, biome style changes).",
+    match: (text) => /^\/world(?:\s|$)/i.test(text),
+  },
+  {
+    pattern: "/time ...",
+    routeHint: "Local time command handler (set/show time and time command help/usage).",
+    match: (text) => /^\/time(?:\s|$)/i.test(text),
+  },
+  {
+    pattern: "tp ... or /tp ...",
+    routeHint: "Local biome teleport shorthand command handler.",
+    match: (text) => /^\/?tp\s+.+/i.test(text),
+  },
+]);
 
-const SYSTEM_PROMPT = [
-  "You are Codex embedded in a realtime 3D world editor.",
-  "You must return ONLY JSON and no prose outside JSON.",
-  "Use this exact top-level shape:",
-  "{\"thinking\":\"string\",\"summary\":\"string\",\"actions\":[{\"type\":\"...\",\"...\":...}]}",
-  "Allowed action types and fields:",
-  "1) set_seed: {\"type\":\"set_seed\",\"seed\":number}",
-  "2) set_terrain: {\"type\":\"set_terrain\",\"noiseScale\":number,\"baseHeight\":number,\"ridgeScale\":number,\"ridgeHeight\":number}",
-  "3) set_water: {\"type\":\"set_water\",\"level\":number,\"opacity\":number,\"colorHex\":\"#RRGGBB\"}",
-  "4) set_fog: {\"type\":\"set_fog\",\"density\":number,\"colorHex\":\"#RRGGBB\"}",
-  "5) set_terrain_color: {\"type\":\"set_terrain_color\",\"colorHex\":\"#RRGGBB\"}",
-  "6) set_trees: {\"type\":\"set_trees\",\"density\":number,\"trunkColor\":\"#RRGGBB\",\"canopyColor\":\"#RRGGBB\"}",
-  "7) spawn_landmark: {\"type\":\"spawn_landmark\",\"kind\":\"pillar|beacon\",\"x\":number,\"z\":number,\"yOffset\":number,\"scale\":number,\"colorHex\":\"#RRGGBB\"}",
-  "8) clear_landmarks: {\"type\":\"clear_landmarks\"}",
-  "If no world change is needed, return an empty actions array.",
-  "Keep thinking and summary concise.",
-].join(" ");
+export function getWorldRouterCapabilitiesText() {
+  return [
+    "Current world-routable command capabilities:",
+    ...LOCAL_WORLD_COMMAND_CAPABILITIES.map(
+      (capability) => `- ${capability.pattern}: ${capability.routeHint}`
+    ),
+    "- Natural-language runtime/in-world requests (for example setting time, changing terrain/world state) are also world-routable.",
+    "- UI/help panel text, button labels, and frontend code changes are not world capabilities and should route to repo.",
+  ].join("\n");
+}
 
 export async function handleCodexMessage(payload, send) {
   const { message, snapshot } = payload;
+  const localCommandAction = buildLocalWorldCommandAction(message);
+  if (localCommandAction) {
+    send({ type: "thinking", content: "Dispatching command to local world handler..." });
+    send({
+      type: "update",
+      update: {
+        updateId: randomId("upd"),
+        actions: [localCommandAction],
+      },
+    });
+    return { ok: true, taskComplete: true };
+  }
+
   const client = getClient();
   if (!client) {
     send({ type: "output", content: "OPENAI_API_KEY is not set on the server." });
@@ -124,4 +149,13 @@ function truncate(value, maxLen) {
   if (typeof value !== "string") return "";
   if (value.length <= maxLen) return value;
   return `${value.slice(0, maxLen)}...`;
+}
+
+function buildLocalWorldCommandAction(message) {
+  const text = typeof message === "string" ? message.trim() : "";
+  if (!text) return null;
+  if (LOCAL_WORLD_COMMAND_CAPABILITIES.some((capability) => capability.match(text))) {
+    return { type: "run_local_world_command", command: text };
+  }
+  return null;
 }

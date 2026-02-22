@@ -799,18 +799,20 @@ function parseTimeOfDayInput(raw) {
   return null;
 }
 
-function setTimeOfDay(cycle, sourceLabel = null) {
+function setTimeOfDay(cycle, sourceLabel = null, options = {}) {
   const normalized = normalizeTimeCycle(cycle);
   if (normalized == null) return false;
   state.timeOfDay = normalized;
   worldTime = normalized * DAY_NIGHT.dayLengthSeconds;
   updateDayNightCycle(0);
   saveState();
-  addChatEntry({
-    role: "codex_output",
-    content: `Time set to ${formatTimeOfDayClock(normalized)}${sourceLabel ? ` (${sourceLabel})` : ""}.`,
-    ts: Date.now(),
-  });
+  if (!options?.silent) {
+    addChatEntry({
+      role: "codex_output",
+      content: `Time set to ${formatTimeOfDayClock(normalized)}${sourceLabel ? ` (${sourceLabel})` : ""}.`,
+      ts: Date.now(),
+    });
+  }
   return true;
 }
 
@@ -2376,6 +2378,8 @@ const runtimeActionExecutor = createRuntimeActionExecutor({
   setNoiseSeed: (seed) => {
     noiseSeed = seed;
   },
+  setTimeOfDay,
+  runLocalWorldCommand: (command) => tryHandleLocalChatCommand(command),
 });
 
 function applyUpdate(update) {

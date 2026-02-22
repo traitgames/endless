@@ -25,6 +25,7 @@ Outgoing to browser:
 ## Environment
 - `OPENAI_API_KEY` is required.
 - `CODEX_MODEL` (optional) defaults to `gpt-5`.
+- `CODEX_ROUTER_MODEL` (optional) overrides the model used for hybrid route classification and falls back to `CODEX_MODEL` (`gpt-5-mini` if neither is set).
 - Env loading order: repo `.env`, then `server/.env` for local overrides.
 - `CODEX_BACKEND_MODE`: `repo` (default), `world`, or `hybrid`.
 - `CODEX_CLI_SANDBOX`: sandbox mode for `codex exec` (default `workspace-write`).

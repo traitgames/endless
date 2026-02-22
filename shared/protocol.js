@@ -16,6 +16,7 @@ export const SERVER_CAPABILITIES = {
 
 const ACTION_TYPES = new Set([
   "set_seed",
+  "set_time",
   "set_terrain",
   "set_water",
   "set_fog",
@@ -23,6 +24,7 @@ const ACTION_TYPES = new Set([
   "set_trees",
   "spawn_landmark",
   "clear_landmarks",
+  "run_local_world_command",
 ]);
 
 export function negotiateProtocol(peerVersions, fallbackVersion = PROTOCOL_VERSION) {
@@ -120,6 +122,12 @@ export function normalizeAction(action) {
     return { type, seed };
   }
 
+  if (type === "set_time") {
+    const timeOfDay = toNumber(action.timeOfDay ?? action.cycle);
+    if (timeOfDay === null) return null;
+    return { type, timeOfDay };
+  }
+
   if (type === "set_terrain") {
     const out = { type };
     maybeNumber(action, out, "noiseScale");
@@ -174,6 +182,12 @@ export function normalizeAction(action) {
 
   if (type === "clear_landmarks") {
     return { type };
+  }
+
+  if (type === "run_local_world_command") {
+    const command = safeText(action.command || action.message);
+    if (!command) return null;
+    return { type, command };
   }
 
   return null;
