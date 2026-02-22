@@ -1209,6 +1209,7 @@ const chatStore = createChatStore({
 });
 const chatState = chatStore.entries;
 const trace = createTraceLogger(traceLog, 80);
+let pendingWorldCommandConfirmation = null;
 
 chatForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -1255,12 +1256,29 @@ const ALLOW_WORKER_FALLBACK =
 const AUTO_SOFT_REFRESH = localStorage.getItem("endless_auto_soft_refresh") !== "0";
 let refreshScheduled = false;
 const bridgeUrl = localStorage.getItem("endless_ws_url") || "ws://localhost:8787";
+let configuredBackendMode = "connecting";
+let bridgeConnectionStatus = "connecting";
+let activeBackendRoute = null;
+
+function renderBackendModeLabel() {
+  if (!backendModeEl) return;
+  if (activeBackendRoute) {
+    backendModeEl.textContent = activeBackendRoute;
+    return;
+  }
+  if (bridgeConnectionStatus && bridgeConnectionStatus !== "connected") {
+    backendModeEl.textContent = bridgeConnectionStatus;
+    return;
+  }
+  backendModeEl.textContent = configuredBackendMode || "unknown";
+}
 
 function handleCodexPayload(payload) {
   if (!payload) return;
   if (payload.type === "backend_info") {
     const mode = typeof payload.mode === "string" ? payload.mode : "unknown";
-    backendModeEl.textContent = mode;
+    configuredBackendMode = mode;
+    renderBackendModeLabel();
     if (payload.protocolVersion && payload.protocolVersion !== PROTOCOL_VERSION) {
       trace.addTracePhrase(`Protocol mismatch server=${payload.protocolVersion} client=${PROTOCOL_VERSION}`, "rejected");
     }
@@ -1268,7 +1286,8 @@ function handleCodexPayload(payload) {
   }
   if (payload.type === "route_info") {
     const route = typeof payload.route === "string" ? payload.route : "unknown";
-    backendModeEl.textContent = route;
+    activeBackendRoute = route;
+    renderBackendModeLabel();
     return;
   }
   if (payload.type === "trace") {
@@ -1295,7 +1314,11 @@ const wsBridge = createBridgeClient({
     handleCodexPayload(payload);
   },
   onStatus: (status) => {
-    if (backendModeEl) backendModeEl.textContent = status;
+    bridgeConnectionStatus = status;
+    if (status !== "connected") {
+      activeBackendRoute = null;
+    }
+    renderBackendModeLabel();
     if (status === "offline") {
       addTransientChatEntry({ role: "codex_output", content: "Codex server disconnected.", ts: Date.now() });
     }
@@ -1321,6 +1344,8 @@ function ensureWorker() {
 
 async function sendToCodex(message) {
   stateEl.textContent = "sending";
+  activeBackendRoute = null;
+  renderBackendModeLabel();
   const bridge = window.CodexBridge || wsBridge;
   if (bridge && typeof bridge.send === "function") {
     try {
@@ -1329,6 +1354,8 @@ async function sendToCodex(message) {
         if (bridge.isReady && !bridge.isReady()) {
           throw new Error("Codex server not ready");
         }
+        activeBackendRoute = null;
+        renderBackendModeLabel();
         return;
       }
       if (reply?.thinking) {
@@ -1344,10 +1371,14 @@ async function sendToCodex(message) {
         scheduleSoftRefresh();
       }
       stateEl.textContent = "ready";
+      activeBackendRoute = null;
+      renderBackendModeLabel();
       return;
     } catch (err) {
       addChatEntry({ role: "codex_output", content: `Codex bridge error: ${err.message}`, ts: Date.now() });
       stateEl.textContent = "ready";
+      activeBackendRoute = null;
+      renderBackendModeLabel();
       if (!ALLOW_WORKER_FALLBACK) {
         return;
       }
@@ -1360,6 +1391,8 @@ async function sendToCodex(message) {
     content: "Using simulated worker fallback. Set localStorage `endless_allow_worker_fallback=0` to disable.",
     ts: Date.now(),
   });
+  activeBackendRoute = null;
+  renderBackendModeLabel();
   worker.postMessage({ type: "message", message, snapshot: state });
 }
 
@@ -1380,6 +1413,7 @@ function resolveChatCommand(message) {
 function tryHandleLocalChatCommand(message) {
   const trimmed = typeof message === "string" ? message.trim() : "";
   if (!trimmed) return false;
+  if (handlePendingWorldCommandConfirmation(trimmed)) return true;
   if (!/^\/world(?:\s|$)/i.test(trimmed)) return false;
   return handleLocalWorldCommand(trimmed);
 }
@@ -1410,6 +1444,27 @@ function handleLocalWorldCommand(message) {
     return true;
   }
 
+  if (parts.length === 2) {
+    const guessedBiome = resolveBiomeName(parts[1]) || guessBiomeName(parts[1])?.biome;
+    if (guessedBiome) {
+      requestWorldCommandConfirmation({
+        canonicalCommand: `/world tp biome ${guessedBiome.id}`,
+        reason:
+          guessedBiome.id === normalizeWorldCommandToken(parts[1])
+            ? `I interpreted "/world ${parts[1]}" as a shorthand teleport command.`
+            : `I interpreted "/world ${parts[1]}" as a shorthand teleport command and "${parts[1]}" as "${guessedBiome.id}".`,
+        intent: { type: "teleport_biome", biomeId: guessedBiome.id },
+      });
+      return true;
+    }
+  }
+
+  const guessedCommand = guessWorldTeleportBiomeCommand(parts);
+  if (guessedCommand) {
+    requestWorldCommandConfirmation(guessedCommand);
+    return true;
+  }
+
   return false;
 }
 
@@ -1432,9 +1487,20 @@ function showWorldCommandHelp() {
   });
 }
 
-function teleportPlayerToBiome(rawBiomeName) {
+function teleportPlayerToBiome(rawBiomeName, options = {}) {
   const targetBiome = resolveBiomeName(rawBiomeName);
   if (!targetBiome) {
+    if (!options.skipConfirmation) {
+      const biomeGuess = guessBiomeName(rawBiomeName);
+      if (biomeGuess) {
+        requestWorldCommandConfirmation({
+          canonicalCommand: `/world tp biome ${biomeGuess.biome.id}`,
+          reason: `I interpreted "${String(rawBiomeName).trim()}" as biome "${biomeGuess.biome.id}".`,
+          intent: { type: "teleport_biome", biomeId: biomeGuess.biome.id },
+        });
+        return;
+      }
+    }
     addChatEntry({
       role: "codex_output",
       content: `Unknown biome "${rawBiomeName}". Click "World Cmds" for the biome list.`,
@@ -1483,6 +1549,193 @@ function resolveBiomeName(name) {
     }
   }
   return null;
+}
+
+function guessBiomeName(name) {
+  const query = normalizeWorldCommandToken(name);
+  if (!query) return null;
+  const candidates = Object.values(BIOME_DEFS).map((biome) => ({
+    biome,
+    keys: [biome.id, biome.label],
+  }));
+  let best = null;
+  let secondScore = Infinity;
+  for (const candidate of candidates) {
+    let candidateScore = Infinity;
+    for (const key of candidate.keys) {
+      const score = scoreWorldTokenGuess(query, normalizeWorldCommandToken(key));
+      if (score < candidateScore) candidateScore = score;
+    }
+    if (candidateScore < best?.score || best == null) {
+      secondScore = best?.score ?? Infinity;
+      best = { biome: candidate.biome, score: candidateScore };
+      continue;
+    }
+    if (candidateScore < secondScore) secondScore = candidateScore;
+  }
+  if (!best) return null;
+  const maxScore = maxWorldGuessScore(query.length);
+  const hasClearMargin = secondScore - best.score >= 1;
+  if (best.score > maxScore) return null;
+  if (!hasClearMargin && best.score > 0) return null;
+  return best;
+}
+
+function guessWorldTeleportBiomeCommand(parts) {
+  if (parts.length < 3 || (parts[0] || "").toLowerCase() !== "/world") return null;
+
+  const sub = guessWorldCommandToken(parts[1], ["biome", "tp"]);
+  if (!sub) return null;
+
+  if (sub.value === "biome" && !sub.exact) {
+    const biomeInput = parts.slice(2).join(" ");
+    if (!biomeInput) return null;
+    const guessedBiome = resolveBiomeName(biomeInput) || guessBiomeName(biomeInput)?.biome;
+    if (!guessedBiome) return null;
+    return {
+      canonicalCommand: `/world biome ${guessedBiome.id}`,
+      reason: `I interpreted "${parts[1]}" as "biome"${guessedBiome.id !== biomeInput ? ` and "${biomeInput}" as "${guessedBiome.id}"` : ""}.`,
+      intent: { type: "teleport_biome", biomeId: guessedBiome.id },
+    };
+  }
+
+  if (sub.value !== "tp") return null;
+  if (parts.length < 4) return null;
+  const target = guessWorldCommandToken(parts[2], ["biome"]);
+  if (!target || (sub.exact && target.exact)) return null;
+
+  const biomeInput = parts.slice(3).join(" ");
+  if (!biomeInput) return null;
+  const guessedBiomeResult = resolveBiomeName(biomeInput) ? null : guessBiomeName(biomeInput);
+  const guessedBiome = guessedBiomeResult?.biome || resolveBiomeName(biomeInput);
+  if (!guessedBiome) return null;
+
+  const reasonParts = [];
+  if (!sub.exact) reasonParts.push(`"${parts[1]}" as "tp"`);
+  if (!target.exact) reasonParts.push(`"${parts[2]}" as "biome"`);
+  if (guessedBiomeResult) reasonParts.push(`"${biomeInput}" as "${guessedBiome.id}"`);
+
+  return {
+    canonicalCommand: `/world tp biome ${guessedBiome.id}`,
+    reason: reasonParts.length ? `I interpreted ${reasonParts.join(", ")}.` : null,
+    intent: { type: "teleport_biome", biomeId: guessedBiome.id },
+  };
+}
+
+function handlePendingWorldCommandConfirmation(message) {
+  if (!pendingWorldCommandConfirmation) return false;
+  const normalized = String(message || "").trim().toLowerCase();
+  if (/^\/world(?:\s|$)/.test(normalized)) {
+    pendingWorldCommandConfirmation = null;
+    return false;
+  }
+  if (/^(y|yes|yeah|yep|sure|ok|okay|do it|apply)$/i.test(normalized)) {
+    const pending = pendingWorldCommandConfirmation;
+    pendingWorldCommandConfirmation = null;
+    addChatEntry({
+      role: "codex_output",
+      content: `Applying guessed world command: ${pending.canonicalCommand}`,
+      ts: Date.now(),
+    });
+    executeWorldCommandIntent(pending.intent);
+    return true;
+  }
+  if (/^(n|no|nope|cancel|stop)$/i.test(normalized)) {
+    pendingWorldCommandConfirmation = null;
+    addChatEntry({
+      role: "codex_output",
+      content: "Cancelled guessed world command.",
+      ts: Date.now(),
+    });
+    return true;
+  }
+  return false;
+}
+
+function requestWorldCommandConfirmation(guess) {
+  pendingWorldCommandConfirmation = {
+    canonicalCommand: guess.canonicalCommand,
+    intent: guess.intent,
+  };
+  addChatEntry({
+    role: "codex_output",
+    content: [
+      "I'm not fully sure what you meant.",
+      `Best guess: ${guess.canonicalCommand}`,
+      guess.reason || null,
+      'Reply "yes" to apply it or "no" to cancel.',
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    ts: Date.now(),
+  });
+}
+
+function executeWorldCommandIntent(intent) {
+  if (!intent || typeof intent !== "object") return;
+  if (intent.type === "teleport_biome" && intent.biomeId) {
+    teleportPlayerToBiome(intent.biomeId, { skipConfirmation: true });
+  }
+}
+
+function guessWorldCommandToken(raw, candidates) {
+  const query = normalizeWorldCommandToken(raw);
+  if (!query) return null;
+  let best = null;
+  let secondScore = Infinity;
+  for (const candidate of candidates) {
+    const score = scoreWorldTokenGuess(query, normalizeWorldCommandToken(candidate));
+    if (best == null || score < best.score) {
+      secondScore = best?.score ?? Infinity;
+      best = { value: candidate, score };
+      continue;
+    }
+    if (score < secondScore) secondScore = score;
+  }
+  if (!best) return null;
+  if (best.score === 0) return { value: best.value, exact: true, score: 0 };
+  if (best.score > maxWorldGuessScore(query.length)) return null;
+  if (secondScore - best.score < 1) return null;
+  return { value: best.value, exact: false, score: best.score };
+}
+
+function normalizeWorldCommandToken(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+}
+
+function scoreWorldTokenGuess(query, candidate) {
+  if (!query || !candidate) return Infinity;
+  if (query === candidate) return 0;
+  if (candidate.startsWith(query) || query.startsWith(candidate)) return 1;
+  return levenshteinDistance(query, candidate);
+}
+
+function maxWorldGuessScore(length) {
+  if (length <= 2) return 1;
+  if (length <= 5) return 2;
+  return 3;
+}
+
+function levenshteinDistance(a, b) {
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const matrix = Array.from({ length: rows }, () => new Array(cols).fill(0));
+  for (let i = 0; i < rows; i += 1) matrix[i][0] = i;
+  for (let j = 0; j < cols; j += 1) matrix[0][j] = j;
+  for (let i = 1; i < rows; i += 1) {
+    for (let j = 1; j < cols; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return matrix[a.length][b.length];
 }
 
 function findNearestBiomeTarget(targetBiomeId, originX, originZ) {
