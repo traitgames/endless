@@ -330,6 +330,26 @@ function setChatOpen(open, { focusInput = false } = {}) {
   }
 }
 
+function setPaused(paused) {
+  if (paused) {
+    keys.clear();
+    if (pointerLocked) {
+      document.exitPointerLock();
+    }
+    return;
+  }
+
+  if (!pointerLocked && document.activeElement !== chatInput) {
+    canvas.requestPointerLock();
+  }
+}
+
+function toggleChatPause() {
+  const nextChatOpen = !chatOpen;
+  setChatOpen(nextChatOpen, { focusInput: nextChatOpen });
+  setPaused(nextChatOpen);
+}
+
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
@@ -337,11 +357,13 @@ window.addEventListener("resize", () => {
 });
 
 window.addEventListener("keydown", (event) => {
+  if (event.code === "Escape") {
+    toggleChatPause();
+    event.preventDefault();
+    return;
+  }
+
   if (isChatFocused()) {
-    if (event.code === "Escape") {
-      chatInput.blur();
-      event.preventDefault();
-    }
     return;
   }
 
@@ -366,7 +388,7 @@ window.addEventListener("keyup", (event) => {
 });
 
 canvas.addEventListener("click", () => {
-  if (!pointerLocked && document.activeElement !== chatInput) {
+  if (!pointerLocked && !chatOpen && document.activeElement !== chatInput) {
     canvas.requestPointerLock();
   }
 });
@@ -376,12 +398,6 @@ chatInput.addEventListener("focus", () => {
     document.exitPointerLock();
   }
   keys.clear();
-});
-
-chatInput.addEventListener("keydown", (event) => {
-  if (event.code === "Escape") {
-    chatInput.blur();
-  }
 });
 
 chatMinimizeBtn?.addEventListener("click", () => {
