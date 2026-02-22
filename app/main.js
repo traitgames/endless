@@ -30,6 +30,8 @@ if (!backendModeEl) {
 
 const STORAGE_KEY = "endless_state_v1";
 let resetInProgress = false;
+const BOOT_SEED = Math.floor(Math.random() * 1e9);
+let noiseSeed = BOOT_SEED;
 const LEGACY_WORLD = {
   terrainColor: "#1d3b35",
   trees: {
@@ -69,7 +71,7 @@ const DEFAULT_WORLD = {
 };
 
 const DEFAULT_STATE = {
-  seed: Math.floor(Math.random() * 1e9),
+  seed: BOOT_SEED,
   world: DEFAULT_WORLD,
   timeOfDay: hash2(19, 47),
   ui: {
@@ -84,6 +86,7 @@ const DEFAULT_STATE = {
 };
 
 const state = loadState();
+noiseSeed = state.seed;
 seedEl.textContent = state.seed;
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -1307,6 +1310,7 @@ function applyAction(action) {
     }
     if (action.seed === state.seed) return traceResult("applied", "set_seed", "unchanged");
     state.seed = Math.trunc(action.seed);
+    noiseSeed = state.seed;
     seedEl.textContent = state.seed;
     rebuildTerrain();
     return traceResult("applied", "set_seed", `seed=${state.seed}`);
@@ -1625,7 +1629,7 @@ function pruneSystemConnectionMessages(list) {
 }
 
 function hash2(x, z) {
-  const h = Math.sin(x * 127.1 + z * 311.7 + state.seed) * 43758.5453;
+  const h = Math.sin(x * 127.1 + z * 311.7 + noiseSeed) * 43758.5453;
   return h - Math.floor(h);
 }
 
