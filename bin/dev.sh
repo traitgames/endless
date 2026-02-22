@@ -10,7 +10,7 @@ trap cleanup EXIT INT TERM
 npm start --prefix server &
 SERVER_PID=$!
 
-python3 -m http.server --directory app 8000 &
+python3 bin/dev_server.py &
 HTTP_PID=$!
 
 wait
