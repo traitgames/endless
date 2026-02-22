@@ -49,11 +49,18 @@ export async function handleRepoMessage(payload, send, options) {
   await fs.rm(tempOut, { force: true }).catch(() => {});
 
   if (!execResult.ok) {
-    send({ type: "trace", status: "rejected", phrase: "Repo edit failed" });
+    if (execResult.timedOut) {
+      const seconds = Math.floor(execResult.timeoutMs / 1000);
+      send({ type: "trace", status: "rejected", phrase: `Repo edit timed out (${seconds}s)` });
+    } else {
+      send({ type: "trace", status: "rejected", phrase: "Repo edit failed" });
+    }
     const detail = [
-      `Codex repo agent failed (exit ${execResult.code}).`,
-      execResult.stderr ? `stderr: ${truncate(execResult.stderr, 1200)}` : "",
-      execResult.stdout ? `stdout: ${truncate(execResult.stdout, 1200)}` : "",
+      execResult.timedOut
+        ? `Codex repo agent timed out after ${Math.floor(execResult.timeoutMs / 1000)} seconds (exit ${execResult.code}).`
+        : `Codex repo agent failed (exit ${execResult.code}).`,
+      execResult.stderr ? `stderr (tail): ${tail(execResult.stderr, 1200)}` : "",
+      execResult.stdout ? `stdout (tail): ${tail(execResult.stdout, 1200)}` : "",
     ]
       .filter(Boolean)
       .join("\n");
@@ -111,7 +118,14 @@ function runCodexExec(args, { timeoutMs }) {
 
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
-      finish({ ok: false, code: -1, stdout, stderr: `${stderr}\nTimed out after ${timeoutMs}ms.`.trim() });
+      finish({
+        ok: false,
+        code: -1,
+        stdout,
+        stderr: `${stderr}\nTimed out after ${timeoutMs}ms.`.trim(),
+        timedOut: true,
+        timeoutMs,
+      });
     }, timeoutMs);
 
     child.stdout.on("data", (chunk) => {
@@ -124,12 +138,12 @@ function runCodexExec(args, { timeoutMs }) {
 
     child.on("error", (err) => {
       clearTimeout(timer);
-      finish({ ok: false, code: -1, stdout, stderr: `${stderr}\n${err.message}`.trim() });
+      finish({ ok: false, code: -1, stdout, stderr: `${stderr}\n${err.message}`.trim(), timedOut: false, timeoutMs });
     });
 
     child.on("close", (code) => {
       clearTimeout(timer);
-      finish({ ok: code === 0, code: code ?? -1, stdout, stderr });
+      finish({ ok: code === 0, code: code ?? -1, stdout, stderr, timedOut: false, timeoutMs });
     });
   });
 }
@@ -150,4 +164,10 @@ async function getChangedFiles(repoRoot) {
 function truncate(text, maxLen) {
   if (!text) return "";
   return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text;
+}
+
+function tail(text, maxLen) {
+  if (!text) return "";
+  if (text.length <= maxLen) return text;
+  return `...${text.slice(text.length - maxLen)}`;
 }

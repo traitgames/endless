@@ -30,6 +30,19 @@ if (!backendModeEl) {
 
 const STORAGE_KEY = "endless_state_v1";
 let resetInProgress = false;
+const LEGACY_WORLD = {
+  terrainColor: "#1d3b35",
+  trees: {
+    trunkColor: "#4c3826",
+    canopyColor: "#2f6a3e",
+  },
+  water: {
+    colorHex: "#0f2b2f",
+  },
+  fog: {
+    colorHex: "#0b1112",
+  },
+};
 const DEFAULT_WORLD = {
   terrain: {
     noiseScale: 0.03,
@@ -37,20 +50,20 @@ const DEFAULT_WORLD = {
     ridgeScale: 1.8,
     ridgeHeight: 6,
   },
-  terrainColor: "#1d3b35",
+  terrainColor: "#4f8b50",
   trees: {
     density: 0.22,
-    trunkColor: "#4c3826",
-    canopyColor: "#2f6a3e",
+    trunkColor: "#5f4632",
+    canopyColor: "#4a8953",
   },
   water: {
     level: 1.5,
-    colorHex: "#0f2b2f",
+    colorHex: "#4a93c7",
     opacity: 0.6,
   },
   fog: {
-    colorHex: "#0b1112",
-    density: 0.0015,
+    colorHex: "#c5ddf4",
+    density: 0.0012,
   },
   landmarks: [],
 };
@@ -58,6 +71,7 @@ const DEFAULT_WORLD = {
 const DEFAULT_STATE = {
   seed: Math.floor(Math.random() * 1e9),
   world: DEFAULT_WORLD,
+  timeOfDay: hash2(19, 47),
   ui: {
     chatOpen: false,
   },
@@ -76,34 +90,287 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setClearColor(state.world.fog.colorHex, 1);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(state.world.fog.colorHex, state.world.fog.density);
+scene.background = new THREE.Color("#8fc4ff");
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
 
-const light = new THREE.DirectionalLight(0xdff6ff, 1.2);
-light.position.set(12, 24, 8);
-scene.add(light);
-scene.add(new THREE.AmbientLight(0x4a5c61, 0.6));
+const hemiLight = new THREE.HemisphereLight(0xc6e0ff, 0x7f9974, 0.62);
+scene.add(hemiLight);
+const sunLight = new THREE.DirectionalLight(0xfff3d6, 1.42);
+sunLight.position.set(140, 180, 90);
+sunLight.castShadow = true;
+sunLight.shadow.mapSize.set(2048, 2048);
+sunLight.shadow.camera.near = 10;
+sunLight.shadow.camera.far = 500;
+sunLight.shadow.camera.left = -260;
+sunLight.shadow.camera.right = 260;
+sunLight.shadow.camera.top = 260;
+sunLight.shadow.camera.bottom = -260;
+sunLight.shadow.bias = -0.00015;
+sunLight.shadow.normalBias = 0.03;
+scene.add(sunLight);
+scene.add(sunLight.target);
+const moonLight = new THREE.DirectionalLight(0x9cb7e6, 0.2);
+moonLight.position.set(-120, 60, -90);
+moonLight.castShadow = false;
+scene.add(moonLight);
+scene.add(moonLight.target);
+const shadowFillLight = new THREE.DirectionalLight(0x9bb3ce, 0.18);
+shadowFillLight.position.set(-80, 90, -60);
+shadowFillLight.castShadow = false;
+scene.add(shadowFillLight);
+scene.add(shadowFillLight.target);
+const ambientLight = new THREE.AmbientLight(0xd2e6ff, 0.16);
+scene.add(ambientLight);
+const playerGlowLight = new THREE.PointLight(0x9ebcff, 0, 22, 1.05);
+playerGlowLight.castShadow = false;
+scene.add(playerGlowLight);
+const playerGroundFill = new THREE.SpotLight(0xaec6ff, 0, 20, Math.PI * 0.52, 0.5, 1.1);
+playerGroundFill.castShadow = false;
+scene.add(playerGroundFill);
+scene.add(playerGroundFill.target);
+
+const skyUniforms = {
+  topColor: { value: new THREE.Color("#66a9ff") },
+  horizonColor: { value: new THREE.Color("#cde6ff") },
+  groundColor: { value: new THREE.Color("#e6f2ff") },
+  sunColor: { value: new THREE.Color("#fff6d9") },
+  sunDirection: { value: new THREE.Vector3(0.6, 0.8, 0.2).normalize() },
+};
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(6000, 48, 24),
+  new THREE.ShaderMaterial({
+    uniforms: skyUniforms,
+    side: THREE.BackSide,
+    depthWrite: false,
+    vertexShader: `
+      varying vec3 vWorldPosition;
+      void main() {
+        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+        vWorldPosition = worldPosition.xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 topColor;
+      uniform vec3 horizonColor;
+      uniform vec3 groundColor;
+      uniform vec3 sunColor;
+      uniform vec3 sunDirection;
+      varying vec3 vWorldPosition;
+      void main() {
+        vec3 dir = normalize(vWorldPosition);
+        float heightMix = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
+        float nearHorizon = 1.0 - abs(dir.y);
+        float horizonBoost = smoothstep(0.0, 0.7, nearHorizon);
+        vec3 col = mix(groundColor, horizonColor, smoothstep(0.04, 0.56, heightMix));
+        col = mix(col, topColor, smoothstep(0.5, 1.0, heightMix));
+        float sunAmount = pow(max(dot(dir, normalize(sunDirection)), 0.0), 256.0);
+        float sunGlow = pow(max(dot(dir, normalize(sunDirection)), 0.0), 10.0) * 0.34;
+        col += sunColor * (sunAmount + sunGlow);
+        col += vec3(0.09, 0.12, 0.16) * horizonBoost * 0.12;
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  })
+);
+scene.add(sky);
+
+const moon = new THREE.Mesh(
+  new THREE.SphereGeometry(16, 20, 20),
+  new THREE.MeshBasicMaterial({
+    color: "#d5e3ff",
+    transparent: true,
+    opacity: 0.9,
+  })
+);
+scene.add(moon);
+
+function createCloudTexture(size = 256) {
+  const cloudCanvas = document.createElement("canvas");
+  cloudCanvas.width = size;
+  cloudCanvas.height = size;
+  const ctx = cloudCanvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.clearRect(0, 0, size, size);
+  for (let i = 0; i < 18; i += 1) {
+    const cx = size * (0.2 + Math.random() * 0.6);
+    const cy = size * (0.24 + Math.random() * 0.5);
+    const radius = size * (0.14 + Math.random() * 0.16);
+    const gradient = ctx.createRadialGradient(cx, cy, radius * 0.05, cx, cy, radius);
+    gradient.addColorStop(0, "rgba(255,255,255,0.72)");
+    gradient.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const texture = new THREE.CanvasTexture(cloudCanvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+const cloudTexture = createCloudTexture();
+const cloudGroup = new THREE.Group();
+const CLOUD_FIELD_RADIUS = 1900;
+const CLOUD_COUNT = 90;
+if (cloudTexture) {
+  for (let i = 0; i < CLOUD_COUNT; i += 1) {
+    const sprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: cloudTexture,
+        transparent: true,
+        opacity: 0.32 + hash2(i * 29 + 17, i * 31 + 11) * 0.26,
+        depthWrite: false,
+      })
+    );
+    const spreadX = (hash2(i * 89 + 2, i * 43 + 7) - 0.5) * CLOUD_FIELD_RADIUS * 2;
+    const spreadZ = (hash2(i * 61 + 5, i * 101 + 19) - 0.5) * CLOUD_FIELD_RADIUS * 2;
+    const y = 110 + hash2(i * 17 + 13, i * 71 + 23) * 90;
+    const size = 120 + hash2(i * 97 + 29, i * 37 + 31) * 180;
+    sprite.position.set(spreadX, y, spreadZ);
+    sprite.scale.set(size * 1.7, size, 1);
+    cloudGroup.add(sprite);
+  }
+  scene.add(cloudGroup);
+}
 
 const water = new THREE.Mesh(
   new THREE.PlaneGeometry(4000, 4000),
-  new THREE.MeshPhongMaterial({
+  new THREE.MeshPhysicalMaterial({
     color: state.world.water.colorHex,
     transparent: true,
     opacity: state.world.water.opacity,
+    roughness: 0.2,
+    metalness: 0.03,
+    clearcoat: 0.6,
+    clearcoatRoughness: 0.25,
   })
 );
 water.rotation.x = -Math.PI / 2;
 water.position.y = state.world.water.level;
+water.receiveShadow = true;
 scene.add(water);
+
+const atmosphereBase = {
+  fogColor: new THREE.Color(state.world.fog.colorHex),
+};
+const DAY_NIGHT = {
+  dayLengthSeconds: 240,
+  sunDistance: 230,
+  moonDistance: 210,
+};
+let worldTime = clampNumber(state.timeOfDay, 0, 1, hash2(19, 47)) * DAY_NIGHT.dayLengthSeconds;
+const atmosphericColors = {
+  dayTop: new THREE.Color("#66a9ff"),
+  dayHorizon: new THREE.Color("#d9ecff"),
+  dayGround: new THREE.Color("#ecf4ff"),
+  sunsetTop: new THREE.Color("#4e6da8"),
+  sunsetHorizon: new THREE.Color("#ff9d62"),
+  sunsetGround: new THREE.Color("#efc086"),
+  nightTop: new THREE.Color("#061426"),
+  nightHorizon: new THREE.Color("#112743"),
+  nightGround: new THREE.Color("#1a2436"),
+  moonTint: new THREE.Color("#b2c8f4"),
+};
+const atmosphereTemp = {
+  sunVector: new THREE.Vector3(),
+  moonVector: new THREE.Vector3(),
+  fillVector: new THREE.Vector3(),
+  sunPos: new THREE.Vector3(),
+  moonPos: new THREE.Vector3(),
+  fillPos: new THREE.Vector3(),
+  skyTop: new THREE.Color(),
+  skyHorizon: new THREE.Color(),
+  skyGround: new THREE.Color(),
+  fogMix: new THREE.Color(),
+};
+const dynamicLightColors = {
+  warmSun: new THREE.Color("#ff8f52"),
+  daySun: new THREE.Color("#fff6da"),
+  softSunset: new THREE.Color("#ffbf7d"),
+  warmDirectSun: new THREE.Color("#ff965d"),
+  dayDirectSun: new THREE.Color("#fff1cf"),
+  sunsetDirectSun: new THREE.Color("#ffb777"),
+  nightHemi: new THREE.Color("#7488ac"),
+  dayHemi: new THREE.Color("#cfe6ff"),
+  sunsetHemi: new THREE.Color("#ffc389"),
+  nightGroundHemi: new THREE.Color("#242b36"),
+  dayGroundHemi: new THREE.Color("#8aa078"),
+  sunsetGroundHemi: new THREE.Color("#8f6e55"),
+  nightAmbient: new THREE.Color("#7d98bf"),
+  dayAmbient: new THREE.Color("#e4efff"),
+  dayShadowFill: new THREE.Color("#c8defa"),
+  sunsetShadowFill: new THREE.Color("#ffbf92"),
+  nightShadowFill: new THREE.Color("#6c85b3"),
+  moonWarm: new THREE.Color("#f7f2de"),
+  mutedNight: new THREE.Color("#5f6f86"),
+};
 
 const terrainMaterial = new THREE.MeshStandardMaterial({
   color: state.world.terrainColor,
-  roughness: 0.9,
+  roughness: 0.95,
   metalness: 0.05,
 });
+const terrainShaderState = { shader: null };
+terrainMaterial.onBeforeCompile = (shader) => {
+  shader.uniforms.uWaterLevel = { value: state.world.water.level };
+  shader.uniforms.uTint = { value: new THREE.Color(state.world.terrainColor) };
+  terrainShaderState.shader = shader;
+  shader.vertexShader = shader.vertexShader
+    .replace(
+      "#include <common>",
+      `#include <common>
+      varying vec3 vWorldPos;
+      varying vec3 vObjectNormal;
+      `
+    )
+    .replace(
+      "#include <begin_vertex>",
+      `#include <begin_vertex>
+      vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      vObjectNormal = normal;
+      `
+    );
+  shader.fragmentShader = shader.fragmentShader
+    .replace(
+      "#include <common>",
+      `#include <common>
+      uniform float uWaterLevel;
+      uniform vec3 uTint;
+      varying vec3 vWorldPos;
+      varying vec3 vObjectNormal;
+      `
+    )
+    .replace(
+      "vec4 diffuseColor = vec4( diffuse, opacity );",
+      `
+      float h = vWorldPos.y;
+      float slope = 1.0 - clamp(abs(normalize(vObjectNormal).y), 0.0, 1.0);
+      float n = fract(sin(dot(vWorldPos.xz, vec2(12.9898, 78.233))) * 43758.5453);
+      vec3 grass = vec3(0.34, 0.57, 0.30);
+      vec3 denseGrass = vec3(0.23, 0.45, 0.22);
+      vec3 rock = vec3(0.44, 0.42, 0.39);
+      vec3 sand = vec3(0.71, 0.65, 0.50);
+      vec3 snow = vec3(0.85, 0.88, 0.9);
+      vec3 baseColor = mix(grass, denseGrass, smoothstep(0.0, 1.0, n));
+      baseColor = mix(baseColor, rock, smoothstep(0.26, 0.72, slope));
+      baseColor = mix(sand, baseColor, smoothstep(uWaterLevel - 0.4, uWaterLevel + 2.4, h));
+      baseColor = mix(baseColor, snow, smoothstep(38.0, 56.0, h));
+      baseColor *= uTint;
+      vec4 diffuseColor = vec4(baseColor, opacity);
+      `
+    );
+};
+terrainMaterial.needsUpdate = true;
 
 const CHUNK_SIZE = 64;
 const CHUNK_RES = 32;
@@ -113,18 +380,155 @@ const treeChunks = new Map();
 const landmarkGroup = new THREE.Group();
 scene.add(landmarkGroup);
 const treeTrunkGeometry = new THREE.CylinderGeometry(0.18, 0.28, 5.2, 8);
-const treeCanopyGeometry = new THREE.ConeGeometry(1.05, 5.2, 10);
+const treeCanopyConeGeometry = new THREE.ConeGeometry(1.05, 5.2, 10);
+const treeCanopySphereGeometry = new THREE.SphereGeometry(1.45, 10, 8);
 const treeTrunkMaterial = new THREE.MeshStandardMaterial({
   color: state.world.trees.trunkColor,
   roughness: 0.94,
   metalness: 0.02,
 });
-const treeCanopyMaterial = new THREE.MeshStandardMaterial({
-  color: state.world.trees.canopyColor,
-  roughness: 0.92,
-  metalness: 0.01,
-});
+const treeCanopyMaterials = [0, 1, 2].map(() => new THREE.MeshStandardMaterial({ roughness: 0.88, metalness: 0.01 }));
 const TERRAIN_HORIZONTAL_SCALE = 3;
+
+function buildCanopyPalette(baseHex) {
+  const base = new THREE.Color(baseHex);
+  const hsl = { h: 0, s: 0, l: 0 };
+  base.getHSL(hsl);
+  const darker = new THREE.Color().setHSL(hsl.h, Math.min(1, hsl.s * 1.05), Math.max(0, hsl.l * 0.78));
+  const mid = new THREE.Color().setHSL(hsl.h, Math.min(1, hsl.s * 1.0), Math.min(1, hsl.l * 0.98));
+  const lighter = new THREE.Color().setHSL(hsl.h, Math.min(1, hsl.s * 0.94), Math.min(1, hsl.l * 1.22));
+  return [darker, mid, lighter];
+}
+
+function syncTreeMaterials() {
+  treeTrunkMaterial.color.set(state.world.trees.trunkColor);
+  const palette = buildCanopyPalette(state.world.trees.canopyColor);
+  palette.forEach((color, index) => {
+    treeCanopyMaterials[index].color.copy(color);
+  });
+}
+syncTreeMaterials();
+
+function syncTerrainShaderUniforms() {
+  if (!terrainShaderState.shader) return;
+  terrainShaderState.shader.uniforms.uWaterLevel.value = state.world.water.level;
+  terrainShaderState.shader.uniforms.uTint.value.set(state.world.terrainColor);
+}
+
+function syncAtmosphereFromState() {
+  atmosphereBase.fogColor.set(state.world.fog.colorHex);
+  scene.fog.color.set(atmosphereBase.fogColor);
+  renderer.setClearColor(atmosphereBase.fogColor, 1);
+}
+syncAtmosphereFromState();
+
+function smoothstep(edge0, edge1, x) {
+  const t = clampNumber((x - edge0) / (edge1 - edge0), 0, 1, 0);
+  return t * t * (3 - 2 * t);
+}
+
+function updateDayNightCycle(dt) {
+  worldTime = (worldTime + dt) % DAY_NIGHT.dayLengthSeconds;
+  const cycle = worldTime / DAY_NIGHT.dayLengthSeconds;
+  state.timeOfDay = cycle;
+  const sunAngle = cycle * Math.PI * 2 - Math.PI / 2;
+  const moonAngle = sunAngle + Math.PI;
+
+  const sunVector = atmosphereTemp.sunVector.set(
+    Math.cos(sunAngle),
+    Math.sin(sunAngle),
+    Math.sin(sunAngle * 0.7 + 1.1) * 0.55
+  ).normalize();
+  const moonVector = atmosphereTemp.moonVector.set(
+    Math.cos(moonAngle),
+    Math.sin(moonAngle),
+    Math.sin(moonAngle * 0.66 + 0.4) * 0.5
+  ).normalize();
+
+  const dayAmount = smoothstep(-0.08, 0.2, sunVector.y);
+  const nightAmount = 1 - dayAmount;
+  const nightMute = smoothstep(0.2, 1, nightAmount);
+  const twilightBand = 1 - clampNumber(Math.abs(sunVector.y) / 0.28, 0, 1, 1);
+  const twilight = twilightBand * (0.35 + 0.65 * nightAmount);
+
+  const sunPos = atmosphereTemp.sunPos.copy(sunVector).multiplyScalar(DAY_NIGHT.sunDistance).add(player.position);
+  const moonPos = atmosphereTemp.moonPos.copy(moonVector).multiplyScalar(DAY_NIGHT.moonDistance).add(player.position);
+  const fillVector = atmosphereTemp.fillVector
+    .set(-sunVector.x * 0.85, Math.max(0.2, 0.28 + nightAmount * 0.52), -sunVector.z * 0.85)
+    .normalize();
+  const fillPos = atmosphereTemp.fillPos.copy(fillVector).multiplyScalar(DAY_NIGHT.sunDistance * 0.78).add(player.position);
+  sunLight.position.copy(sunPos);
+  moonLight.position.copy(moonPos);
+  shadowFillLight.position.copy(fillPos);
+  moon.position.copy(moonPos);
+  moon.position.y = Math.max(moon.position.y, 14);
+  sunLight.target.position.set(player.position.x, 0, player.position.z);
+  moonLight.target.position.set(player.position.x, 0, player.position.z);
+  shadowFillLight.target.position.set(player.position.x, 0, player.position.z);
+  skyUniforms.sunDirection.value.copy(sunVector);
+
+  const skyTop = atmosphereTemp.skyTop
+    .copy(atmosphericColors.nightTop)
+    .lerp(atmosphericColors.dayTop, dayAmount)
+    .lerp(atmosphericColors.sunsetTop, twilight * 0.8);
+  const skyHorizon = atmosphereTemp.skyHorizon
+    .copy(atmosphericColors.nightHorizon)
+    .lerp(atmosphericColors.dayHorizon, dayAmount)
+    .lerp(atmosphericColors.sunsetHorizon, twilight);
+  const skyGround = atmosphereTemp.skyGround
+    .copy(atmosphericColors.nightGround)
+    .lerp(atmosphericColors.dayGround, dayAmount)
+    .lerp(atmosphericColors.sunsetGround, twilight * 0.75);
+  const fogMix = atmosphereTemp.fogMix.copy(atmosphereBase.fogColor).lerp(skyHorizon, 0.42 + dayAmount * 0.26);
+  skyTop.lerp(dynamicLightColors.mutedNight, nightMute * 0.26);
+  skyHorizon.lerp(dynamicLightColors.mutedNight, nightMute * 0.2);
+  skyGround.lerp(dynamicLightColors.mutedNight, nightMute * 0.34);
+  fogMix.lerp(dynamicLightColors.mutedNight, nightMute * 0.28);
+
+  skyUniforms.topColor.value.copy(skyTop);
+  skyUniforms.horizonColor.value.copy(skyHorizon);
+  skyUniforms.groundColor.value.copy(skyGround);
+  skyUniforms.sunColor.value
+    .copy(dynamicLightColors.warmSun)
+    .lerp(dynamicLightColors.daySun, dayAmount)
+    .lerp(dynamicLightColors.softSunset, twilight * 0.8);
+  scene.fog.color.copy(fogMix);
+  scene.background.copy(skyHorizon);
+
+  sunLight.intensity = 0.05 + dayAmount * 1.28 + twilight * 0.22;
+  sunLight.color
+    .copy(dynamicLightColors.warmDirectSun)
+    .lerp(dynamicLightColors.dayDirectSun, dayAmount)
+    .lerp(dynamicLightColors.sunsetDirectSun, twilight * 0.85);
+  sunLight.castShadow = dayAmount > 0.12;
+
+  moonLight.intensity = 0.02 + nightAmount * 0.31;
+  shadowFillLight.intensity = 0.05 + dayAmount * 0.12 + twilight * 0.1 + nightAmount * 0.16;
+  shadowFillLight.color
+    .copy(dynamicLightColors.nightShadowFill)
+    .lerp(dynamicLightColors.dayShadowFill, dayAmount)
+    .lerp(dynamicLightColors.sunsetShadowFill, twilight * 0.5);
+  hemiLight.intensity = 0.11 + dayAmount * 0.68 + twilight * 0.12;
+  hemiLight.color.copy(dynamicLightColors.nightHemi).lerp(dynamicLightColors.dayHemi, dayAmount).lerp(dynamicLightColors.sunsetHemi, twilight * 0.3);
+  hemiLight.groundColor
+    .copy(dynamicLightColors.nightGroundHemi)
+    .lerp(dynamicLightColors.dayGroundHemi, dayAmount)
+    .lerp(dynamicLightColors.sunsetGroundHemi, twilight * 0.4);
+  ambientLight.intensity = 0.045 + dayAmount * 0.17 + twilight * 0.05;
+  ambientLight.color.copy(dynamicLightColors.nightAmbient).lerp(dynamicLightColors.dayAmbient, dayAmount);
+  const nightGlow = smoothstep(0.2, 1, nightAmount);
+  playerGlowLight.position.set(player.position.x, player.position.y + 1.4, player.position.z);
+  playerGlowLight.intensity = 0.06 + twilight * 0.08 + nightGlow * 1.15;
+  playerGroundFill.color.copy(dynamicLightColors.nightShadowFill).lerp(dynamicLightColors.dayShadowFill, dayAmount * 0.45);
+  playerGroundFill.position.set(player.position.x, player.position.y + 8.8, player.position.z);
+  playerGroundFill.target.position.set(player.position.x, player.position.y - 1.6, player.position.z);
+  playerGroundFill.intensity = 0.08 + twilight * 0.11 + nightGlow * 1.05;
+
+  moon.material.opacity = clampNumber(0.08 + nightAmount * 0.9, 0.08, 0.95, 0.4);
+  moon.material.color
+    .copy(atmosphericColors.moonTint)
+    .lerp(dynamicLightColors.moonWarm, twilight * 0.2);
+}
 
 function heightAt(x, z) {
   const terrain = state.world.terrain;
@@ -235,17 +639,51 @@ function buildTreeChunk(cx, cz) {
 
     const trunk = new THREE.Mesh(treeTrunkGeometry, treeTrunkMaterial);
     trunk.position.set(worldX, groundY + 2.0 * scale, worldZ);
-    trunk.scale.set(2 * scale, scale, 2 * scale);
+    trunk.scale.set(1.5 * scale, scale, 1.5 * scale);
     trunk.receiveShadow = true;
-    trunk.castShadow = false;
+    trunk.castShadow = scale > 0.92;
     group.add(trunk);
 
-    const canopy = new THREE.Mesh(treeCanopyGeometry, treeCanopyMaterial);
-    canopy.position.set(worldX, groundY + 5.6 * scale, worldZ);
-    canopy.scale.set(2 * scale, scale, 2 * scale);
-    canopy.receiveShadow = true;
-    canopy.castShadow = false;
-    group.add(canopy);
+    const canopyMaterial =
+      treeCanopyMaterials[Math.floor(hash2(cx * 181 + i * 9 + 17, cz * 223 + i * 13 + 43) * treeCanopyMaterials.length)];
+    const variant = Math.floor(hash2(cx * 131 + i * 7 + 31, cz * 197 + i * 5 + 61) * 3);
+
+    if (variant === 0) {
+      const canopy = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
+      canopy.position.set(worldX, groundY + 5.6 * scale, worldZ);
+      canopy.scale.set(1.95 * scale, scale, 1.95 * scale);
+      canopy.receiveShadow = true;
+      canopy.castShadow = scale > 0.96;
+      group.add(canopy);
+    } else if (variant === 1) {
+      const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+      canopyMain.position.set(worldX, groundY + 6.1 * scale, worldZ);
+      canopyMain.scale.set(1.5 * scale, 1.16 * scale, 1.5 * scale);
+      canopyMain.receiveShadow = true;
+      canopyMain.castShadow = scale > 0.92;
+      group.add(canopyMain);
+
+      const canopyCap = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+      canopyCap.position.set(worldX + 0.25 * scale, groundY + 7.3 * scale, worldZ - 0.18 * scale);
+      canopyCap.scale.set(0.84 * scale, 0.68 * scale, 0.84 * scale);
+      canopyCap.receiveShadow = true;
+      canopyCap.castShadow = false;
+      group.add(canopyCap);
+    } else {
+      const lower = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
+      lower.position.set(worldX, groundY + 5.1 * scale, worldZ);
+      lower.scale.set(1.9 * scale, 0.88 * scale, 1.9 * scale);
+      lower.receiveShadow = true;
+      lower.castShadow = scale > 1.0;
+      group.add(lower);
+
+      const upper = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
+      upper.position.set(worldX, groundY + 7.0 * scale, worldZ);
+      upper.scale.set(1.2 * scale, 0.78 * scale, 1.2 * scale);
+      upper.receiveShadow = true;
+      upper.castShadow = false;
+      group.add(upper);
+    }
   }
 
   return group.children.length > 0 ? group : null;
@@ -293,6 +731,7 @@ function buildChunk(cx, cz) {
   const mesh = new THREE.Mesh(geometry, terrainMaterial);
   mesh.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
   mesh.receiveShadow = true;
+  mesh.castShadow = false;
   return mesh;
 }
 
@@ -517,13 +956,27 @@ function updatePlayer(dt) {
 function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
   updatePlayer(dt);
+  updateDayNightCycle(dt);
+  sky.position.set(player.position.x, 0, player.position.z);
+  if (cloudGroup.parent) {
+    cloudGroup.position.set(
+      player.position.x * 0.34 + Math.sin(clock.elapsedTime * 0.03) * 90,
+      0,
+      player.position.z * 0.34 + Math.cos(clock.elapsedTime * 0.025) * 90
+    );
+  }
   const targetOpacity = state.world.water.opacity;
   water.material.opacity = clampNumber(
-    targetOpacity + Math.sin(clock.elapsedTime * 0.6) * 0.05,
+    targetOpacity + Math.sin(clock.elapsedTime * 0.6) * 0.04,
     0.05,
     1,
     targetOpacity
   );
+  water.position.x = player.position.x;
+  water.position.z = player.position.z;
+  if (water.material instanceof THREE.MeshPhysicalMaterial) {
+    water.material.roughness = clampNumber(0.2 + Math.sin(clock.elapsedTime * 0.35) * 0.04, 0.12, 0.3, 0.2);
+  }
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
 }
@@ -875,6 +1328,7 @@ function applyAction(action) {
     if (typeof action.level === "number" && Number.isFinite(action.level)) {
       state.world.water.level = clampNumber(action.level, -30, 80, state.world.water.level);
       water.position.y = state.world.water.level;
+      syncTerrainShaderUniforms();
       touched = true;
     }
     if (typeof action.opacity === "number" && Number.isFinite(action.opacity)) {
@@ -901,8 +1355,7 @@ function applyAction(action) {
     }
     if (typeof action.colorHex === "string") {
       state.world.fog.colorHex = toColorHex(action.colorHex, state.world.fog.colorHex);
-      scene.fog.color.set(state.world.fog.colorHex);
-      renderer.setClearColor(state.world.fog.colorHex, 1);
+      syncAtmosphereFromState();
       touched = true;
     }
     return touched
@@ -914,6 +1367,7 @@ function applyAction(action) {
     if (typeof action.colorHex !== "string") return traceResult("rejected", "set_terrain_color", "invalid color");
     state.world.terrainColor = toColorHex(action.colorHex, state.world.terrainColor);
     terrainMaterial.color.set(state.world.terrainColor);
+    syncTerrainShaderUniforms();
     return traceResult("applied", "set_terrain_color", `color=${state.world.terrainColor}`);
   }
 
@@ -925,15 +1379,14 @@ function applyAction(action) {
     }
     if (typeof action.trunkColor === "string") {
       state.world.trees.trunkColor = toColorHex(action.trunkColor, state.world.trees.trunkColor);
-      treeTrunkMaterial.color.set(state.world.trees.trunkColor);
       touched = true;
     }
     if (typeof action.canopyColor === "string") {
       state.world.trees.canopyColor = toColorHex(action.canopyColor, state.world.trees.canopyColor);
-      treeCanopyMaterial.color.set(state.world.trees.canopyColor);
       touched = true;
     }
     if (!touched) return traceResult("rejected", "set_trees", "no valid fields");
+    syncTreeMaterials();
     treeChunks.forEach((treeGroup) => {
       scene.remove(treeGroup);
     });
@@ -978,6 +1431,7 @@ function saveState() {
   const payload = {
     seed: state.seed,
     world: state.world,
+    timeOfDay: clampNumber(worldTime / DAY_NIGHT.dayLengthSeconds, 0, 1, 0),
     ui: {
       chatOpen,
     },
@@ -1003,6 +1457,7 @@ function loadState() {
     return {
       seed: typeof parsed.seed === "number" ? parsed.seed : DEFAULT_STATE.seed,
       world: normalizeWorld(parsed.world),
+      timeOfDay: clampNumber(parsed.timeOfDay, 0, 1, DEFAULT_STATE.timeOfDay),
       ui: {
         chatOpen: Boolean(parsed.ui?.chatOpen),
       },
@@ -1033,6 +1488,31 @@ function normalizeWorld(value) {
   const landmarks = Array.isArray(source.landmarks) ? source.landmarks : [];
   const rawFogDensity = clampNumber(fogCfg.density, 0.001, 0.08, DEFAULT_WORLD.fog.density);
   const fogDensity = rawFogDensity === 0.015 ? DEFAULT_WORLD.fog.density : rawFogDensity;
+  const terrainColor = remapLegacyColor(
+    toColorHex(source.terrainColor, DEFAULT_WORLD.terrainColor),
+    LEGACY_WORLD.terrainColor,
+    DEFAULT_WORLD.terrainColor
+  );
+  const trunkColor = remapLegacyColor(
+    toColorHex(treesCfg.trunkColor, DEFAULT_WORLD.trees.trunkColor),
+    LEGACY_WORLD.trees.trunkColor,
+    DEFAULT_WORLD.trees.trunkColor
+  );
+  const canopyColor = remapLegacyColor(
+    toColorHex(treesCfg.canopyColor, DEFAULT_WORLD.trees.canopyColor),
+    LEGACY_WORLD.trees.canopyColor,
+    DEFAULT_WORLD.trees.canopyColor
+  );
+  const waterColor = remapLegacyColor(
+    toColorHex(waterCfg.colorHex, DEFAULT_WORLD.water.colorHex),
+    LEGACY_WORLD.water.colorHex,
+    DEFAULT_WORLD.water.colorHex
+  );
+  const fogColor = remapLegacyColor(
+    toColorHex(fogCfg.colorHex, DEFAULT_WORLD.fog.colorHex),
+    LEGACY_WORLD.fog.colorHex,
+    DEFAULT_WORLD.fog.colorHex
+  );
   return {
     terrain: {
       noiseScale: clampNumber(terrain.noiseScale, 0.005, 0.25, DEFAULT_WORLD.terrain.noiseScale),
@@ -1040,19 +1520,19 @@ function normalizeWorld(value) {
       ridgeScale: clampNumber(terrain.ridgeScale, 0.5, 6, DEFAULT_WORLD.terrain.ridgeScale),
       ridgeHeight: clampNumber(terrain.ridgeHeight, 0, 50, DEFAULT_WORLD.terrain.ridgeHeight),
     },
-    terrainColor: toColorHex(source.terrainColor, DEFAULT_WORLD.terrainColor),
+    terrainColor,
     trees: {
       density: clampNumber(treesCfg.density, 0, 1.2, DEFAULT_WORLD.trees.density),
-      trunkColor: toColorHex(treesCfg.trunkColor, DEFAULT_WORLD.trees.trunkColor),
-      canopyColor: toColorHex(treesCfg.canopyColor, DEFAULT_WORLD.trees.canopyColor),
+      trunkColor,
+      canopyColor,
     },
     water: {
       level: clampNumber(waterCfg.level, -30, 80, DEFAULT_WORLD.water.level),
-      colorHex: toColorHex(waterCfg.colorHex, DEFAULT_WORLD.water.colorHex),
+      colorHex: waterColor,
       opacity: clampNumber(waterCfg.opacity, 0.05, 1, DEFAULT_WORLD.water.opacity),
     },
     fog: {
-      colorHex: toColorHex(fogCfg.colorHex, DEFAULT_WORLD.fog.colorHex),
+      colorHex: fogColor,
       density: fogDensity,
     },
     landmarks: landmarks
@@ -1078,6 +1558,10 @@ function toColorHex(value, fallback) {
   const trimmed = value.trim();
   if (!/^#[0-9a-fA-F]{6}$/.test(trimmed)) return fallback;
   return trimmed.toLowerCase();
+}
+
+function remapLegacyColor(color, legacyColor, nextColor) {
+  return color === legacyColor ? nextColor : color;
 }
 
 function traceResult(status, type, detail) {
