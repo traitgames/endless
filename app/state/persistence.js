@@ -82,6 +82,7 @@ function migrateState(parsed, { defaultState, stateVersion }) {
 function normalizeWorld(value, { defaultWorld, legacyWorld }) {
   const source = value && typeof value === "object" ? value : {};
   const terrain = source.terrain && typeof source.terrain === "object" ? source.terrain : {};
+  const biomeStylesCfg = source.biomeStyles && typeof source.biomeStyles === "object" ? source.biomeStyles : {};
   const waterCfg = source.water && typeof source.water === "object" ? source.water : {};
   const fogCfg = source.fog && typeof source.fog === "object" ? source.fog : {};
   const treesCfg = source.trees && typeof source.trees === "object" ? source.trees : {};
@@ -121,6 +122,7 @@ function normalizeWorld(value, { defaultWorld, legacyWorld }) {
       ridgeHeight: clampNumber(terrain.ridgeHeight, 0, 50, defaultWorld.terrain.ridgeHeight),
     },
     terrainColor,
+    biomeStyles: normalizeBiomeStyles(biomeStylesCfg),
     trees: {
       density: clampNumber(treesCfg.density, 0, 1.2, defaultWorld.trees.density),
       trunkColor,
@@ -146,6 +148,27 @@ function normalizeWorld(value, { defaultWorld, legacyWorld }) {
       }))
       .slice(0, 300),
   };
+}
+
+function normalizeBiomeStyles(value) {
+  if (!value || typeof value !== "object") return {};
+  const out = {};
+  for (const [biomeId, cfg] of Object.entries(value)) {
+    if (!cfg || typeof cfg !== "object") continue;
+    const next = {};
+    const terrainColor = toColorHex(cfg.terrainColor, null);
+    const waterColorHex = toColorHex(cfg.waterColorHex, null);
+    const fogColorHex = toColorHex(cfg.fogColorHex, null);
+    const treeTrunkColor = toColorHex(cfg.treeTrunkColor, null);
+    const treeCanopyColor = toColorHex(cfg.treeCanopyColor, null);
+    if (terrainColor) next.terrainColor = terrainColor;
+    if (waterColorHex) next.waterColorHex = waterColorHex;
+    if (fogColorHex) next.fogColorHex = fogColorHex;
+    if (treeTrunkColor) next.treeTrunkColor = treeTrunkColor;
+    if (treeCanopyColor) next.treeCanopyColor = treeCanopyColor;
+    if (Object.keys(next).length > 0) out[String(biomeId)] = next;
+  }
+  return out;
 }
 
 export function clampNumber(value, min, max, fallback) {

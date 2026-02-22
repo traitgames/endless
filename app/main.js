@@ -65,6 +65,7 @@ const DEFAULT_WORLD = {
     ridgeHeight: 6,
   },
   terrainColor: "#4f8b50",
+  biomeStyles: {},
   trees: {
     density: 0.22,
     trunkColor: "#5f4632",
@@ -507,6 +508,7 @@ const treeTrunkMaterial = new THREE.MeshStandardMaterial({
 });
 const treeCanopyMaterials = [0, 1, 2].map(() => new THREE.MeshStandardMaterial({ roughness: 0.88, metalness: 0.01 }));
 const biomeTreeMaterialSets = new Map();
+const biomeTerrainColorCache = new Map();
 const TERRAIN_HORIZONTAL_SCALE = 3;
 
 function buildCanopyPalette(baseHex) {
@@ -525,6 +527,35 @@ function blendColor(baseHex, tintColor, amount) {
     out.lerp(tintColor, clampNumber(amount, 0, 1, 0));
   }
   return out;
+}
+
+function getBiomeStyleOverride(biomeOrId) {
+  const biomeId = typeof biomeOrId === "string" ? biomeOrId : biomeOrId?.id;
+  if (!biomeId) return null;
+  const styles = state.world?.biomeStyles;
+  if (!styles || typeof styles !== "object") return null;
+  const style = styles[biomeId];
+  return style && typeof style === "object" ? style : null;
+}
+
+function getBiomeTerrainColor(biome) {
+  if (!biome) return new THREE.Color(state.world.terrainColor);
+  const style = getBiomeStyleOverride(biome);
+  if (!style?.terrainColor) return biome.groundColor;
+  const cached = biomeTerrainColorCache.get(biome.id);
+  if (cached && cached._overrideHex === style.terrainColor) return cached;
+  const color = new THREE.Color(style.terrainColor);
+  color._overrideHex = style.terrainColor;
+  biomeTerrainColorCache.set(biome.id, color);
+  return color;
+}
+
+function getBiomeFogColorHex(biome) {
+  return getBiomeStyleOverride(biome)?.fogColorHex || state.world.fog.colorHex;
+}
+
+function getBiomeWaterColorHex(biome) {
+  return getBiomeStyleOverride(biome)?.waterColorHex || state.world.water.colorHex;
 }
 
 function getBiomeTreeMaterialSet(biome) {
@@ -551,9 +582,16 @@ function syncTreeMaterials() {
   for (const biome of Object.values(BIOME_DEFS)) {
     if (!biome.hasTrees) continue;
     const set = getBiomeTreeMaterialSet(biome);
-    set.trunk.color.copy(blendColor(state.world.trees.trunkColor, biome.trunkTint, 0.55));
-    const canopyBase = blendColor(state.world.trees.canopyColor, biome.canopyTint, 0.6);
-    const biomePalette = buildCanopyPalette(`#${canopyBase.getHexString()}`);
+    const style = getBiomeStyleOverride(biome);
+    if (style?.treeTrunkColor) {
+      set.trunk.color.set(style.treeTrunkColor);
+    } else {
+      set.trunk.color.copy(blendColor(state.world.trees.trunkColor, biome.trunkTint, 0.55));
+    }
+    const canopyBaseHex = style?.treeCanopyColor
+      ? style.treeCanopyColor
+      : `#${blendColor(state.world.trees.canopyColor, biome.canopyTint, 0.6).getHexString()}`;
+    const biomePalette = buildCanopyPalette(canopyBaseHex);
     biomePalette.forEach((color, index) => {
       set.canopies[index].color.copy(color);
     });
@@ -568,11 +606,16 @@ function syncTerrainShaderUniforms() {
 }
 
 function syncAtmosphereFromState() {
-  atmosphereBase.fogColor.set(state.world.fog.colorHex);
+  const biome = getBiomeAt(player.position.x, player.position.z);
+  atmosphereBase.fogColor.set(getBiomeFogColorHex(biome));
   scene.fog.color.set(atmosphereBase.fogColor);
   renderer.setClearColor(atmosphereBase.fogColor, 1);
 }
-syncAtmosphereFromState();
+
+function syncWaterColorFromState() {
+  const biome = getBiomeAt(player.position.x, player.position.z);
+  water.material.color.set(getBiomeWaterColorHex(biome));
+}
 
 function smoothstep(edge0, edge1, x) {
   const t = clampNumber((x - edge0) / (edge1 - edge0), 0, 1, 0);
@@ -963,7 +1006,7 @@ function buildChunk(cx, cz) {
     const y = heightAt(x, z);
     vertices.setY(i, y);
     const biome = getBiomeAt(x, z);
-    const color = biome.groundColor;
+    const color = getBiomeTerrainColor(biome);
     const n = hash2(Math.floor(x * 0.5), Math.floor(z * 0.5));
     const brighten = 0.93 + n * 0.14;
     colors[i * 3] = color.r * brighten;
@@ -987,6 +1030,8 @@ const player = {
   pitch: state.player.pitch,
   grounded: false,
 };
+syncAtmosphereFromState();
+syncWaterColorFromState();
 
 const keys = new Set();
 let pointerLocked = false;
@@ -1168,8 +1213,10 @@ function updatePlayer(dt) {
 }
 
 function updateBiomeHud() {
-  if (!biomeEl) return;
   const biome = getBiomeAt(player.position.x, player.position.z);
+  syncAtmosphereFromState();
+  syncWaterColorFromState();
+  if (!biomeEl) return;
   biomeEl.textContent = biome?.label ?? biome?.id ?? "Unknown";
 }
 
@@ -1453,6 +1500,10 @@ function handleLocalWorldCommand(message) {
     return true;
   }
 
+  if (sub === "style") {
+    return handleWorldBiomeStyleCommand(parts);
+  }
+
   if (parts.length === 2) {
     const guessedBiome = resolveBiomeName(parts[1]) || guessBiomeName(parts[1])?.biome;
     if (guessedBiome) {
@@ -1489,9 +1540,189 @@ function showWorldCommandHelp() {
       "/world help",
       "/world biome <biome-name>",
       "/world tp biome <biome-name>",
+      "/world style <biome> <terrain|water|fog|trunk|canopy> <#rrggbb>",
+      "/world style <biome> tree <trunk|canopy> <#rrggbb>",
+      "/world style clear <biome> [terrain|water|fog|trunk|canopy|all]",
       "",
       `Biomes: ${biomeNames}`,
     ].join("\n"),
+    ts: Date.now(),
+  });
+}
+
+function handleWorldBiomeStyleCommand(parts) {
+  const mode = (parts[2] || "").toLowerCase();
+  if (!mode) {
+    addWorldStyleUsage();
+    return true;
+  }
+
+  if (mode === "clear" || mode === "reset") {
+    const biomeName = parts[3] || "";
+    const biome = resolveBiomeName(biomeName);
+    if (!biome) {
+      addChatEntry({
+        role: "codex_output",
+        content: `Unknown biome "${biomeName}".`,
+        ts: Date.now(),
+      });
+      return true;
+    }
+    const target = resolveBiomeStyleTarget(parts.slice(4));
+    if (parts.length > 4 && !target) {
+      addWorldStyleUsage("Unknown style target for clear.");
+      return true;
+    }
+    clearBiomeStyleOverrides(biome.id, target?.key || null);
+    return true;
+  }
+
+  const biome = resolveBiomeName(parts[2]);
+  if (!biome) {
+    addChatEntry({
+      role: "codex_output",
+      content: `Unknown biome "${parts[2] || ""}".`,
+      ts: Date.now(),
+    });
+    return true;
+  }
+
+  let targetParts;
+  let colorHex;
+  if ((parts[3] || "").toLowerCase() === "tree") {
+    targetParts = parts.slice(3, 5);
+    colorHex = parts[5];
+  } else {
+    targetParts = parts.slice(3, 4);
+    colorHex = parts[4];
+  }
+
+  const target = resolveBiomeStyleTarget(targetParts);
+  if (!target || !colorHex) {
+    addWorldStyleUsage("Usage error for biome style command.");
+    return true;
+  }
+  const normalizedColor = toColorHex(colorHex, null);
+  if (!normalizedColor) {
+    addWorldStyleUsage(`Invalid color "${String(colorHex)}". Use #rrggbb.`);
+    return true;
+  }
+
+  setBiomeStyleColor(biome.id, target.key, normalizedColor, target.label);
+  return true;
+}
+
+function addWorldStyleUsage(prefix) {
+  addChatEntry({
+    role: "codex_output",
+    content: [
+      prefix || "Biome style commands:",
+      "Set: /world style <biome> <terrain|water|fog|trunk|canopy> <#rrggbb>",
+      "Set: /world style <biome> tree <trunk|canopy> <#rrggbb>",
+      "Clear: /world style clear <biome> [terrain|water|fog|trunk|canopy|all]",
+    ].join("\n"),
+    ts: Date.now(),
+  });
+}
+
+function resolveBiomeStyleTarget(tokens) {
+  const parts = Array.isArray(tokens) ? tokens.map((t) => String(t || "").toLowerCase()) : [];
+  if (parts.length === 0) return { key: null, label: "all" };
+  const raw = parts.join(" ");
+  if (raw === "terrain") return { key: "terrainColor", label: "terrain" };
+  if (raw === "water") return { key: "waterColorHex", label: "water" };
+  if (raw === "fog") return { key: "fogColorHex", label: "fog" };
+  if (raw === "trunk" || raw === "tree trunk") return { key: "treeTrunkColor", label: "tree trunk" };
+  if (raw === "canopy" || raw === "tree canopy") return { key: "treeCanopyColor", label: "tree canopy" };
+  if (raw === "all") return { key: null, label: "all" };
+  return null;
+}
+
+function ensureBiomeStylesState() {
+  if (!state.world.biomeStyles || typeof state.world.biomeStyles !== "object") {
+    state.world.biomeStyles = {};
+  }
+  return state.world.biomeStyles;
+}
+
+function applyBiomeStyleVisualRefresh(keys) {
+  const list = Array.isArray(keys) ? keys : [];
+  if (list.includes("terrainColor")) {
+    biomeTerrainColorCache.clear();
+    rebuildTerrain();
+  }
+  if (list.includes("treeTrunkColor") || list.includes("treeCanopyColor")) {
+    syncTreeMaterials();
+  }
+  if (list.includes("fogColorHex")) {
+    syncAtmosphereFromState();
+  }
+  if (list.includes("waterColorHex")) {
+    syncWaterColorFromState();
+  }
+  saveState();
+}
+
+function setBiomeStyleColor(biomeId, key, colorHex, label) {
+  const styles = ensureBiomeStylesState();
+  const next = { ...(styles[biomeId] || {}) };
+  next[key] = colorHex;
+  styles[biomeId] = next;
+  applyBiomeStyleVisualRefresh([key]);
+  addChatEntry({
+    role: "codex_output",
+    content: `Set ${label} color for biome "${biomeId}" to ${colorHex}.`,
+    ts: Date.now(),
+  });
+}
+
+function clearBiomeStyleOverrides(biomeId, key = null) {
+  const styles = ensureBiomeStylesState();
+  const current = styles[biomeId];
+  if (!current || typeof current !== "object") {
+    addChatEntry({
+      role: "codex_output",
+      content: `No biome style overrides set for "${biomeId}".`,
+      ts: Date.now(),
+    });
+    return;
+  }
+
+  const knownKeys = ["terrainColor", "waterColorHex", "fogColorHex", "treeTrunkColor", "treeCanopyColor"];
+  const touched = [];
+  if (key) {
+    if (key in current) {
+      delete current[key];
+      touched.push(key);
+    }
+  } else {
+    for (const candidate of knownKeys) {
+      if (candidate in current) touched.push(candidate);
+    }
+    delete styles[biomeId];
+  }
+
+  if (!key && styles[biomeId]) {
+    delete styles[biomeId];
+  } else if (key && Object.keys(current).length === 0) {
+    delete styles[biomeId];
+  }
+
+  if (touched.length === 0) {
+    addChatEntry({
+      role: "codex_output",
+      content: `No matching overrides to clear for biome "${biomeId}".`,
+      ts: Date.now(),
+    });
+    return;
+  }
+
+  applyBiomeStyleVisualRefresh(touched);
+  addChatEntry({
+    role: "codex_output",
+    content: key
+      ? `Cleared ${key} override for biome "${biomeId}".`
+      : `Cleared all biome color overrides for "${biomeId}".`,
     ts: Date.now(),
   });
 }
@@ -1921,6 +2152,7 @@ function restoreRuntimeState(snapshot) {
   water.material.color.set(state.world.water.colorHex);
   scene.fog.density = state.world.fog.density;
   syncAtmosphereFromState();
+  syncWaterColorFromState();
   syncTerrainShaderUniforms();
   syncTreeMaterials();
   treeChunks.forEach((treeGroup) => {
