@@ -906,7 +906,7 @@ function buildTreeChunk(cx, cz) {
       group.add(upper);
     } else if (treeStyle === "savanna") {
       const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
-      canopyMain.position.set(worldX + 0.08 * scale, groundY + 6.1 * scale, worldZ - 0.06 * scale);
+      canopyMain.position.set(worldX + 0.08 * scale, groundY + 5.35 * scale, worldZ - 0.06 * scale);
       canopyMain.scale.set(1.9 * scale, 0.56 * scale, 1.65 * scale);
       canopyMain.receiveShadow = true;
       canopyMain.castShadow = scale > 1;
@@ -914,7 +914,7 @@ function buildTreeChunk(cx, cz) {
 
       if (variant !== 0) {
         const canopySide = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
-        canopySide.position.set(worldX - 0.85 * scale, groundY + 6.0 * scale, worldZ + 0.45 * scale);
+        canopySide.position.set(worldX - 0.85 * scale, groundY + 5.25 * scale, worldZ + 0.45 * scale);
         canopySide.scale.set(0.92 * scale, 0.42 * scale, 0.84 * scale);
         canopySide.receiveShadow = true;
         canopySide.castShadow = false;
