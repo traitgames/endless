@@ -299,6 +299,7 @@ canvas {
   box-shadow: 0 20px 50px var(--shadow);
   backdrop-filter: blur(10px);
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 10px;
 }
 
@@ -311,9 +312,41 @@ canvas {
 }
 
 #trace-log {
+  min-height: 0;
   overflow-y: auto;
   display: grid;
   gap: 8px;
+}
+
+#chat-log,
+#trace-log {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(137, 230, 199, 0.35) rgba(255, 255, 255, 0.04);
+}
+
+#chat-log::-webkit-scrollbar,
+#trace-log::-webkit-scrollbar {
+  width: 10px;
+}
+
+#chat-log::-webkit-scrollbar-track,
+#trace-log::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 999px;
+}
+
+#chat-log::-webkit-scrollbar-thumb,
+#trace-log::-webkit-scrollbar-thumb {
+  background: rgba(137, 230, 199, 0.28);
+  border-radius: 999px;
+  border: 2px solid rgba(0, 0, 0, 0);
+  background-clip: padding-box;
+}
+
+#chat-log::-webkit-scrollbar-thumb:hover,
+#trace-log::-webkit-scrollbar-thumb:hover {
+  background: rgba(137, 230, 199, 0.42);
+  background-clip: padding-box;
 }
 
 .trace-entry {
