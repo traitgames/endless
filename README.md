@@ -155,4 +155,4 @@ Client local storage flags:
 
 ## License
 
-No license file is currently defined in this repository.
+MIT (see `LICENSE`).
