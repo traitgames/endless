@@ -12,12 +12,14 @@ import { PROTOCOL_VERSION } from "../shared/protocol.js";
 const canvas = document.getElementById("scene");
 const seedEl = document.getElementById("seed");
 const chunkEl = document.getElementById("chunk");
+const biomeEl = document.getElementById("biome");
 let backendModeEl = document.getElementById("backend-mode");
 const stateEl = document.getElementById("state");
 const chatLog = document.getElementById("chat-log");
 const chatForm = document.getElementById("chat-form");
 const chatInput = document.getElementById("chat-input");
 const chatClear = document.getElementById("chat-clear");
+const worldCommandsBtn = document.getElementById("world-commands");
 const chatPanel = document.getElementById("chat");
 const chatMinimizeBtn = document.getElementById("chat-minimize");
 const hudEl = document.getElementById("hud");
@@ -63,6 +65,7 @@ const DEFAULT_WORLD = {
     ridgeHeight: 6,
   },
   terrainColor: "#4f8b50",
+  biomeStyles: {},
   trees: {
     density: 0.22,
     trunkColor: "#5f4632",
@@ -80,10 +83,102 @@ const DEFAULT_WORLD = {
   landmarks: [],
 };
 
+const BIOME_VARIANTS = {
+  cold: ["glacier", "tundra", "taiga"],
+  temperate: ["meadow", "forest", "wetland"],
+  hot: ["desert", "savanna", "badlands"],
+};
+
+const BIOME_DEFS = {
+  glacier: {
+    id: "glacier",
+    label: "Glacier",
+    category: "cold",
+    groundColor: new THREE.Color("#ecf6ff"),
+    hasTrees: false,
+  },
+  tundra: {
+    id: "tundra",
+    label: "Tundra",
+    category: "cold",
+    groundColor: new THREE.Color("#b7b7a3"),
+    hasTrees: false,
+  },
+  taiga: {
+    id: "taiga",
+    label: "Taiga",
+    category: "cold",
+    groundColor: new THREE.Color("#5d748a"),
+    hasTrees: true,
+    treeStyle: "conifer",
+    treeDensityMultiplier: 0.8,
+    trunkTint: new THREE.Color("#6d5844"),
+    canopyTint: new THREE.Color("#6aa296"),
+  },
+  meadow: {
+    id: "meadow",
+    label: "Meadow",
+    category: "temperate",
+    groundColor: new THREE.Color("#bfd05a"),
+    hasTrees: true,
+    treeStyle: "broadleaf",
+    treeDensityMultiplier: 0.38,
+    trunkTint: new THREE.Color("#6b5138"),
+    canopyTint: new THREE.Color("#8dba59"),
+  },
+  forest: {
+    id: "forest",
+    label: "Forest",
+    category: "temperate",
+    groundColor: new THREE.Color("#447034"),
+    hasTrees: true,
+    treeStyle: "broadleaf",
+    treeDensityMultiplier: 1.1,
+    trunkTint: new THREE.Color("#664c34"),
+    canopyTint: new THREE.Color("#3f8144"),
+  },
+  wetland: {
+    id: "wetland",
+    label: "Wetland",
+    category: "temperate",
+    groundColor: new THREE.Color("#4f7f74"),
+    hasTrees: true,
+    treeStyle: "wetland",
+    treeDensityMultiplier: 0.72,
+    trunkTint: new THREE.Color("#5a4637"),
+    canopyTint: new THREE.Color("#5f8f58"),
+  },
+  desert: {
+    id: "desert",
+    label: "Desert",
+    category: "hot",
+    groundColor: new THREE.Color("#efd48e"),
+    hasTrees: false,
+  },
+  savanna: {
+    id: "savanna",
+    label: "Savanna",
+    category: "hot",
+    groundColor: new THREE.Color("#b99b4a"),
+    hasTrees: true,
+    treeStyle: "savanna",
+    treeDensityMultiplier: 0.48,
+    trunkTint: new THREE.Color("#73523a"),
+    canopyTint: new THREE.Color("#9ab248"),
+  },
+  badlands: {
+    id: "badlands",
+    label: "Badlands",
+    category: "hot",
+    groundColor: new THREE.Color("#b7654c"),
+    hasTrees: false,
+  },
+};
+
 const DEFAULT_STATE = {
   seed: BOOT_SEED,
   world: DEFAULT_WORLD,
-  timeOfDay: seededHash2(19, 47, BOOT_SEED),
+  timeOfDay: 7 / 24,
   ui: {
     chatOpen: false,
   },
@@ -283,7 +378,7 @@ const atmosphereBase = {
   fogColor: new THREE.Color(state.world.fog.colorHex),
 };
 const DAY_NIGHT = {
-  dayLengthSeconds: 240,
+  dayLengthSeconds: 40 * 60,
   sunDistance: 230,
   moonDistance: 210,
 };
@@ -336,6 +431,7 @@ const dynamicLightColors = {
 
 const terrainMaterial = new THREE.MeshStandardMaterial({
   color: state.world.terrainColor,
+  vertexColors: true,
   roughness: 0.95,
   metalness: 0.05,
 });
@@ -383,8 +479,12 @@ terrainMaterial.onBeforeCompile = (shader) => {
       vec3 baseColor = mix(grass, denseGrass, smoothstep(0.0, 1.0, n));
       baseColor = mix(baseColor, rock, smoothstep(0.26, 0.72, slope));
       baseColor = mix(sand, baseColor, smoothstep(uWaterLevel - 0.4, uWaterLevel + 2.4, h));
+      #ifdef USE_COLOR
+      float biomeColorBlend = smoothstep(uWaterLevel + 0.2, uWaterLevel + 7.5, h);
+      baseColor = mix(baseColor, vColor.rgb, 0.58 * biomeColorBlend);
+      #endif
       baseColor = mix(baseColor, snow, smoothstep(38.0, 56.0, h));
-      baseColor *= uTint;
+      baseColor = mix(baseColor, baseColor * uTint, 0.16);
       vec4 diffuseColor = vec4(baseColor, opacity);
       `
     );
@@ -407,6 +507,8 @@ const treeTrunkMaterial = new THREE.MeshStandardMaterial({
   metalness: 0.02,
 });
 const treeCanopyMaterials = [0, 1, 2].map(() => new THREE.MeshStandardMaterial({ roughness: 0.88, metalness: 0.01 }));
+const biomeTreeMaterialSets = new Map();
+const biomeTerrainColorCache = new Map();
 const TERRAIN_HORIZONTAL_SCALE = 3;
 
 function buildCanopyPalette(baseHex) {
@@ -419,12 +521,81 @@ function buildCanopyPalette(baseHex) {
   return [darker, mid, lighter];
 }
 
+function blendColor(baseHex, tintColor, amount) {
+  const out = new THREE.Color(baseHex);
+  if (tintColor instanceof THREE.Color) {
+    out.lerp(tintColor, clampNumber(amount, 0, 1, 0));
+  }
+  return out;
+}
+
+function getBiomeStyleOverride(biomeOrId) {
+  const biomeId = typeof biomeOrId === "string" ? biomeOrId : biomeOrId?.id;
+  if (!biomeId) return null;
+  const styles = state.world?.biomeStyles;
+  if (!styles || typeof styles !== "object") return null;
+  const style = styles[biomeId];
+  return style && typeof style === "object" ? style : null;
+}
+
+function getBiomeTerrainColor(biome) {
+  if (!biome) return new THREE.Color(state.world.terrainColor);
+  const style = getBiomeStyleOverride(biome);
+  if (!style?.terrainColor) return biome.groundColor;
+  const cached = biomeTerrainColorCache.get(biome.id);
+  if (cached && cached._overrideHex === style.terrainColor) return cached;
+  const color = new THREE.Color(style.terrainColor);
+  color._overrideHex = style.terrainColor;
+  biomeTerrainColorCache.set(biome.id, color);
+  return color;
+}
+
+function getBiomeFogColorHex(biome) {
+  return getBiomeStyleOverride(biome)?.fogColorHex || state.world.fog.colorHex;
+}
+
+function getBiomeWaterColorHex(biome) {
+  return getBiomeStyleOverride(biome)?.waterColorHex || state.world.water.colorHex;
+}
+
+function getBiomeTreeMaterialSet(biome) {
+  if (!biome?.hasTrees) {
+    return { trunk: treeTrunkMaterial, canopies: treeCanopyMaterials };
+  }
+  let set = biomeTreeMaterialSets.get(biome.id);
+  if (!set) {
+    set = {
+      trunk: new THREE.MeshStandardMaterial({ roughness: 0.94, metalness: 0.02 }),
+      canopies: [0, 1, 2].map(() => new THREE.MeshStandardMaterial({ roughness: 0.88, metalness: 0.01 })),
+    };
+    biomeTreeMaterialSets.set(biome.id, set);
+  }
+  return set;
+}
+
 function syncTreeMaterials() {
   treeTrunkMaterial.color.set(state.world.trees.trunkColor);
   const palette = buildCanopyPalette(state.world.trees.canopyColor);
   palette.forEach((color, index) => {
     treeCanopyMaterials[index].color.copy(color);
   });
+  for (const biome of Object.values(BIOME_DEFS)) {
+    if (!biome.hasTrees) continue;
+    const set = getBiomeTreeMaterialSet(biome);
+    const style = getBiomeStyleOverride(biome);
+    if (style?.treeTrunkColor) {
+      set.trunk.color.set(style.treeTrunkColor);
+    } else {
+      set.trunk.color.copy(blendColor(state.world.trees.trunkColor, biome.trunkTint, 0.55));
+    }
+    const canopyBaseHex = style?.treeCanopyColor
+      ? style.treeCanopyColor
+      : `#${blendColor(state.world.trees.canopyColor, biome.canopyTint, 0.6).getHexString()}`;
+    const biomePalette = buildCanopyPalette(canopyBaseHex);
+    biomePalette.forEach((color, index) => {
+      set.canopies[index].color.copy(color);
+    });
+  }
 }
 syncTreeMaterials();
 
@@ -435,11 +606,16 @@ function syncTerrainShaderUniforms() {
 }
 
 function syncAtmosphereFromState() {
-  atmosphereBase.fogColor.set(state.world.fog.colorHex);
+  const biome = getBiomeAt(player.position.x, player.position.z);
+  atmosphereBase.fogColor.set(getBiomeFogColorHex(biome));
   scene.fog.color.set(atmosphereBase.fogColor);
   renderer.setClearColor(atmosphereBase.fogColor, 1);
 }
-syncAtmosphereFromState();
+
+function syncWaterColorFromState() {
+  const biome = getBiomeAt(player.position.x, player.position.z);
+  water.material.color.set(getBiomeWaterColorHex(biome));
+}
 
 function smoothstep(edge0, edge1, x) {
   const t = clampNumber((x - edge0) / (edge1 - edge0), 0, 1, 0);
@@ -564,6 +740,44 @@ function seededHash2(x, z, seed) {
   return h - Math.floor(h);
 }
 
+function sampleBiomeClimate(x, z) {
+  const phaseA = noiseSeed * 0.000017;
+  const phaseB = noiseSeed * 0.000023;
+  const sx = x * 0.00115;
+  const sz = z * 0.00105;
+  const tempRaw =
+    0.5 +
+    Math.sin(sx + phaseA) * 0.22 +
+    Math.sin(sz * 1.18 - phaseA * 1.4) * 0.18 +
+    Math.sin((sx + sz) * 0.72 + phaseA * 0.7) * 0.14;
+  const moistureRaw =
+    0.5 +
+    Math.sin((sx * 0.84 - sz * 0.34) + phaseB) * 0.23 +
+    Math.sin((sz * 1.31 + sx * 0.22) - phaseB * 0.9) * 0.16 +
+    Math.sin((sx - sz) * 0.59 + phaseB * 0.4) * 0.11;
+  const detailRaw =
+    0.5 +
+    Math.sin(x * 0.0069 + z * 0.0042 + noiseSeed * 0.00019) * 0.22 +
+    Math.sin(x * -0.0044 + z * 0.0076 - noiseSeed * 0.00013) * 0.12;
+  return {
+    temperature: clampNumber(tempRaw, 0, 1, 0.5),
+    moisture: clampNumber(moistureRaw, 0, 1, 0.5),
+    detail: clampNumber(detailRaw, 0, 1, 0.5),
+  };
+}
+
+function getBiomeAt(x, z) {
+  const climate = sampleBiomeClimate(x, z);
+  let category = "temperate";
+  if (climate.temperature < 0.37) category = "cold";
+  else if (climate.temperature > 0.63) category = "hot";
+
+  const variants = BIOME_VARIANTS[category];
+  const selector = clampNumber(climate.moisture * 0.72 + climate.detail * 0.28, 0, 1, 0.5);
+  const index = Math.min(2, Math.floor(selector * 3));
+  return BIOME_DEFS[variants[index]];
+}
+
 function ensureChunks(cx, cz) {
   for (let dz = -CHUNK_RADIUS; dz <= CHUNK_RADIUS; dz += 1) {
     for (let dx = -CHUNK_RADIUS; dx <= CHUNK_RADIUS; dx += 1) {
@@ -653,15 +867,19 @@ function buildTreeChunk(cx, cz) {
     const worldX = chunkWorldX + localX;
     const worldZ = chunkWorldZ + localZ;
     const groundY = heightAt(worldX, worldZ);
+    const biome = getBiomeAt(worldX, worldZ);
 
     if (groundY <= state.world.water.level + 0.4) continue;
+    if (!biome.hasTrees) continue;
     const slope =
       Math.abs(heightAt(worldX + 1, worldZ) - groundY) + Math.abs(heightAt(worldX, worldZ + 1) - groundY);
     if (slope > 2.4) continue;
+    const treeChance = biome.treeDensityMultiplier ?? 1;
+    if (hash2(cx * 149 + i * 23 + 19, cz * 173 + i * 41 + 59) > treeChance) continue;
 
     const scale = 0.7 + hash2(cx * 97 + i * 13 + 7, cz * 83 + i * 11 + 17) * 0.9;
-
-    const trunk = new THREE.Mesh(treeTrunkGeometry, treeTrunkMaterial);
+    const materialSet = getBiomeTreeMaterialSet(biome);
+    const trunk = new THREE.Mesh(treeTrunkGeometry, materialSet.trunk);
     trunk.position.set(worldX, groundY + 2.0 * scale, worldZ);
     trunk.scale.set(1.5 * scale, scale, 1.5 * scale);
     trunk.receiveShadow = true;
@@ -669,16 +887,53 @@ function buildTreeChunk(cx, cz) {
     group.add(trunk);
 
     const canopyMaterial =
-      treeCanopyMaterials[Math.floor(hash2(cx * 181 + i * 9 + 17, cz * 223 + i * 13 + 43) * treeCanopyMaterials.length)];
+      materialSet.canopies[Math.floor(hash2(cx * 181 + i * 9 + 17, cz * 223 + i * 13 + 43) * materialSet.canopies.length)];
     const variant = Math.floor(hash2(cx * 131 + i * 7 + 31, cz * 197 + i * 5 + 61) * 3);
+    const treeStyle = biome.treeStyle ?? "broadleaf";
 
-    if (variant === 0) {
+    if (treeStyle === "conifer") {
       const canopy = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
-      canopy.position.set(worldX, groundY + 5.6 * scale, worldZ);
-      canopy.scale.set(1.95 * scale, scale, 1.95 * scale);
+      canopy.position.set(worldX, groundY + 5.8 * scale, worldZ);
+      canopy.scale.set(2.05 * scale, 1.15 * scale, 2.05 * scale);
       canopy.receiveShadow = true;
       canopy.castShadow = scale > 0.96;
       group.add(canopy);
+      const upper = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
+      upper.position.set(worldX, groundY + 7.3 * scale, worldZ);
+      upper.scale.set(1.28 * scale, 0.72 * scale, 1.28 * scale);
+      upper.receiveShadow = true;
+      upper.castShadow = false;
+      group.add(upper);
+    } else if (treeStyle === "savanna") {
+      const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+      canopyMain.position.set(worldX + 0.08 * scale, groundY + 5.35 * scale, worldZ - 0.06 * scale);
+      canopyMain.scale.set(1.9 * scale, 0.56 * scale, 1.65 * scale);
+      canopyMain.receiveShadow = true;
+      canopyMain.castShadow = scale > 1;
+      group.add(canopyMain);
+
+      if (variant !== 0) {
+        const canopySide = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+        canopySide.position.set(worldX - 0.85 * scale, groundY + 5.25 * scale, worldZ + 0.45 * scale);
+        canopySide.scale.set(0.92 * scale, 0.42 * scale, 0.84 * scale);
+        canopySide.receiveShadow = true;
+        canopySide.castShadow = false;
+        group.add(canopySide);
+      }
+    } else if (treeStyle === "wetland") {
+      const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+      canopyMain.position.set(worldX, groundY + 6.0 * scale, worldZ);
+      canopyMain.scale.set(1.68 * scale, 1.02 * scale, 1.68 * scale);
+      canopyMain.receiveShadow = true;
+      canopyMain.castShadow = scale > 0.92;
+      group.add(canopyMain);
+
+      const droop = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
+      droop.position.set(worldX, groundY + 4.85 * scale, worldZ);
+      droop.scale.set(1.65 * scale, 0.6 * scale, 1.65 * scale);
+      droop.receiveShadow = true;
+      droop.castShadow = false;
+      group.add(droop);
     } else if (variant === 1) {
       const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
       canopyMain.position.set(worldX, groundY + 6.1 * scale, worldZ);
@@ -744,13 +999,22 @@ function buildChunk(cx, cz) {
   const geometry = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE, CHUNK_RES, CHUNK_RES);
   geometry.rotateX(-Math.PI / 2);
   const vertices = geometry.attributes.position;
+  const colors = new Float32Array(vertices.count * 3);
   for (let i = 0; i < vertices.count; i += 1) {
     const x = vertices.getX(i) + cx * CHUNK_SIZE;
     const z = vertices.getZ(i) + cz * CHUNK_SIZE;
     const y = heightAt(x, z);
     vertices.setY(i, y);
+    const biome = getBiomeAt(x, z);
+    const color = getBiomeTerrainColor(biome);
+    const n = hash2(Math.floor(x * 0.5), Math.floor(z * 0.5));
+    const brighten = 0.93 + n * 0.14;
+    colors[i * 3] = color.r * brighten;
+    colors[i * 3 + 1] = color.g * brighten;
+    colors[i * 3 + 2] = color.b * brighten;
   }
   vertices.needsUpdate = true;
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   geometry.computeVertexNormals();
   const mesh = new THREE.Mesh(geometry, terrainMaterial);
   mesh.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
@@ -766,6 +1030,8 @@ const player = {
   pitch: state.player.pitch,
   grounded: false,
 };
+syncAtmosphereFromState();
+syncWaterColorFromState();
 
 const keys = new Set();
 let pointerLocked = false;
@@ -946,9 +1212,18 @@ function updatePlayer(dt) {
   });
 }
 
+function updateBiomeHud() {
+  const biome = getBiomeAt(player.position.x, player.position.z);
+  syncAtmosphereFromState();
+  syncWaterColorFromState();
+  if (!biomeEl) return;
+  biomeEl.textContent = biome?.label ?? biome?.id ?? "Unknown";
+}
+
 function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
   updatePlayer(dt);
+  updateBiomeHud();
   updateDayNightCycle(dt);
   sky.position.set(player.position.x, 0, player.position.z);
   if (cloudGroup.parent) {
@@ -985,6 +1260,7 @@ const chatStore = createChatStore({
 });
 const chatState = chatStore.entries;
 const trace = createTraceLogger(traceLog, 80);
+let pendingWorldCommandConfirmation = null;
 
 chatForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -992,7 +1268,9 @@ chatForm.addEventListener("submit", (event) => {
   if (!message) return;
   addChatEntry({ role: "user", content: message, ts: Date.now() });
   chatInput.value = "";
-  sendToCodex(resolveChatCommand(message));
+  const resolvedMessage = resolveChatCommand(message);
+  if (tryHandleLocalChatCommand(resolvedMessage)) return;
+  sendToCodex(resolvedMessage);
 });
 
 resetSaveBtn?.addEventListener("click", () => {
@@ -1010,6 +1288,11 @@ chatClear.addEventListener("click", () => {
   saveState();
 });
 
+worldCommandsBtn?.addEventListener("click", () => {
+  showWorldCommandHelp();
+  setChatOpen(true, { focusInput: true });
+});
+
 function addChatEntry(entry) {
   chatStore.addEntry(entry);
 }
@@ -1024,12 +1307,29 @@ const ALLOW_WORKER_FALLBACK =
 const AUTO_SOFT_REFRESH = localStorage.getItem("endless_auto_soft_refresh") !== "0";
 let refreshScheduled = false;
 const bridgeUrl = localStorage.getItem("endless_ws_url") || "ws://localhost:8787";
+let configuredBackendMode = "connecting";
+let bridgeConnectionStatus = "connecting";
+let activeBackendRoute = null;
+
+function renderBackendModeLabel() {
+  if (!backendModeEl) return;
+  if (activeBackendRoute) {
+    backendModeEl.textContent = activeBackendRoute;
+    return;
+  }
+  if (bridgeConnectionStatus && bridgeConnectionStatus !== "connected") {
+    backendModeEl.textContent = bridgeConnectionStatus;
+    return;
+  }
+  backendModeEl.textContent = configuredBackendMode || "unknown";
+}
 
 function handleCodexPayload(payload) {
   if (!payload) return;
   if (payload.type === "backend_info") {
     const mode = typeof payload.mode === "string" ? payload.mode : "unknown";
-    backendModeEl.textContent = mode;
+    configuredBackendMode = mode;
+    renderBackendModeLabel();
     if (payload.protocolVersion && payload.protocolVersion !== PROTOCOL_VERSION) {
       trace.addTracePhrase(`Protocol mismatch server=${payload.protocolVersion} client=${PROTOCOL_VERSION}`, "rejected");
     }
@@ -1037,7 +1337,8 @@ function handleCodexPayload(payload) {
   }
   if (payload.type === "route_info") {
     const route = typeof payload.route === "string" ? payload.route : "unknown";
-    backendModeEl.textContent = route;
+    activeBackendRoute = route;
+    renderBackendModeLabel();
     return;
   }
   if (payload.type === "trace") {
@@ -1064,7 +1365,11 @@ const wsBridge = createBridgeClient({
     handleCodexPayload(payload);
   },
   onStatus: (status) => {
-    if (backendModeEl) backendModeEl.textContent = status;
+    bridgeConnectionStatus = status;
+    if (status !== "connected") {
+      activeBackendRoute = null;
+    }
+    renderBackendModeLabel();
     if (status === "offline") {
       addTransientChatEntry({ role: "codex_output", content: "Codex server disconnected.", ts: Date.now() });
     }
@@ -1090,6 +1395,8 @@ function ensureWorker() {
 
 async function sendToCodex(message) {
   stateEl.textContent = "sending";
+  activeBackendRoute = null;
+  renderBackendModeLabel();
   const bridge = window.CodexBridge || wsBridge;
   if (bridge && typeof bridge.send === "function") {
     try {
@@ -1098,6 +1405,8 @@ async function sendToCodex(message) {
         if (bridge.isReady && !bridge.isReady()) {
           throw new Error("Codex server not ready");
         }
+        activeBackendRoute = null;
+        renderBackendModeLabel();
         return;
       }
       if (reply?.thinking) {
@@ -1113,10 +1422,14 @@ async function sendToCodex(message) {
         scheduleSoftRefresh();
       }
       stateEl.textContent = "ready";
+      activeBackendRoute = null;
+      renderBackendModeLabel();
       return;
     } catch (err) {
       addChatEntry({ role: "codex_output", content: `Codex bridge error: ${err.message}`, ts: Date.now() });
       stateEl.textContent = "ready";
+      activeBackendRoute = null;
+      renderBackendModeLabel();
       if (!ALLOW_WORKER_FALLBACK) {
         return;
       }
@@ -1129,6 +1442,8 @@ async function sendToCodex(message) {
     content: "Using simulated worker fallback. Set localStorage `endless_allow_worker_fallback=0` to disable.",
     ts: Date.now(),
   });
+  activeBackendRoute = null;
+  renderBackendModeLabel();
   worker.postMessage({ type: "message", message, snapshot: state });
 }
 
@@ -1144,6 +1459,564 @@ function resolveChatCommand(message) {
     return `Commit the current git working tree changes with an appropriate concise commit message. Use this user hint when crafting the message: "${hint}". Run git status first, stage relevant changes, then create the commit. Return the commit summary and changed file paths.`;
   }
   return message;
+}
+
+function tryHandleLocalChatCommand(message) {
+  const trimmed = typeof message === "string" ? message.trim() : "";
+  if (!trimmed) return false;
+  if (handlePendingWorldCommandConfirmation(trimmed)) return true;
+  const tpAliasMatch = trimmed.match(/^\/?tp\s+(.+)$/i);
+  if (tpAliasMatch) {
+    teleportPlayerToBiome(tpAliasMatch[1]);
+    return true;
+  }
+  if (!/^\/world(?:\s|$)/i.test(trimmed)) return false;
+  return handleLocalWorldCommand(trimmed);
+}
+
+function handleLocalWorldCommand(message) {
+  const parts = message.split(/\s+/).filter(Boolean);
+  if (parts.length === 0 || parts[0].toLowerCase() !== "/world") return false;
+
+  const sub = (parts[1] || "").toLowerCase();
+  if (!sub || sub === "help" || sub === "commands" || sub === "?") {
+    showWorldCommandHelp();
+    return true;
+  }
+
+  const isBiomeCommand = sub === "biome";
+  const isTeleportBiomeCommand = sub === "tp" && (parts[2] || "").toLowerCase() === "biome";
+  if (isBiomeCommand || isTeleportBiomeCommand) {
+    const biomeName = (isBiomeCommand ? parts.slice(2) : parts.slice(3)).join(" ");
+    if (!biomeName) {
+      addChatEntry({
+        role: "codex_output",
+        content: "Usage: /world biome <biome-name>\nExample: /world biome forest",
+        ts: Date.now(),
+      });
+      return true;
+    }
+    teleportPlayerToBiome(biomeName);
+    return true;
+  }
+
+  if (sub === "style") {
+    return handleWorldBiomeStyleCommand(parts);
+  }
+
+  if (parts.length === 2) {
+    const guessedBiome = resolveBiomeName(parts[1]) || guessBiomeName(parts[1])?.biome;
+    if (guessedBiome) {
+      requestWorldCommandConfirmation({
+        canonicalCommand: `/world tp biome ${guessedBiome.id}`,
+        reason:
+          guessedBiome.id === normalizeWorldCommandToken(parts[1])
+            ? `I interpreted "/world ${parts[1]}" as a shorthand teleport command.`
+            : `I interpreted "/world ${parts[1]}" as a shorthand teleport command and "${parts[1]}" as "${guessedBiome.id}".`,
+        intent: { type: "teleport_biome", biomeId: guessedBiome.id },
+      });
+      return true;
+    }
+  }
+
+  const guessedCommand = guessWorldTeleportBiomeCommand(parts);
+  if (guessedCommand) {
+    requestWorldCommandConfirmation(guessedCommand);
+    return true;
+  }
+
+  return false;
+}
+
+function showWorldCommandHelp() {
+  const biomeNames = Object.values(BIOME_DEFS)
+    .map((biome) => biome.id)
+    .sort()
+    .join(", ");
+  addChatEntry({
+    role: "codex_output",
+    content: [
+      "World commands (local):",
+      "/world help",
+      "/world biome <biome-name>",
+      "/world tp biome <biome-name>",
+      "/world style <biome> <terrain|water|fog|trunk|canopy> <#rrggbb>",
+      "/world style <biome> tree <trunk|canopy> <#rrggbb>",
+      "/world style clear <biome> [terrain|water|fog|trunk|canopy|all]",
+      "",
+      `Biomes: ${biomeNames}`,
+    ].join("\n"),
+    ts: Date.now(),
+  });
+}
+
+function handleWorldBiomeStyleCommand(parts) {
+  const mode = (parts[2] || "").toLowerCase();
+  if (!mode) {
+    addWorldStyleUsage();
+    return true;
+  }
+
+  if (mode === "clear" || mode === "reset") {
+    const biomeName = parts[3] || "";
+    const biome = resolveBiomeName(biomeName);
+    if (!biome) {
+      addChatEntry({
+        role: "codex_output",
+        content: `Unknown biome "${biomeName}".`,
+        ts: Date.now(),
+      });
+      return true;
+    }
+    const target = resolveBiomeStyleTarget(parts.slice(4));
+    if (parts.length > 4 && !target) {
+      addWorldStyleUsage("Unknown style target for clear.");
+      return true;
+    }
+    clearBiomeStyleOverrides(biome.id, target?.key || null);
+    return true;
+  }
+
+  const biome = resolveBiomeName(parts[2]);
+  if (!biome) {
+    addChatEntry({
+      role: "codex_output",
+      content: `Unknown biome "${parts[2] || ""}".`,
+      ts: Date.now(),
+    });
+    return true;
+  }
+
+  let targetParts;
+  let colorHex;
+  if ((parts[3] || "").toLowerCase() === "tree") {
+    targetParts = parts.slice(3, 5);
+    colorHex = parts[5];
+  } else {
+    targetParts = parts.slice(3, 4);
+    colorHex = parts[4];
+  }
+
+  const target = resolveBiomeStyleTarget(targetParts);
+  if (!target || !colorHex) {
+    addWorldStyleUsage("Usage error for biome style command.");
+    return true;
+  }
+  const normalizedColor = toColorHex(colorHex, null);
+  if (!normalizedColor) {
+    addWorldStyleUsage(`Invalid color "${String(colorHex)}". Use #rrggbb.`);
+    return true;
+  }
+
+  setBiomeStyleColor(biome.id, target.key, normalizedColor, target.label);
+  return true;
+}
+
+function addWorldStyleUsage(prefix) {
+  addChatEntry({
+    role: "codex_output",
+    content: [
+      prefix || "Biome style commands:",
+      "Set: /world style <biome> <terrain|water|fog|trunk|canopy> <#rrggbb>",
+      "Set: /world style <biome> tree <trunk|canopy> <#rrggbb>",
+      "Clear: /world style clear <biome> [terrain|water|fog|trunk|canopy|all]",
+    ].join("\n"),
+    ts: Date.now(),
+  });
+}
+
+function resolveBiomeStyleTarget(tokens) {
+  const parts = Array.isArray(tokens) ? tokens.map((t) => String(t || "").toLowerCase()) : [];
+  if (parts.length === 0) return { key: null, label: "all" };
+  const raw = parts.join(" ");
+  if (raw === "terrain") return { key: "terrainColor", label: "terrain" };
+  if (raw === "water") return { key: "waterColorHex", label: "water" };
+  if (raw === "fog") return { key: "fogColorHex", label: "fog" };
+  if (raw === "trunk" || raw === "tree trunk") return { key: "treeTrunkColor", label: "tree trunk" };
+  if (raw === "canopy" || raw === "tree canopy") return { key: "treeCanopyColor", label: "tree canopy" };
+  if (raw === "all") return { key: null, label: "all" };
+  return null;
+}
+
+function ensureBiomeStylesState() {
+  if (!state.world.biomeStyles || typeof state.world.biomeStyles !== "object") {
+    state.world.biomeStyles = {};
+  }
+  return state.world.biomeStyles;
+}
+
+function applyBiomeStyleVisualRefresh(keys) {
+  const list = Array.isArray(keys) ? keys : [];
+  if (list.includes("terrainColor")) {
+    biomeTerrainColorCache.clear();
+    rebuildTerrain();
+  }
+  if (list.includes("treeTrunkColor") || list.includes("treeCanopyColor")) {
+    syncTreeMaterials();
+  }
+  if (list.includes("fogColorHex")) {
+    syncAtmosphereFromState();
+  }
+  if (list.includes("waterColorHex")) {
+    syncWaterColorFromState();
+  }
+  saveState();
+}
+
+function setBiomeStyleColor(biomeId, key, colorHex, label) {
+  const styles = ensureBiomeStylesState();
+  const next = { ...(styles[biomeId] || {}) };
+  next[key] = colorHex;
+  styles[biomeId] = next;
+  applyBiomeStyleVisualRefresh([key]);
+  addChatEntry({
+    role: "codex_output",
+    content: `Set ${label} color for biome "${biomeId}" to ${colorHex}.`,
+    ts: Date.now(),
+  });
+}
+
+function clearBiomeStyleOverrides(biomeId, key = null) {
+  const styles = ensureBiomeStylesState();
+  const current = styles[biomeId];
+  if (!current || typeof current !== "object") {
+    addChatEntry({
+      role: "codex_output",
+      content: `No biome style overrides set for "${biomeId}".`,
+      ts: Date.now(),
+    });
+    return;
+  }
+
+  const knownKeys = ["terrainColor", "waterColorHex", "fogColorHex", "treeTrunkColor", "treeCanopyColor"];
+  const touched = [];
+  if (key) {
+    if (key in current) {
+      delete current[key];
+      touched.push(key);
+    }
+  } else {
+    for (const candidate of knownKeys) {
+      if (candidate in current) touched.push(candidate);
+    }
+    delete styles[biomeId];
+  }
+
+  if (!key && styles[biomeId]) {
+    delete styles[biomeId];
+  } else if (key && Object.keys(current).length === 0) {
+    delete styles[biomeId];
+  }
+
+  if (touched.length === 0) {
+    addChatEntry({
+      role: "codex_output",
+      content: `No matching overrides to clear for biome "${biomeId}".`,
+      ts: Date.now(),
+    });
+    return;
+  }
+
+  applyBiomeStyleVisualRefresh(touched);
+  addChatEntry({
+    role: "codex_output",
+    content: key
+      ? `Cleared ${key} override for biome "${biomeId}".`
+      : `Cleared all biome color overrides for "${biomeId}".`,
+    ts: Date.now(),
+  });
+}
+
+function teleportPlayerToBiome(rawBiomeName, options = {}) {
+  const targetBiome = resolveBiomeName(rawBiomeName);
+  if (!targetBiome) {
+    if (!options.skipConfirmation) {
+      const biomeGuess = guessBiomeName(rawBiomeName);
+      if (biomeGuess) {
+        requestWorldCommandConfirmation({
+          canonicalCommand: `/world tp biome ${biomeGuess.biome.id}`,
+          reason: `I interpreted "${String(rawBiomeName).trim()}" as biome "${biomeGuess.biome.id}".`,
+          intent: { type: "teleport_biome", biomeId: biomeGuess.biome.id },
+        });
+        return;
+      }
+    }
+    addChatEntry({
+      role: "codex_output",
+      content: `Unknown biome "${rawBiomeName}". Click "World Cmds" for the biome list.`,
+      ts: Date.now(),
+    });
+    return;
+  }
+
+  const target = findNearestBiomeTarget(targetBiome.id, player.position.x, player.position.z);
+  if (!target) {
+    addChatEntry({
+      role: "codex_output",
+      content: `Could not find biome "${targetBiome.id}" nearby. Try another biome.`,
+      ts: Date.now(),
+    });
+    return;
+  }
+
+  player.position.set(target.x, target.y, target.z);
+  player.velocity.set(0, 0, 0);
+  player.grounded = false;
+  const cx = Math.floor(player.position.x / CHUNK_SIZE);
+  const cz = Math.floor(player.position.z / CHUNK_SIZE);
+  ensureChunks(cx, cz);
+  updateBiomeHud();
+  saveState();
+
+  addChatEntry({
+    role: "codex_output",
+    content: `Teleported to ${targetBiome.label} at ${Math.round(target.x)}, ${Math.round(target.z)}.`,
+    ts: Date.now(),
+  });
+}
+
+function resolveBiomeName(name) {
+  const normalized = String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+  if (!normalized) return null;
+  for (const biome of Object.values(BIOME_DEFS)) {
+    const idKey = biome.id.toLowerCase().replace(/[^a-z]/g, "");
+    const labelKey = biome.label.toLowerCase().replace(/[^a-z]/g, "");
+    if (normalized === idKey || normalized === labelKey) {
+      return biome;
+    }
+  }
+  return null;
+}
+
+function guessBiomeName(name) {
+  const query = normalizeWorldCommandToken(name);
+  if (!query) return null;
+  const candidates = Object.values(BIOME_DEFS).map((biome) => ({
+    biome,
+    keys: [biome.id, biome.label],
+  }));
+  let best = null;
+  let secondScore = Infinity;
+  for (const candidate of candidates) {
+    let candidateScore = Infinity;
+    for (const key of candidate.keys) {
+      const score = scoreWorldTokenGuess(query, normalizeWorldCommandToken(key));
+      if (score < candidateScore) candidateScore = score;
+    }
+    if (candidateScore < best?.score || best == null) {
+      secondScore = best?.score ?? Infinity;
+      best = { biome: candidate.biome, score: candidateScore };
+      continue;
+    }
+    if (candidateScore < secondScore) secondScore = candidateScore;
+  }
+  if (!best) return null;
+  const maxScore = maxWorldGuessScore(query.length);
+  const hasClearMargin = secondScore - best.score >= 1;
+  if (best.score > maxScore) return null;
+  if (!hasClearMargin && best.score > 0) return null;
+  return best;
+}
+
+function guessWorldTeleportBiomeCommand(parts) {
+  if (parts.length < 3 || (parts[0] || "").toLowerCase() !== "/world") return null;
+
+  const sub = guessWorldCommandToken(parts[1], ["biome", "tp"]);
+  if (!sub) return null;
+
+  if (sub.value === "biome" && !sub.exact) {
+    const biomeInput = parts.slice(2).join(" ");
+    if (!biomeInput) return null;
+    const guessedBiome = resolveBiomeName(biomeInput) || guessBiomeName(biomeInput)?.biome;
+    if (!guessedBiome) return null;
+    return {
+      canonicalCommand: `/world biome ${guessedBiome.id}`,
+      reason: `I interpreted "${parts[1]}" as "biome"${guessedBiome.id !== biomeInput ? ` and "${biomeInput}" as "${guessedBiome.id}"` : ""}.`,
+      intent: { type: "teleport_biome", biomeId: guessedBiome.id },
+    };
+  }
+
+  if (sub.value !== "tp") return null;
+  if (parts.length < 4) return null;
+  const target = guessWorldCommandToken(parts[2], ["biome"]);
+  if (!target || (sub.exact && target.exact)) return null;
+
+  const biomeInput = parts.slice(3).join(" ");
+  if (!biomeInput) return null;
+  const guessedBiomeResult = resolveBiomeName(biomeInput) ? null : guessBiomeName(biomeInput);
+  const guessedBiome = guessedBiomeResult?.biome || resolveBiomeName(biomeInput);
+  if (!guessedBiome) return null;
+
+  const reasonParts = [];
+  if (!sub.exact) reasonParts.push(`"${parts[1]}" as "tp"`);
+  if (!target.exact) reasonParts.push(`"${parts[2]}" as "biome"`);
+  if (guessedBiomeResult) reasonParts.push(`"${biomeInput}" as "${guessedBiome.id}"`);
+
+  return {
+    canonicalCommand: `/world tp biome ${guessedBiome.id}`,
+    reason: reasonParts.length ? `I interpreted ${reasonParts.join(", ")}.` : null,
+    intent: { type: "teleport_biome", biomeId: guessedBiome.id },
+  };
+}
+
+function handlePendingWorldCommandConfirmation(message) {
+  if (!pendingWorldCommandConfirmation) return false;
+  const normalized = String(message || "").trim().toLowerCase();
+  if (/^\/world(?:\s|$)/.test(normalized)) {
+    pendingWorldCommandConfirmation = null;
+    return false;
+  }
+  if (/^(y|yes|yeah|yep|sure|ok|okay|do it|apply)$/i.test(normalized)) {
+    const pending = pendingWorldCommandConfirmation;
+    pendingWorldCommandConfirmation = null;
+    addChatEntry({
+      role: "codex_output",
+      content: `Applying guessed world command: ${pending.canonicalCommand}`,
+      ts: Date.now(),
+    });
+    executeWorldCommandIntent(pending.intent);
+    return true;
+  }
+  if (/^(n|no|nope|cancel|stop)$/i.test(normalized)) {
+    pendingWorldCommandConfirmation = null;
+    addChatEntry({
+      role: "codex_output",
+      content: "Cancelled guessed world command.",
+      ts: Date.now(),
+    });
+    return true;
+  }
+  return false;
+}
+
+function requestWorldCommandConfirmation(guess) {
+  pendingWorldCommandConfirmation = {
+    canonicalCommand: guess.canonicalCommand,
+    intent: guess.intent,
+  };
+  addChatEntry({
+    role: "codex_output",
+    content: [
+      "I'm not fully sure what you meant.",
+      `Best guess: ${guess.canonicalCommand}`,
+      guess.reason || null,
+      'Reply "yes" to apply it or "no" to cancel.',
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    ts: Date.now(),
+  });
+}
+
+function executeWorldCommandIntent(intent) {
+  if (!intent || typeof intent !== "object") return;
+  if (intent.type === "teleport_biome" && intent.biomeId) {
+    teleportPlayerToBiome(intent.biomeId, { skipConfirmation: true });
+  }
+}
+
+function guessWorldCommandToken(raw, candidates) {
+  const query = normalizeWorldCommandToken(raw);
+  if (!query) return null;
+  let best = null;
+  let secondScore = Infinity;
+  for (const candidate of candidates) {
+    const score = scoreWorldTokenGuess(query, normalizeWorldCommandToken(candidate));
+    if (best == null || score < best.score) {
+      secondScore = best?.score ?? Infinity;
+      best = { value: candidate, score };
+      continue;
+    }
+    if (score < secondScore) secondScore = score;
+  }
+  if (!best) return null;
+  if (best.score === 0) return { value: best.value, exact: true, score: 0 };
+  if (best.score > maxWorldGuessScore(query.length)) return null;
+  if (secondScore - best.score < 1) return null;
+  return { value: best.value, exact: false, score: best.score };
+}
+
+function normalizeWorldCommandToken(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+}
+
+function scoreWorldTokenGuess(query, candidate) {
+  if (!query || !candidate) return Infinity;
+  if (query === candidate) return 0;
+  if (candidate.startsWith(query) || query.startsWith(candidate)) return 1;
+  return levenshteinDistance(query, candidate);
+}
+
+function maxWorldGuessScore(length) {
+  if (length <= 2) return 1;
+  if (length <= 5) return 2;
+  return 3;
+}
+
+function levenshteinDistance(a, b) {
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const matrix = Array.from({ length: rows }, () => new Array(cols).fill(0));
+  for (let i = 0; i < rows; i += 1) matrix[i][0] = i;
+  for (let j = 0; j < cols; j += 1) matrix[0][j] = j;
+  for (let i = 1; i < rows; i += 1) {
+    for (let j = 1; j < cols; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return matrix[a.length][b.length];
+}
+
+function findNearestBiomeTarget(targetBiomeId, originX, originZ) {
+  const maxRadius = 8192;
+  const step = 48;
+
+  for (let radius = 0; radius <= maxRadius; radius += step) {
+    if (radius === 0) {
+      const centerBiome = getBiomeAt(originX, originZ);
+      if (centerBiome?.id === targetBiomeId) {
+        const groundY = heightAt(originX, originZ);
+        return {
+          x: originX,
+          z: originZ,
+          y: Math.max(groundY + 3, state.world.water.level + 3),
+        };
+      }
+      continue;
+    }
+
+    for (let offset = -radius; offset <= radius; offset += step) {
+      const candidates = [
+        [originX + offset, originZ - radius],
+        [originX + radius, originZ + offset],
+        [originX + offset, originZ + radius],
+        [originX - radius, originZ + offset],
+      ];
+      for (const [x, z] of candidates) {
+        const biome = getBiomeAt(x, z);
+        if (biome?.id !== targetBiomeId) continue;
+        const groundY = heightAt(x, z);
+        return {
+          x,
+          z,
+          y: Math.max(groundY + 3, state.world.water.level + 3),
+        };
+      }
+    }
+  }
+
+  return null;
 }
 
 function scheduleSoftRefresh() {
@@ -1279,6 +2152,7 @@ function restoreRuntimeState(snapshot) {
   water.material.color.set(state.world.water.colorHex);
   scene.fog.density = state.world.fog.density;
   syncAtmosphereFromState();
+  syncWaterColorFromState();
   syncTerrainShaderUniforms();
   syncTreeMaterials();
   treeChunks.forEach((treeGroup) => {
