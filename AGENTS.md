@@ -12,7 +12,10 @@ Project goal: a self-building 3D world that can be explored and updated live wit
 - `app/index.html`: entry point and HUD layout.
 - `app/styles.css`: visual system for HUD + chat.
 - `app/main.js`: world generation, controls, persistence, and Codex bridge.
+- `app/actions/runtimeActions.js`: action handler registry for runtime world mutations.
+- `app/trace/traceLog.js`: bounded action trace rendering helpers.
 - `app/worker.js`: simulated Codex worker for now.
+- `shared/protocol.js`: shared protocol versioning, envelope normalization, and action validation.
 - `server/index.js`: WebSocket bridge for Codex messaging.
 - `server/codexAdapter.js`: OpenAI Codex adapter for streamed responses.
 

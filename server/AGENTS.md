@@ -6,6 +6,7 @@ Purpose: WebSocket bridge between the browser and a Codex backend.
 - `index.js`: WebSocket server and message routing.
 - `codexAdapter.js`: OpenAI Codex adapter for streaming responses.
 - `repoAgent.js`: runs local `codex exec` to apply real repo file changes.
+- `../shared/protocol.js`: protocol versions + shared action validation.
 
 ## Protocol
 Incoming from browser:
@@ -29,3 +30,7 @@ Outgoing to browser:
 - `CODEX_CLI_SANDBOX`: sandbox mode for `codex exec` (default `workspace-write`).
 - `CODEX_CLI_FULL_AUTO`: `1` to include `--full-auto`.
 - `CODEX_CLI_TIMEOUT_MS`: max runtime for repo edits.
+- `CODEX_MAX_CHANGED_FILES`: max changed files budget per repo task.
+- `CODEX_MAX_DIFF_LINES`: max changed line budget per repo task.
+- `CODEX_PROTECTED_PATHS`: comma-separated path prefixes to block in repo edits.
+- `CODEX_POST_CHECK_CMD`: optional verification command run after repo edits.

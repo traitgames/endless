@@ -19,12 +19,20 @@ self.onmessage = (event) => {
 
     if (/seed|terrain|new world/i.test(message)) {
       const newSeed = Math.floor(Math.random() * 1e9);
-      self.postMessage({ type: "update", update: { seed: newSeed, chatNote: `Terrain seed updated to ${newSeed}.` } });
+      self.postMessage({
+        type: "update",
+        update: {
+          updateId: `sim_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+          seed: newSeed,
+          chatNote: `Terrain seed updated to ${newSeed}.`,
+        },
+      });
     }
     if (/tree|forest|woods/i.test(message)) {
       self.postMessage({
         type: "update",
         update: {
+          updateId: `sim_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
           actions: [{ type: "set_trees", density: 0.34 }],
           chatNote: "Added more trees across nearby terrain.",
         },

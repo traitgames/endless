@@ -1,4 +1,13 @@
 import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+import { createBridgeClient } from "./bridgeClient.js";
+import { createUpdateEngine } from "./updateEngine.js";
+import { createChatStore } from "./chat/chatStore.js";
+import { updatePlayerRuntime } from "./player/movement.js";
+import { loadPersistedState, savePersistedState, clampNumber, toColorHex } from "./state/persistence.js";
+import { createTerrainHeightSampler } from "./world/terrainNoise.js";
+import { createRuntimeActionExecutor } from "./actions/runtimeActions.js";
+import { createTraceLogger } from "./trace/traceLog.js";
+import { PROTOCOL_VERSION } from "../shared/protocol.js";
 
 const canvas = document.getElementById("scene");
 const seedEl = document.getElementById("seed");
@@ -29,6 +38,7 @@ if (!backendModeEl) {
 }
 
 const STORAGE_KEY = "endless_state_v1";
+const STATE_VERSION = 2;
 let resetInProgress = false;
 const BOOT_SEED = Math.floor(Math.random() * 1e9);
 let noiseSeed = BOOT_SEED;
@@ -73,7 +83,7 @@ const DEFAULT_WORLD = {
 const DEFAULT_STATE = {
   seed: BOOT_SEED,
   world: DEFAULT_WORLD,
-  timeOfDay: hash2(19, 47),
+  timeOfDay: seededHash2(19, 47, BOOT_SEED),
   ui: {
     chatOpen: false,
   },
@@ -85,7 +95,13 @@ const DEFAULT_STATE = {
   chat: [],
 };
 
-const state = loadState();
+const state = loadPersistedState({
+  storageKey: STORAGE_KEY,
+  defaultState: DEFAULT_STATE,
+  stateVersion: STATE_VERSION,
+  defaultWorld: DEFAULT_WORLD,
+  legacyWorld: LEGACY_WORLD,
+});
 noiseSeed = state.seed;
 seedEl.textContent = state.seed;
 
@@ -533,14 +549,19 @@ function updateDayNightCycle(dt) {
     .lerp(dynamicLightColors.moonWarm, twilight * 0.2);
 }
 
-function heightAt(x, z) {
-  const terrain = state.world.terrain;
-  const scaledNoise = terrain.noiseScale / TERRAIN_HORIZONTAL_SCALE;
-  const base = fbm(x * scaledNoise, z * scaledNoise, 4, 1.9, 0.5);
-  const ridged = Math.abs(
-    fbm(x * scaledNoise * terrain.ridgeScale, z * scaledNoise * terrain.ridgeScale, 3, 2.2, 0.6)
-  );
-  return base * terrain.baseHeight + ridged * terrain.ridgeHeight;
+const heightAt = createTerrainHeightSampler({
+  getNoiseSeed: () => noiseSeed,
+  getTerrain: () => state.world.terrain,
+  terrainHorizontalScale: TERRAIN_HORIZONTAL_SCALE,
+});
+
+function hash2(x, z) {
+  return seededHash2(x, z, noiseSeed);
+}
+
+function seededHash2(x, z, seed) {
+  const h = Math.sin(x * 127.1 + z * 311.7 + seed) * 43758.5453;
+  return h - Math.floor(h);
 }
 
 function ensureChunks(cx, cz) {
@@ -912,48 +933,17 @@ document.addEventListener("pointerlockchange", () => {
 const clock = new THREE.Clock();
 
 function updatePlayer(dt) {
-  const speed = keys.has("ShiftLeft") ? 10 : 6;
-  const dir = new THREE.Vector3();
-  if (keys.has("KeyW")) dir.z -= 1;
-  if (keys.has("KeyS")) dir.z += 1;
-  if (keys.has("KeyA")) dir.x -= 1;
-  if (keys.has("KeyD")) dir.x += 1;
-
-  if (dir.lengthSq() > 0) {
-    dir.normalize();
-    const forward = new THREE.Vector3(Math.sin(player.yaw), 0, Math.cos(player.yaw));
-    const right = new THREE.Vector3(forward.z, 0, -forward.x);
-    const move = forward.multiplyScalar(dir.z).add(right.multiplyScalar(dir.x));
-    player.velocity.x = move.x * speed;
-    player.velocity.z = move.z * speed;
-  } else {
-    player.velocity.x *= 0.86;
-    player.velocity.z *= 0.86;
-  }
-
-  if (keys.has("Space") && player.grounded) {
-    player.velocity.y = 9;
-    player.grounded = false;
-  }
-
-  player.velocity.y -= 18 * dt;
-
-  player.position.addScaledVector(player.velocity, dt);
-
-  const ground = heightAt(player.position.x, player.position.z) + 2.2;
-  if (player.position.y <= ground) {
-    player.position.y = ground;
-    player.velocity.y = 0;
-    player.grounded = true;
-  }
-
-  const cx = Math.floor(player.position.x / CHUNK_SIZE);
-  const cz = Math.floor(player.position.z / CHUNK_SIZE);
-  ensureChunks(cx, cz);
-  chunkEl.textContent = `${cx},${cz}`;
-
-  camera.position.copy(player.position);
-  camera.rotation.set(player.pitch, player.yaw, 0, "YXZ");
+  updatePlayerRuntime({
+    dt,
+    keys,
+    player,
+    heightAt,
+    ensureChunks,
+    chunkSize: CHUNK_SIZE,
+    chunkEl,
+    camera,
+    Vector3: THREE.Vector3,
+  });
 }
 
 function animate() {
@@ -989,11 +979,12 @@ rebuildLandmarks();
 animate();
 setChatOpen(Boolean(state.ui?.chatOpen));
 
-const chatState = state.chat;
-pruneSystemConnectionMessages(chatState);
-chatState.forEach((entry) => {
-  renderChatEntry(entry);
+const chatStore = createChatStore({
+  chatLogEl: chatLog,
+  entries: state.chat,
 });
+const chatState = chatStore.entries;
+const trace = createTraceLogger(traceLog, 80);
 
 chatForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -1015,46 +1006,33 @@ resetSaveBtn?.addEventListener("click", () => {
 });
 
 chatClear.addEventListener("click", () => {
-  chatState.length = 0;
-  chatLog.textContent = "";
+  chatStore.clear();
   saveState();
 });
 
 function addChatEntry(entry) {
-  chatState.push(entry);
-  renderChatEntry(entry);
+  chatStore.addEntry(entry);
 }
 
 function addTransientChatEntry(entry) {
-  renderChatEntry(entry);
-}
-
-function renderChatEntry(entry) {
-  const node = document.createElement("div");
-  node.className = `chat-entry ${entry.role}`;
-  const meta = document.createElement("div");
-  meta.className = "meta";
-  meta.textContent = entry.role.replace("_", " ");
-  const bubble = document.createElement("div");
-  bubble.className = "bubble";
-  bubble.textContent = entry.content;
-  node.append(meta, bubble);
-  chatLog.appendChild(node);
-  chatLog.scrollTop = chatLog.scrollHeight;
+  chatStore.addTransientEntry(entry);
 }
 
 let codexWorker = null;
-let wsBridge = null;
 const ALLOW_WORKER_FALLBACK =
   localStorage.getItem("endless_allow_worker_fallback") === "1" || window.ENABLE_SIM_WORKER === true;
 const AUTO_SOFT_REFRESH = localStorage.getItem("endless_auto_soft_refresh") !== "0";
 let refreshScheduled = false;
+const bridgeUrl = localStorage.getItem("endless_ws_url") || "ws://localhost:8787";
 
 function handleCodexPayload(payload) {
   if (!payload) return;
   if (payload.type === "backend_info") {
     const mode = typeof payload.mode === "string" ? payload.mode : "unknown";
     backendModeEl.textContent = mode;
+    if (payload.protocolVersion && payload.protocolVersion !== PROTOCOL_VERSION) {
+      trace.addTracePhrase(`Protocol mismatch server=${payload.protocolVersion} client=${PROTOCOL_VERSION}`, "rejected");
+    }
     return;
   }
   if (payload.type === "route_info") {
@@ -1064,7 +1042,7 @@ function handleCodexPayload(payload) {
   }
   if (payload.type === "trace") {
     const phrase = typeof payload.phrase === "string" ? payload.phrase : "trace event";
-    addTracePhrase(phrase, payload.status);
+    trace.addTracePhrase(phrase, payload.status);
     return;
   }
   if (payload.type === "thinking") {
@@ -1080,105 +1058,26 @@ function handleCodexPayload(payload) {
   }
 }
 
-function setupWebSocketBridge() {
-  if (wsBridge) return wsBridge;
-  const url = localStorage.getItem("endless_ws_url") || "ws://localhost:8787";
-  if (backendModeEl) backendModeEl.textContent = "connecting";
-  let socket = new WebSocket(url);
-  let ready = false;
-  const pending = new Map();
-  let connectWaiters = [];
-
-  const resolveConnectWaiters = (ok) => {
-    connectWaiters.forEach((resolve) => resolve(ok));
-    connectWaiters = [];
-  };
-
-  const waitForOpen = (timeoutMs = 5000) =>
-    new Promise((resolve) => {
-      if (ready && socket.readyState === WebSocket.OPEN) {
-        resolve(true);
-        return;
-      }
-      connectWaiters.push(resolve);
-      setTimeout(() => {
-        const idx = connectWaiters.indexOf(resolve);
-        if (idx >= 0) {
-          connectWaiters.splice(idx, 1);
-          resolve(false);
-        }
-      }, timeoutMs);
-    });
-
-  socket.addEventListener("open", () => {
-    ready = true;
-    if (backendModeEl && backendModeEl.textContent === "connecting") {
-      backendModeEl.textContent = "connected";
+const wsBridge = createBridgeClient({
+  url: bridgeUrl,
+  onPayload: (payload) => {
+    handleCodexPayload(payload);
+  },
+  onStatus: (status) => {
+    if (backendModeEl) backendModeEl.textContent = status;
+    if (status === "offline") {
+      addTransientChatEntry({ role: "codex_output", content: "Codex server disconnected.", ts: Date.now() });
     }
-    resolveConnectWaiters(true);
-  });
-
-  socket.addEventListener("message", (event) => {
-    try {
-      const payload = JSON.parse(event.data);
-      if (payload?.requestId && pending.has(payload.requestId) && payload.type === "final") {
-        pending.get(payload.requestId)(payload.reply || null);
-        pending.delete(payload.requestId);
-        return;
-      }
-      handleCodexPayload(payload);
-    } catch (err) {
-      addChatEntry({ role: "codex_output", content: `Codex server message error: ${err.message}`, ts: Date.now() });
-    }
-  });
-
-  socket.addEventListener("close", () => {
-    ready = false;
-    resolveConnectWaiters(false);
-    backendModeEl.textContent = "offline";
-    addTransientChatEntry({ role: "codex_output", content: "Codex server disconnected.", ts: Date.now() });
-  });
-
-  socket.addEventListener("error", () => {
-    ready = false;
-    resolveConnectWaiters(false);
-    backendModeEl.textContent = "error";
-    addTransientChatEntry({
-      role: "codex_output",
-      content: `Unable to reach Codex server at ${url}.`,
-      ts: Date.now(),
-    });
-  });
-
-  wsBridge = {
-    isReady: () => ready,
-    send: async ({ message, state: snapshot }) => {
-      if (socket.readyState === WebSocket.CONNECTING) {
-        const opened = await waitForOpen(5000);
-        if (!opened) throw new Error("Codex server connection timed out");
-      }
-      if (socket.readyState !== WebSocket.OPEN) {
-        throw new Error("Codex server is not connected");
-      }
-      const requestId = crypto.randomUUID();
-      const payload = { type: "message", message, snapshot, requestId };
-      socket.send(JSON.stringify(payload));
-      return new Promise((resolve) => {
-        pending.set(requestId, resolve);
-        setTimeout(() => {
-          if (pending.has(requestId)) {
-            pending.delete(requestId);
-            resolve(null);
-          }
-        }, 20000);
+    if (status === "error") {
+      addTransientChatEntry({
+        role: "codex_output",
+        content: `Unable to reach Codex server at ${bridgeUrl}.`,
+        ts: Date.now(),
       });
-    },
-  };
-
-  return wsBridge;
-}
-
-setupWebSocketBridge();
+    }
+  },
+});
+wsBridge.connect();
 
 function ensureWorker() {
   if (codexWorker) return codexWorker;
@@ -1191,7 +1090,7 @@ function ensureWorker() {
 
 async function sendToCodex(message) {
   stateEl.textContent = "sending";
-  const bridge = window.CodexBridge || setupWebSocketBridge();
+  const bridge = window.CodexBridge || wsBridge;
   if (bridge && typeof bridge.send === "function") {
     try {
       const reply = await bridge.send({ message, state });
@@ -1261,220 +1160,154 @@ function scheduleSoftRefresh() {
   }, 1500);
 }
 
+const updateEngine = createUpdateEngine({
+  applyAction,
+  snapshot: snapshotRuntimeState,
+  restore: restoreRuntimeState,
+  onTrace: (result, action) => {
+    trace.addTraceEntry(result, action);
+  },
+  onChatNote: (content) => {
+    addChatEntry({ role: "codex_output", content, ts: Date.now() });
+  },
+});
+
+const runtimeActionExecutor = createRuntimeActionExecutor({
+  state,
+  player,
+  scene,
+  water,
+  seedEl,
+  terrainMaterial,
+  treeChunks,
+  chunkSize: CHUNK_SIZE,
+  clampNumber,
+  toColorHex,
+  syncAtmosphereFromState,
+  syncTerrainShaderUniforms,
+  syncTreeMaterials,
+  ensureChunks,
+  rebuildTerrain,
+  rebuildLandmarks,
+  setNoiseSeed: (seed) => {
+    noiseSeed = seed;
+  },
+});
+
 function applyUpdate(update) {
   if (!update) return;
   stateEl.textContent = "updating";
-  const actionReport = [];
-  if (Array.isArray(update.actions)) {
-    for (const action of update.actions) {
-      const result = applyAction(action);
-      actionReport.push(result);
-      addTraceEntry(result, action);
-    }
-  } else {
-    if (typeof update.seed === "number") {
-      const action = { type: "set_seed", seed: update.seed };
-      const result = applyAction(action);
-      actionReport.push(result);
-      addTraceEntry(result, action);
-    }
-    if (typeof update.terrainColor === "string") {
-      const action = { type: "set_terrain_color", colorHex: update.terrainColor };
-      const result = applyAction(action);
-      actionReport.push(result);
-      addTraceEntry(result, action);
-    }
-  }
-  if (update.chatNote) {
-    addChatEntry({ role: "codex_output", content: update.chatNote, ts: Date.now() });
-  }
-  const appliedCount = actionReport.filter((entry) => entry.status === "applied").length;
-  if (update.actions && update.actions.length > 0) {
+  const result = updateEngine.applyUpdate(update);
+  if (!result.ok) {
     addChatEntry({
       role: "codex_output",
-      content: `Action results: ${appliedCount}/${update.actions.length} applied.`,
+      content: `Update rejected: ${result.reason}`,
+      ts: Date.now(),
+    });
+    stateEl.textContent = "ready";
+    return;
+  }
+  if (result.skipped) {
+    addChatEntry({
+      role: "codex_output",
+      content: `Skipped duplicate update ${result.updateId}.`,
+      ts: Date.now(),
+    });
+    stateEl.textContent = "ready";
+    return;
+  }
+  if (result.totalCount > 0) {
+    addChatEntry({
+      role: "codex_output",
+      content: `Action results: ${result.appliedCount}/${result.totalCount} applied.`,
+      ts: Date.now(),
+    });
+  }
+  if (result.rejectedCount > 0) {
+    addChatEntry({
+      role: "codex_output",
+      content: `Rejected ${result.rejectedCount} invalid action(s).`,
       ts: Date.now(),
     });
   }
   stateEl.textContent = "ready";
 }
 
-function applyAction(action) {
-  if (!action || typeof action !== "object" || typeof action.type !== "string") {
-    return traceResult("rejected", "unknown", "invalid action payload");
-  }
-
-  if (action.type === "set_seed") {
-    if (typeof action.seed !== "number" || !Number.isFinite(action.seed)) {
-      return traceResult("rejected", "set_seed", "invalid seed");
-    }
-    if (action.seed === state.seed) return traceResult("applied", "set_seed", "unchanged");
-    state.seed = Math.trunc(action.seed);
-    noiseSeed = state.seed;
-    seedEl.textContent = state.seed;
-    rebuildTerrain();
-    return traceResult("applied", "set_seed", `seed=${state.seed}`);
-  }
-
-  if (action.type === "set_terrain") {
-    let touched = false;
-    touched = setTerrainNumber("noiseScale", action.noiseScale, 0.005, 0.25) || touched;
-    touched = setTerrainNumber("baseHeight", action.baseHeight, 1, 80) || touched;
-    touched = setTerrainNumber("ridgeScale", action.ridgeScale, 0.5, 6) || touched;
-    touched = setTerrainNumber("ridgeHeight", action.ridgeHeight, 0, 50) || touched;
-    if (!touched) return traceResult("rejected", "set_terrain", "no valid fields");
-    rebuildTerrain();
-    return traceResult("applied", "set_terrain", "terrain params updated");
-  }
-
-  if (action.type === "set_water") {
-    let touched = false;
-    if (typeof action.level === "number" && Number.isFinite(action.level)) {
-      state.world.water.level = clampNumber(action.level, -30, 80, state.world.water.level);
-      water.position.y = state.world.water.level;
-      syncTerrainShaderUniforms();
-      touched = true;
-    }
-    if (typeof action.opacity === "number" && Number.isFinite(action.opacity)) {
-      state.world.water.opacity = clampNumber(action.opacity, 0.05, 1, state.world.water.opacity);
-      water.material.opacity = state.world.water.opacity;
-      touched = true;
-    }
-    if (typeof action.colorHex === "string") {
-      state.world.water.colorHex = toColorHex(action.colorHex, state.world.water.colorHex);
-      water.material.color.set(state.world.water.colorHex);
-      touched = true;
-    }
-    return touched
-      ? traceResult("applied", "set_water", "water settings updated")
-      : traceResult("rejected", "set_water", "no valid fields");
-  }
-
-  if (action.type === "set_fog") {
-    let touched = false;
-    if (typeof action.density === "number" && Number.isFinite(action.density)) {
-      state.world.fog.density = clampNumber(action.density, 0.001, 0.08, state.world.fog.density);
-      scene.fog.density = state.world.fog.density;
-      touched = true;
-    }
-    if (typeof action.colorHex === "string") {
-      state.world.fog.colorHex = toColorHex(action.colorHex, state.world.fog.colorHex);
-      syncAtmosphereFromState();
-      touched = true;
-    }
-    return touched
-      ? traceResult("applied", "set_fog", "fog settings updated")
-      : traceResult("rejected", "set_fog", "no valid fields");
-  }
-
-  if (action.type === "set_terrain_color") {
-    if (typeof action.colorHex !== "string") return traceResult("rejected", "set_terrain_color", "invalid color");
-    state.world.terrainColor = toColorHex(action.colorHex, state.world.terrainColor);
-    terrainMaterial.color.set(state.world.terrainColor);
-    syncTerrainShaderUniforms();
-    return traceResult("applied", "set_terrain_color", `color=${state.world.terrainColor}`);
-  }
-
-  if (action.type === "set_trees") {
-    let touched = false;
-    if (typeof action.density === "number" && Number.isFinite(action.density)) {
-      state.world.trees.density = clampNumber(action.density, 0, 1.2, state.world.trees.density);
-      touched = true;
-    }
-    if (typeof action.trunkColor === "string") {
-      state.world.trees.trunkColor = toColorHex(action.trunkColor, state.world.trees.trunkColor);
-      touched = true;
-    }
-    if (typeof action.canopyColor === "string") {
-      state.world.trees.canopyColor = toColorHex(action.canopyColor, state.world.trees.canopyColor);
-      touched = true;
-    }
-    if (!touched) return traceResult("rejected", "set_trees", "no valid fields");
-    syncTreeMaterials();
-    treeChunks.forEach((treeGroup) => {
-      scene.remove(treeGroup);
-    });
-    treeChunks.clear();
-    const cx = Math.floor(player.position.x / CHUNK_SIZE);
-    const cz = Math.floor(player.position.z / CHUNK_SIZE);
-    ensureChunks(cx, cz);
-    return traceResult("applied", "set_trees", "tree settings updated");
-  }
-
-  if (action.type === "spawn_landmark") {
-    const descriptor = {
-      kind: action.kind === "beacon" ? "beacon" : "pillar",
-      x: clampNumber(action.x, -10000, 10000, 0),
-      z: clampNumber(action.z, -10000, 10000, 0),
-      yOffset: clampNumber(action.yOffset, -20, 100, 2),
-      scale: clampNumber(action.scale, 0.3, 8, 1),
-      colorHex: toColorHex(action.colorHex, action.kind === "beacon" ? "#f1b04f" : "#89e6c7"),
-    };
-    state.world.landmarks.push(descriptor);
-    rebuildLandmarks();
-    return traceResult("applied", "spawn_landmark", `${descriptor.kind} at ${descriptor.x},${descriptor.z}`);
-  }
-
-  if (action.type === "clear_landmarks") {
-    state.world.landmarks = [];
-    rebuildLandmarks();
-    return traceResult("applied", "clear_landmarks", "all landmarks cleared");
-  }
-
-  return traceResult("rejected", action.type, "unsupported action type");
-}
-
-function setTerrainNumber(key, value, min, max) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return false;
-  state.world.terrain[key] = clampNumber(value, min, max, state.world.terrain[key]);
-  return true;
-}
-
-function saveState() {
-  if (resetInProgress) return;
-  const payload = {
+function snapshotRuntimeState() {
+  return {
     seed: state.seed,
-    world: state.world,
-    timeOfDay: clampNumber(worldTime / DAY_NIGHT.dayLengthSeconds, 0, 1, 0),
-    ui: {
-      chatOpen,
-    },
+    world: structuredClone(state.world),
+    worldTime,
     player: {
       position: {
         x: player.position.x,
         y: player.position.y,
         z: player.position.z,
       },
+      velocity: {
+        x: player.velocity.x,
+        y: player.velocity.y,
+        z: player.velocity.z,
+      },
       yaw: player.yaw,
       pitch: player.pitch,
+      grounded: player.grounded,
     },
-    chat: chatState.slice(-120),
   };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
 }
 
-function loadState() {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return structuredClone(DEFAULT_STATE);
-  try {
-    const parsed = JSON.parse(raw);
-    return {
-      seed: typeof parsed.seed === "number" ? parsed.seed : DEFAULT_STATE.seed,
-      world: normalizeWorld(parsed.world),
-      timeOfDay: clampNumber(parsed.timeOfDay, 0, 1, DEFAULT_STATE.timeOfDay),
-      ui: {
-        chatOpen: Boolean(parsed.ui?.chatOpen),
-      },
-      player: {
-        position: parsed.player?.position || DEFAULT_STATE.player.position,
-        yaw: parsed.player?.yaw || 0,
-        pitch: parsed.player?.pitch || 0,
-      },
-      chat: Array.isArray(parsed.chat) ? parsed.chat : [],
-    };
-  } catch (err) {
-    return structuredClone(DEFAULT_STATE);
-  }
+function restoreRuntimeState(snapshot) {
+  state.seed = snapshot.seed;
+  state.world = structuredClone(snapshot.world);
+  noiseSeed = state.seed;
+  seedEl.textContent = state.seed;
+  worldTime = clampNumber(snapshot.worldTime, 0, DAY_NIGHT.dayLengthSeconds, worldTime);
+
+  player.position.x = snapshot.player.position.x;
+  player.position.y = snapshot.player.position.y;
+  player.position.z = snapshot.player.position.z;
+  player.velocity.x = snapshot.player.velocity.x;
+  player.velocity.y = snapshot.player.velocity.y;
+  player.velocity.z = snapshot.player.velocity.z;
+  player.yaw = snapshot.player.yaw;
+  player.pitch = snapshot.player.pitch;
+  player.grounded = snapshot.player.grounded;
+
+  terrainMaterial.color.set(state.world.terrainColor);
+  water.position.y = state.world.water.level;
+  water.material.opacity = state.world.water.opacity;
+  water.material.color.set(state.world.water.colorHex);
+  scene.fog.density = state.world.fog.density;
+  syncAtmosphereFromState();
+  syncTerrainShaderUniforms();
+  syncTreeMaterials();
+  treeChunks.forEach((treeGroup) => {
+    scene.remove(treeGroup);
+  });
+  treeChunks.clear();
+  rebuildTerrain();
+  const cx = Math.floor(player.position.x / CHUNK_SIZE);
+  const cz = Math.floor(player.position.z / CHUNK_SIZE);
+  ensureChunks(cx, cz);
+  rebuildLandmarks();
+}
+
+function applyAction(action) {
+  return runtimeActionExecutor.applyAction(action);
+}
+
+function saveState() {
+  savePersistedState({
+    storageKey: STORAGE_KEY,
+    stateVersion: STATE_VERSION,
+    resetInProgress,
+    state,
+    worldTime,
+    dayLengthSeconds: DAY_NIGHT.dayLengthSeconds,
+    chatOpen,
+    player,
+    chatState,
+  });
 }
 
 const saveTimer = setInterval(saveState, 2000);
@@ -1482,193 +1315,3 @@ function handleBeforeUnload() {
   saveState();
 }
 window.addEventListener("beforeunload", handleBeforeUnload);
-
-function normalizeWorld(value) {
-  const source = value && typeof value === "object" ? value : {};
-  const terrain = source.terrain && typeof source.terrain === "object" ? source.terrain : {};
-  const waterCfg = source.water && typeof source.water === "object" ? source.water : {};
-  const fogCfg = source.fog && typeof source.fog === "object" ? source.fog : {};
-  const treesCfg = source.trees && typeof source.trees === "object" ? source.trees : {};
-  const landmarks = Array.isArray(source.landmarks) ? source.landmarks : [];
-  const rawFogDensity = clampNumber(fogCfg.density, 0.001, 0.08, DEFAULT_WORLD.fog.density);
-  const fogDensity = rawFogDensity === 0.015 ? DEFAULT_WORLD.fog.density : rawFogDensity;
-  const terrainColor = remapLegacyColor(
-    toColorHex(source.terrainColor, DEFAULT_WORLD.terrainColor),
-    LEGACY_WORLD.terrainColor,
-    DEFAULT_WORLD.terrainColor
-  );
-  const trunkColor = remapLegacyColor(
-    toColorHex(treesCfg.trunkColor, DEFAULT_WORLD.trees.trunkColor),
-    LEGACY_WORLD.trees.trunkColor,
-    DEFAULT_WORLD.trees.trunkColor
-  );
-  const canopyColor = remapLegacyColor(
-    toColorHex(treesCfg.canopyColor, DEFAULT_WORLD.trees.canopyColor),
-    LEGACY_WORLD.trees.canopyColor,
-    DEFAULT_WORLD.trees.canopyColor
-  );
-  const waterColor = remapLegacyColor(
-    toColorHex(waterCfg.colorHex, DEFAULT_WORLD.water.colorHex),
-    LEGACY_WORLD.water.colorHex,
-    DEFAULT_WORLD.water.colorHex
-  );
-  const fogColor = remapLegacyColor(
-    toColorHex(fogCfg.colorHex, DEFAULT_WORLD.fog.colorHex),
-    LEGACY_WORLD.fog.colorHex,
-    DEFAULT_WORLD.fog.colorHex
-  );
-  return {
-    terrain: {
-      noiseScale: clampNumber(terrain.noiseScale, 0.005, 0.25, DEFAULT_WORLD.terrain.noiseScale),
-      baseHeight: clampNumber(terrain.baseHeight, 1, 80, DEFAULT_WORLD.terrain.baseHeight),
-      ridgeScale: clampNumber(terrain.ridgeScale, 0.5, 6, DEFAULT_WORLD.terrain.ridgeScale),
-      ridgeHeight: clampNumber(terrain.ridgeHeight, 0, 50, DEFAULT_WORLD.terrain.ridgeHeight),
-    },
-    terrainColor,
-    trees: {
-      density: clampNumber(treesCfg.density, 0, 1.2, DEFAULT_WORLD.trees.density),
-      trunkColor,
-      canopyColor,
-    },
-    water: {
-      level: clampNumber(waterCfg.level, -30, 80, DEFAULT_WORLD.water.level),
-      colorHex: waterColor,
-      opacity: clampNumber(waterCfg.opacity, 0.05, 1, DEFAULT_WORLD.water.opacity),
-    },
-    fog: {
-      colorHex: fogColor,
-      density: fogDensity,
-    },
-    landmarks: landmarks
-      .map((entry) => ({
-        kind: entry?.kind === "beacon" ? "beacon" : "pillar",
-        x: clampNumber(entry?.x, -10000, 10000, 0),
-        z: clampNumber(entry?.z, -10000, 10000, 0),
-        yOffset: clampNumber(entry?.yOffset, -20, 100, 2),
-        scale: clampNumber(entry?.scale, 0.3, 8, 1),
-        colorHex: toColorHex(entry?.colorHex, "#89e6c7"),
-      }))
-      .slice(0, 300),
-  };
-}
-
-function clampNumber(value, min, max, fallback) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
-  return Math.min(max, Math.max(min, value));
-}
-
-function toColorHex(value, fallback) {
-  if (typeof value !== "string") return fallback;
-  const trimmed = value.trim();
-  if (!/^#[0-9a-fA-F]{6}$/.test(trimmed)) return fallback;
-  return trimmed.toLowerCase();
-}
-
-function remapLegacyColor(color, legacyColor, nextColor) {
-  return color === legacyColor ? nextColor : color;
-}
-
-function traceResult(status, type, detail) {
-  return { status, type, detail };
-}
-
-function addTraceEntry(result, action) {
-  const node = document.createElement("div");
-  node.className = `trace-entry ${result.status}`;
-  const meta = document.createElement("div");
-  meta.className = "trace-meta";
-  meta.textContent = `${result.status} • ${result.type}`;
-  const detail = document.createElement("div");
-  detail.textContent = result.detail;
-  const payload = document.createElement("div");
-  payload.className = "trace-payload";
-  payload.textContent = safeJson(action);
-  node.append(meta, detail, payload);
-  traceLog.appendChild(node);
-  while (traceLog.childElementCount > 80) {
-    traceLog.removeChild(traceLog.firstElementChild);
-  }
-  traceLog.scrollTop = traceLog.scrollHeight;
-}
-
-function addTracePhrase(phrase, status = "info") {
-  const normalizedStatus = status === "applied" || status === "rejected" ? status : "info";
-  const node = document.createElement("div");
-  node.className = `trace-entry ${normalizedStatus}`;
-  const meta = document.createElement("div");
-  meta.className = "trace-meta";
-  meta.textContent = normalizedStatus;
-  const detail = document.createElement("div");
-  detail.textContent = phrase;
-  node.append(meta, detail);
-  traceLog.appendChild(node);
-  while (traceLog.childElementCount > 80) {
-    traceLog.removeChild(traceLog.firstElementChild);
-  }
-  traceLog.scrollTop = traceLog.scrollHeight;
-}
-
-function safeJson(value) {
-  try {
-    return JSON.stringify(value);
-  } catch (err) {
-    return "{\"error\":\"unserializable action payload\"}";
-  }
-}
-
-function pruneSystemConnectionMessages(list) {
-  const keep = list.filter((entry) => {
-    const text = typeof entry?.content === "string" ? entry.content : "";
-    if (text.startsWith("Connected to Codex server at ")) return false;
-    if (text === "Codex server disconnected.") return false;
-    if (text.startsWith("Unable to reach Codex server at ")) return false;
-    return true;
-  });
-  list.length = 0;
-  keep.forEach((entry) => list.push(entry));
-}
-
-function hash2(x, z) {
-  const h = Math.sin(x * 127.1 + z * 311.7 + noiseSeed) * 43758.5453;
-  return h - Math.floor(h);
-}
-
-function fade(t) {
-  return t * t * t * (t * (t * 6 - 15) + 10);
-}
-
-function lerp(a, b, t) {
-  return a + (b - a) * t;
-}
-
-function valueNoise(x, z) {
-  const xi = Math.floor(x);
-  const zi = Math.floor(z);
-  const xf = x - xi;
-  const zf = z - zi;
-
-  const n00 = hash2(xi, zi);
-  const n10 = hash2(xi + 1, zi);
-  const n01 = hash2(xi, zi + 1);
-  const n11 = hash2(xi + 1, zi + 1);
-
-  const u = fade(xf);
-  const v = fade(zf);
-
-  const x1 = lerp(n00, n10, u);
-  const x2 = lerp(n01, n11, u);
-
-  return lerp(x1, x2, v) * 2 - 1;
-}
-
-function fbm(x, z, octaves, lacunarity, gain) {
-  let amp = 1;
-  let freq = 1;
-  let sum = 0;
-  for (let i = 0; i < octaves; i += 1) {
-    sum += valueNoise(x * freq, z * freq) * amp;
-    amp *= gain;
-    freq *= lacunarity;
-  }
-  return sum;
-}
