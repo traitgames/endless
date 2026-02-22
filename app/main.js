@@ -24,7 +24,33 @@ const chatPanel = document.getElementById("chat");
 const chatMinimizeBtn = document.getElementById("chat-minimize");
 const hudEl = document.getElementById("hud");
 const resetSaveBtn = document.getElementById("reset-save");
+const tracePanel = document.getElementById("action-trace");
 const traceLog = document.getElementById("trace-log");
+const traceToggleBtn = document.getElementById("trace-toggle");
+const traceClearBtn = document.getElementById("trace-clear");
+const traceOpenBtn = document.getElementById("action-trace-open");
+const LOCAL_COMMAND_HELP_URL = new URL("./commandHelp.json", import.meta.url);
+const FALLBACK_FRONTEND_COMMAND_HELP_LINES = [
+  "/help <command>",
+  "/time",
+  "/time <0..1 | 0..24 | HH:MM [am|pm] | percent | preset>",
+  "/commit",
+  "/commit <message hint>",
+  "/tp <biome-name>",
+  "tp <biome-name>",
+];
+const FALLBACK_WORLD_COMMAND_HELP_LINES = [
+  "/world help",
+  "/world commands",
+  "/world ?",
+  "/world biome <biome-name>",
+  "/world tp biome <biome-name>",
+  "/world style <biome> <terrain|water|fog|trunk|canopy> <#rrggbb>",
+  "/world style <biome> tree <trunk|canopy> <#rrggbb>",
+  "/world style clear <biome> [terrain|water|fog|trunk|canopy|all]",
+];
+let localCommandHelpCatalog = null;
+let localCommandHelpCatalogPromise = null;
 
 if (!backendModeEl) {
   const metrics = document.querySelector("#status .metrics");
@@ -181,6 +207,7 @@ const DEFAULT_STATE = {
   timeOfDay: 7 / 24,
   ui: {
     chatOpen: false,
+    actionTraceVisible: true,
   },
   player: {
     position: { x: 0, y: 12, z: 0 },
@@ -1308,6 +1335,7 @@ syncWaterColorFromState();
 const keys = new Set();
 let pointerLocked = false;
 let chatOpen = false;
+let actionTraceVisible = true;
 let suppressNextUnlockChatOpen = false;
 let resumePointerLockAfterUnlock = false;
 let lastEscapeChatCloseAt = -Infinity;
@@ -1332,6 +1360,25 @@ function setChatOpen(open, { focusInput = false } = {}) {
 
   if (open && focusInput && document.activeElement !== chatInput) {
     chatInput.focus();
+  }
+}
+
+function setActionTraceVisible(visible) {
+  actionTraceVisible = Boolean(visible);
+  if (state.ui) {
+    state.ui.actionTraceVisible = actionTraceVisible;
+  }
+  if (tracePanel) {
+    tracePanel.hidden = !actionTraceVisible;
+  }
+  if (traceOpenBtn) {
+    traceOpenBtn.hidden = actionTraceVisible;
+    traceOpenBtn.setAttribute("aria-expanded", String(actionTraceVisible));
+  }
+  if (traceToggleBtn) {
+    traceToggleBtn.textContent = "Hide";
+    traceToggleBtn.setAttribute("aria-expanded", String(actionTraceVisible));
+    traceToggleBtn.setAttribute("aria-label", "Hide action trace");
   }
 }
 
@@ -1532,6 +1579,8 @@ const chatStore = createChatStore({
 const chatState = chatStore.entries;
 const trace = createTraceLogger(traceLog, 80);
 let pendingWorldCommandConfirmation = null;
+preloadLocalCommandHelpCatalog();
+setActionTraceVisible(state.ui?.actionTraceVisible !== false);
 
 chatForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -1562,6 +1611,20 @@ chatClear.addEventListener("click", () => {
 worldCommandsBtn?.addEventListener("click", () => {
   showWorldCommandHelp();
   setChatOpen(true, { focusInput: true });
+});
+
+traceToggleBtn?.addEventListener("click", () => {
+  setActionTraceVisible(!actionTraceVisible);
+  saveState();
+});
+
+traceOpenBtn?.addEventListener("click", () => {
+  setActionTraceVisible(true);
+  saveState();
+});
+
+traceClearBtn?.addEventListener("click", () => {
+  trace.clear();
 });
 
 function addChatEntry(entry) {
@@ -1689,7 +1752,7 @@ async function sendToCodex(message) {
       if (reply?.update) {
         applyUpdate(reply.update);
       }
-      if (reply?.taskComplete && AUTO_SOFT_REFRESH) {
+      if (reply?.taskComplete && AUTO_SOFT_REFRESH && !reply?.skipSoftRefresh) {
         scheduleSoftRefresh();
       }
       stateEl.textContent = "ready";
@@ -1736,6 +1799,7 @@ function tryHandleLocalChatCommand(message) {
   const trimmed = typeof message === "string" ? message.trim() : "";
   if (!trimmed) return false;
   if (handlePendingWorldCommandConfirmation(trimmed)) return true;
+  if (handleLocalHelpCommand(trimmed)) return true;
   if (handleTimeCommand(trimmed)) return true;
   const tpAliasMatch = trimmed.match(/^\/?tp\s+(.+)$/i);
   if (tpAliasMatch) {
@@ -1800,6 +1864,132 @@ function handleLocalWorldCommand(message) {
   return false;
 }
 
+function preloadLocalCommandHelpCatalog() {
+  if (localCommandHelpCatalogPromise) return localCommandHelpCatalogPromise;
+  localCommandHelpCatalogPromise = fetch(LOCAL_COMMAND_HELP_URL)
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return response.json();
+    })
+    .then((data) => {
+      const commands = Array.isArray(data?.commands) ? data.commands : null;
+      if (!commands) {
+        throw new Error("Invalid help metadata");
+      }
+      localCommandHelpCatalog = { commands };
+      return localCommandHelpCatalog;
+    })
+    .catch((err) => {
+      console.warn("Failed to load local command help metadata.", err);
+      return null;
+    });
+  return localCommandHelpCatalogPromise;
+}
+
+function normalizeHelpLookupText(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function getLocalCommandHelpCatalog() {
+  return localCommandHelpCatalog;
+}
+
+function getLocalCommandHelpEntriesByCategory(category) {
+  const catalog = getLocalCommandHelpCatalog();
+  if (!catalog) return [];
+  return catalog.commands.filter((entry) => entry?.category === category);
+}
+
+function getLocalFrontendCommandHelpLines() {
+  const entries = getLocalCommandHelpEntriesByCategory("frontend");
+  if (!entries.length) {
+    return [...FALLBACK_FRONTEND_COMMAND_HELP_LINES];
+  }
+  return entries.flatMap((entry) => (Array.isArray(entry.summaryLines) ? entry.summaryLines : []));
+}
+
+function getLocalWorldCommandHelpLines() {
+  const entries = getLocalCommandHelpEntriesByCategory("world");
+  if (!entries.length) {
+    return [...FALLBACK_WORLD_COMMAND_HELP_LINES];
+  }
+  return entries.flatMap((entry) => (Array.isArray(entry.summaryLines) ? entry.summaryLines : []));
+}
+
+function getLocalWorldStyleCommandHelpLines() {
+  return getLocalWorldCommandHelpLines().filter((line) => line.startsWith("/world style "));
+}
+
+function findLocalCommandHelpEntry(query) {
+  const normalizedQuery = normalizeHelpLookupText(query);
+  const catalog = getLocalCommandHelpCatalog();
+  if (!normalizedQuery || !catalog) return null;
+
+  let bestMatch = null;
+  let bestLength = -1;
+  for (const entry of catalog.commands) {
+    const lookups = Array.isArray(entry?.lookup) ? entry.lookup : [];
+    for (const lookup of lookups) {
+      const normalizedLookup = normalizeHelpLookupText(lookup);
+      if (!normalizedLookup) continue;
+      if (normalizedQuery === normalizedLookup || normalizedQuery.startsWith(`${normalizedLookup} `)) {
+        if (normalizedLookup.length > bestLength) {
+          bestMatch = entry;
+          bestLength = normalizedLookup.length;
+        }
+      }
+    }
+  }
+  return bestMatch;
+}
+
+function formatLocalCommandHelpDetail(entry) {
+  const title = Array.isArray(entry?.summaryLines) && entry.summaryLines.length ? entry.summaryLines[0] : null;
+  const detailLines = Array.isArray(entry?.detailLines) ? entry.detailLines : [];
+  return [title ? `Help: ${title}` : "Command help", ...detailLines].join("\n");
+}
+
+function handleLocalHelpCommand(message) {
+  const match = String(message || "").trim().match(/^\/help(?:\s+(.+))?$/i);
+  if (!match) return false;
+  const query = (match[1] || "").trim();
+  if (!query) {
+    addChatEntry({
+      role: "codex_output",
+      content: "Usage: /help <command>\nExamples: /help /time, /help /world style, /help tp",
+      ts: Date.now(),
+    });
+    return true;
+  }
+
+  const renderEntry = (entry) => {
+    addChatEntry({
+      role: "codex_output",
+      content: entry
+        ? formatLocalCommandHelpDetail(entry)
+        : `No local help found for "${query}". Try /world help to list available commands.`,
+      ts: Date.now(),
+    });
+  };
+
+  const cachedEntry = findLocalCommandHelpEntry(query);
+  if (cachedEntry) {
+    renderEntry(cachedEntry);
+    return true;
+  }
+
+  preloadLocalCommandHelpCatalog().then(() => {
+    renderEntry(findLocalCommandHelpEntry(query));
+  });
+  return true;
+}
+
 function showWorldCommandHelp() {
   const biomeNames = Object.values(BIOME_DEFS)
     .map((biome) => biome.id)
@@ -1808,14 +1998,13 @@ function showWorldCommandHelp() {
   addChatEntry({
     role: "codex_output",
     content: [
+      "Front-end commands (local):",
+      ...getLocalFrontendCommandHelpLines(),
+      "",
       "World commands (local):",
-      "/world help",
-      "tp <biome-name>",
-      "/world biome <biome-name>",
-      "/world tp biome <biome-name>",
-      "/world style <biome> <terrain|water|fog|trunk|canopy> <#rrggbb>",
-      "/world style <biome> tree <trunk|canopy> <#rrggbb>",
-      "/world style clear <biome> [terrain|water|fog|trunk|canopy|all]",
+      ...getLocalWorldCommandHelpLines(),
+      "",
+      "World command confirmations (when prompted): yes / no",
       "",
       `Biomes: ${biomeNames}`,
     ].join("\n"),
@@ -1886,13 +2075,14 @@ function handleWorldBiomeStyleCommand(parts) {
 }
 
 function addWorldStyleUsage(prefix) {
+  const [styleSetLine, styleTreeLine, styleClearLine] = getLocalWorldStyleCommandHelpLines();
   addChatEntry({
     role: "codex_output",
     content: [
       prefix || "Biome style commands:",
-      "Set: /world style <biome> <terrain|water|fog|trunk|canopy> <#rrggbb>",
-      "Set: /world style <biome> tree <trunk|canopy> <#rrggbb>",
-      "Clear: /world style clear <biome> [terrain|water|fog|trunk|canopy|all]",
+      `Set: ${styleSetLine}`,
+      `Set: ${styleTreeLine}`,
+      `Clear: ${styleClearLine}`,
     ].join("\n"),
     ts: Date.now(),
   });

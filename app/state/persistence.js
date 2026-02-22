@@ -10,6 +10,7 @@ export function loadPersistedState({ storageKey, defaultState, stateVersion, def
       timeOfDay: clampNumber(parsed.timeOfDay, 0, 1, defaultState.timeOfDay),
       ui: {
         chatOpen: Boolean(parsed.ui?.chatOpen),
+        actionTraceVisible: parsed.ui?.actionTraceVisible !== false,
       },
       player: {
         position: parsed.player?.position || defaultState.player.position,
@@ -42,6 +43,7 @@ export function savePersistedState({
     timeOfDay: clampNumber(worldTime / dayLengthSeconds, 0, 1, 0),
     ui: {
       chatOpen,
+      actionTraceVisible: state.ui?.actionTraceVisible !== false,
     },
     player: {
       position: {
@@ -72,6 +74,7 @@ function migrateState(parsed, { defaultState, stateVersion }) {
       version: 2,
       ui: {
         chatOpen: Boolean(next.ui?.chatOpen),
+        actionTraceVisible: next.ui?.actionTraceVisible !== false,
       },
       chat: Array.isArray(next.chat) ? next.chat.slice(-120) : [],
     };

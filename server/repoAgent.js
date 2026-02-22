@@ -274,8 +274,7 @@ function getChangedFilesSync(repoRoot) {
   if (out.status !== 0) return [];
   return out.stdout
     .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
+    .filter((line) => line.trim().length > 0)
     .map((line) => line.slice(3).trim());
 }
 

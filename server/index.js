@@ -112,7 +112,14 @@ wss.on("connection", (socket) => {
       }
 
       if (requestId) {
-        send({ type: "final", reply: { output: "Update pipeline complete.", taskComplete: Boolean(handlerResult.taskComplete) } });
+        send({
+          type: "final",
+          reply: {
+            output: "Update pipeline complete.",
+            taskComplete: Boolean(handlerResult.taskComplete),
+            skipSoftRefresh: Boolean(handlerResult.skipSoftRefresh),
+          },
+        });
       }
       log("info", "request_completed", { requestId, route, ok: handlerResult.ok !== false, taskComplete: Boolean(handlerResult.taskComplete) });
     } catch (err) {

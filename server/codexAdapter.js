@@ -45,7 +45,7 @@ export async function handleCodexMessage(payload, send) {
         actions: [localCommandAction],
       },
     });
-    return { ok: true, taskComplete: true };
+    return { ok: true, taskComplete: true, skipSoftRefresh: true };
   }
 
   const client = getClient();
@@ -116,7 +116,10 @@ export async function handleCodexMessage(payload, send) {
       content: `No valid actions generated. Rejected ${normalized.rejected.length} invalid action(s).`,
     });
   }
-  return { ok: true, taskComplete: true };
+  const onlyLocalFrontendCommands =
+    normalized.actions.length > 0 &&
+    normalized.actions.every((action) => action.type === "run_local_world_command");
+  return { ok: true, taskComplete: true, skipSoftRefresh: onlyLocalFrontendCommands };
 }
 
 function getClient() {
