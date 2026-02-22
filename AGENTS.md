@@ -33,6 +33,7 @@ Implement one of these without breaking the UI:
 ## Development hints
 - Use `python3 -m http.server` from project root and open `/app/` in the browser.
 - In another terminal, run `npm install` in `server/` then `npm start` to boot the WebSocket bridge.
+- After making code changes, run `npm test` in `server/` and confirm all tests pass before finishing.
 - Put `OPENAI_API_KEY` in repo `.env` (or `server/.env`) to enable real Codex responses.
 - Bridge backend mode defaults to `repo` so chat can apply real file edits via local `codex exec`.
 - Use `CODEX_BACKEND_MODE=world` to force runtime action updates; `hybrid` allows `/world ...` commands.
