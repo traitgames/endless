@@ -190,6 +190,17 @@ const DEFAULT_STATE = {
   chat: [],
 };
 
+const LAND_TARGET_CLEARANCE_Y = 0.4;
+const PLAYER_TARGET_HEIGHT_OFFSET = 3;
+const BIOME_TP_MAX_ATTEMPTS = 5000;
+const BIOME_TP_EXTRA_RINGS_AFTER_FIRST_MATCH = 6;
+const BIOME_CENTER_TARGET_SCORE = 12;
+const BIOME_TP_SUNFLOWER_GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+const SPAWN_SEARCH_MAX_ATTEMPTS = 700;
+const SPAWN_SEARCH_MAX_RADIUS = 1536;
+const SPAWN_SEARCH_STEP = 24;
+const SPAWN_MAX_SLOPE_SCORE = 3.4;
+
 const state = loadPersistedState({
   storageKey: STORAGE_KEY,
   defaultState: DEFAULT_STATE,
@@ -778,6 +789,156 @@ function getBiomeAt(x, z) {
   return BIOME_DEFS[variants[index]];
 }
 
+function getGroundPointInfo(x, z) {
+  const groundY = heightAt(x, z);
+  const waterLevel = state.world.water.level;
+  const slope =
+    Math.abs(heightAt(x + 4, z) - groundY) +
+    Math.abs(heightAt(x - 4, z) - groundY) +
+    Math.abs(heightAt(x, z + 4) - groundY) +
+    Math.abs(heightAt(x, z - 4) - groundY);
+  const landClearance = groundY - waterLevel;
+  return {
+    groundY,
+    slope,
+    landClearance,
+    isDryLand: landClearance > LAND_TARGET_CLEARANCE_Y,
+  };
+}
+
+function toPlayerPlacementTarget(x, z, groundY) {
+  return {
+    x,
+    z,
+    y: Math.max(groundY + PLAYER_TARGET_HEIGHT_OFFSET, state.world.water.level + PLAYER_TARGET_HEIGHT_OFFSET),
+  };
+}
+
+function estimateBiomeCenterScore(targetBiomeId, x, z) {
+  const offsets = [
+    [0, 0],
+    [32, 0],
+    [-32, 0],
+    [0, 32],
+    [0, -32],
+    [32, 32],
+    [32, -32],
+    [-32, 32],
+    [-32, -32],
+    [80, 0],
+    [-80, 0],
+    [0, 80],
+    [0, -80],
+  ];
+  let score = 0;
+  for (const [dx, dz] of offsets) {
+    const biome = getBiomeAt(x + dx, z + dz);
+    if (biome?.id === targetBiomeId) score += 1;
+    else score -= 1;
+  }
+  return score;
+}
+
+function pickBetterBiomeTeleportCandidate(best, next) {
+  if (!next) return best;
+  if (!best) return next;
+  if (best.isDryLand !== next.isDryLand) return next.isDryLand ? next : best;
+  if (best.centerScore !== next.centerScore) return next.centerScore > best.centerScore ? next : best;
+  if (best.radius !== next.radius) return next.radius < best.radius ? next : best;
+  if (best.slope !== next.slope) return next.slope < best.slope ? next : best;
+  return best;
+}
+
+function pickBetterSpawnCandidate(best, next) {
+  if (!next) return best;
+  if (!best) return next;
+  if (best.radius !== next.radius) return next.radius < best.radius ? next : best;
+  if (best.isDryLand !== next.isDryLand) return next.isDryLand ? next : best;
+  if (best.slope !== next.slope) return next.slope < best.slope ? next : best;
+  if (best.landClearance !== next.landClearance) return next.landClearance > best.landClearance ? next : best;
+  return best;
+}
+
+function tryFindLandSpawnNearOrigin() {
+  let attempts = 0;
+  let best = null;
+
+  const inspect = (x, z, radius) => {
+    if (attempts >= SPAWN_SEARCH_MAX_ATTEMPTS) return "stop";
+    attempts += 1;
+    const info = getGroundPointInfo(x, z);
+    const candidate = { x, z, radius, ...info };
+    best = pickBetterSpawnCandidate(best, candidate);
+    if (info.isDryLand && info.slope <= SPAWN_MAX_SLOPE_SCORE) {
+      return toPlayerPlacementTarget(x, z, info.groundY);
+    }
+    return null;
+  };
+
+  for (let radius = 0; radius <= SPAWN_SEARCH_MAX_RADIUS; radius += SPAWN_SEARCH_STEP) {
+    if (radius === 0) {
+      const result = inspect(0, 0, 0);
+      if (result === "stop") break;
+      if (result) return result;
+      continue;
+    }
+    let ringBestDry = null;
+    for (let offset = -radius; offset <= radius; offset += SPAWN_SEARCH_STEP) {
+      const candidates = [
+        [offset, -radius],
+        [radius, offset],
+        [offset, radius],
+        [-radius, offset],
+      ];
+      for (const [x, z] of candidates) {
+        const result = inspect(x, z, radius);
+        if (result === "stop") {
+          if (ringBestDry) return ringBestDry.placement;
+          return best?.isDryLand ? toPlayerPlacementTarget(best.x, best.z, best.groundY) : null;
+        }
+        if (result) {
+          const info = getGroundPointInfo(x, z);
+          const placement = toPlayerPlacementTarget(x, z, info.groundY);
+          ringBestDry = ringBestDry
+            ? pickBetterSpawnCandidate(ringBestDry, { x, z, radius, ...info, placement })
+            : { x, z, radius, ...info, placement };
+        }
+      }
+    }
+    if (ringBestDry) return ringBestDry.placement;
+  }
+
+  if (best?.isDryLand) {
+    return toPlayerPlacementTarget(best.x, best.z, best.groundY);
+  }
+  return null;
+}
+
+function resetPlayerToLandSpawnNearOrigin() {
+  const target = tryFindLandSpawnNearOrigin();
+  if (target) {
+    player.position.set(target.x, target.y, target.z);
+  } else {
+    player.position.set(0, 12, 0);
+  }
+  player.velocity.set(0, 0, 0);
+  player.grounded = false;
+}
+
+function maybeRetargetInitialSpawnToLand() {
+  const current = state.player?.position;
+  if (!current) return;
+  const defaultSpawn = DEFAULT_STATE.player.position;
+  const isDefaultSpawn =
+    Math.abs(current.x - defaultSpawn.x) < 0.001 &&
+    Math.abs(current.y - defaultSpawn.y) < 0.001 &&
+    Math.abs(current.z - defaultSpawn.z) < 0.001;
+  if (!isDefaultSpawn) return;
+  const target = tryFindLandSpawnNearOrigin();
+  if (!target) return;
+  state.player.position = { x: target.x, y: target.y, z: target.z };
+}
+
 function ensureChunks(cx, cz) {
   for (let dz = -CHUNK_RADIUS; dz <= CHUNK_RADIUS; dz += 1) {
     for (let dx = -CHUNK_RADIUS; dx <= CHUNK_RADIUS; dx += 1) {
@@ -1030,6 +1191,8 @@ const player = {
   pitch: state.player.pitch,
   grounded: false,
 };
+maybeRetargetInitialSpawnToLand();
+player.position.set(state.player.position.x, state.player.position.y, state.player.position.z);
 syncAtmosphereFromState();
 syncWaterColorFromState();
 
@@ -1128,8 +1291,7 @@ window.addEventListener("keydown", (event) => {
   keys.add(event.code);
 
   if (event.code === "KeyR") {
-    player.position.set(0, 12, 0);
-    player.velocity.set(0, 0, 0);
+    resetPlayerToLandSpawnNearOrigin();
   }
 }, true);
 
@@ -1980,43 +2142,83 @@ function levenshteinDistance(a, b) {
 
 function findNearestBiomeTarget(targetBiomeId, originX, originZ) {
   const maxRadius = 8192;
-  const step = 48;
+  const radialBandSize = 48;
+  let attempts = 0;
+  let bestDry = null;
+  let bestAny = null;
+  let firstMatchBand = null;
+  let currentBand = 0;
+  let bandBestDry = null;
 
-  for (let radius = 0; radius <= maxRadius; radius += step) {
-    if (radius === 0) {
-      const centerBiome = getBiomeAt(originX, originZ);
-      if (centerBiome?.id === targetBiomeId) {
-        const groundY = heightAt(originX, originZ);
-        return {
-          x: originX,
-          z: originZ,
-          y: Math.max(groundY + 3, state.world.water.level + 3),
-        };
-      }
-      continue;
+  const considerCandidate = (x, z, radius) => {
+    if (attempts >= BIOME_TP_MAX_ATTEMPTS) return "stop";
+    attempts += 1;
+    const biome = getBiomeAt(x, z);
+    if (biome?.id !== targetBiomeId) return null;
+    const info = getGroundPointInfo(x, z);
+    const candidate = {
+      x,
+      z,
+      radius,
+      centerScore: estimateBiomeCenterScore(targetBiomeId, x, z),
+      ...info,
+    };
+    bestAny = pickBetterBiomeTeleportCandidate(bestAny, candidate);
+    if (candidate.isDryLand) {
+      bestDry = pickBetterBiomeTeleportCandidate(bestDry, candidate);
+      if (firstMatchBand == null) firstMatchBand = Math.ceil(radius / radialBandSize);
     }
+    return candidate;
+  };
 
-    for (let offset = -radius; offset <= radius; offset += step) {
-      const candidates = [
-        [originX + offset, originZ - radius],
-        [originX + radius, originZ + offset],
-        [originX + offset, originZ + radius],
-        [originX - radius, originZ + offset],
-      ];
-      for (const [x, z] of candidates) {
-        const biome = getBiomeAt(x, z);
-        if (biome?.id !== targetBiomeId) continue;
-        const groundY = heightAt(x, z);
-        return {
-          x,
-          z,
-          y: Math.max(groundY + 3, state.world.water.level + 3),
-        };
-      }
+  const finalizeBand = (band) => {
+    if (bandBestDry?.centerScore >= BIOME_CENTER_TARGET_SCORE) {
+      return toPlayerPlacementTarget(bandBestDry.x, bandBestDry.z, bandBestDry.groundY);
     }
+    if (
+      firstMatchBand != null &&
+      band >= firstMatchBand + BIOME_TP_EXTRA_RINGS_AFTER_FIRST_MATCH
+    ) {
+      return "stop";
+    }
+    bandBestDry = null;
+    return null;
+  };
+
+  const originCandidate = considerCandidate(originX, originZ, 0);
+  if (originCandidate?.isDryLand && originCandidate.centerScore >= BIOME_CENTER_TARGET_SCORE) {
+    return toPlayerPlacementTarget(originCandidate.x, originCandidate.z, originCandidate.groundY);
   }
 
-  return null;
+  // Vogel/sunflower spiral sampling spreads points with near-uniform disk density.
+  for (let sampleIndex = 1; attempts < BIOME_TP_MAX_ATTEMPTS; sampleIndex += 1) {
+    const t = sampleIndex / (BIOME_TP_MAX_ATTEMPTS - 1);
+    const radius = Math.sqrt(t) * maxRadius;
+    if (radius > maxRadius) break;
+    const band = Math.ceil(radius / radialBandSize);
+    if (band !== currentBand) {
+      const bandResult = finalizeBand(currentBand);
+      if (bandResult === "stop") break;
+      if (bandResult) return bandResult;
+      currentBand = band;
+    }
+
+    const angle = sampleIndex * BIOME_TP_SUNFLOWER_GOLDEN_ANGLE;
+    const x = originX + Math.cos(angle) * radius;
+    const z = originZ + Math.sin(angle) * radius;
+    const candidate = considerCandidate(x, z, radius);
+    if (candidate === "stop") break;
+    if (!candidate?.isDryLand) continue;
+    bandBestDry = pickBetterBiomeTeleportCandidate(bandBestDry, candidate);
+  }
+
+  const finalBandResult = finalizeBand(currentBand);
+  if (finalBandResult && finalBandResult !== "stop") {
+    return finalBandResult;
+  }
+
+  const fallback = bestDry || bestAny;
+  return fallback ? toPlayerPlacementTarget(fallback.x, fallback.z, fallback.groundY) : null;
 }
 
 function scheduleSoftRefresh() {
