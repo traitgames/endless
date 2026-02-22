@@ -93,21 +93,21 @@ const BIOME_DEFS = {
     id: "glacier",
     label: "Glacier",
     category: "cold",
-    groundColor: new THREE.Color("#dfefff"),
+    groundColor: new THREE.Color("#ecf6ff"),
     hasTrees: false,
   },
   tundra: {
     id: "tundra",
     label: "Tundra",
     category: "cold",
-    groundColor: new THREE.Color("#b8c8b3"),
+    groundColor: new THREE.Color("#b7b7a3"),
     hasTrees: false,
   },
   taiga: {
     id: "taiga",
     label: "Taiga",
     category: "cold",
-    groundColor: new THREE.Color("#6f907f"),
+    groundColor: new THREE.Color("#5d748a"),
     hasTrees: true,
     treeStyle: "conifer",
     treeDensityMultiplier: 0.8,
@@ -118,7 +118,7 @@ const BIOME_DEFS = {
     id: "meadow",
     label: "Meadow",
     category: "temperate",
-    groundColor: new THREE.Color("#95b763"),
+    groundColor: new THREE.Color("#bfd05a"),
     hasTrees: true,
     treeStyle: "broadleaf",
     treeDensityMultiplier: 0.38,
@@ -129,7 +129,7 @@ const BIOME_DEFS = {
     id: "forest",
     label: "Forest",
     category: "temperate",
-    groundColor: new THREE.Color("#5e8a46"),
+    groundColor: new THREE.Color("#447034"),
     hasTrees: true,
     treeStyle: "broadleaf",
     treeDensityMultiplier: 1.1,
@@ -140,7 +140,7 @@ const BIOME_DEFS = {
     id: "wetland",
     label: "Wetland",
     category: "temperate",
-    groundColor: new THREE.Color("#6f8d4f"),
+    groundColor: new THREE.Color("#4f7f74"),
     hasTrees: true,
     treeStyle: "wetland",
     treeDensityMultiplier: 0.72,
@@ -151,14 +151,14 @@ const BIOME_DEFS = {
     id: "desert",
     label: "Desert",
     category: "hot",
-    groundColor: new THREE.Color("#d8bc86"),
+    groundColor: new THREE.Color("#efd48e"),
     hasTrees: false,
   },
   savanna: {
     id: "savanna",
     label: "Savanna",
     category: "hot",
-    groundColor: new THREE.Color("#b7aa71"),
+    groundColor: new THREE.Color("#b99b4a"),
     hasTrees: true,
     treeStyle: "savanna",
     treeDensityMultiplier: 0.48,
@@ -169,7 +169,7 @@ const BIOME_DEFS = {
     id: "badlands",
     label: "Badlands",
     category: "hot",
-    groundColor: new THREE.Color("#b78768"),
+    groundColor: new THREE.Color("#b7654c"),
     hasTrees: false,
   },
 };
@@ -478,8 +478,12 @@ terrainMaterial.onBeforeCompile = (shader) => {
       vec3 baseColor = mix(grass, denseGrass, smoothstep(0.0, 1.0, n));
       baseColor = mix(baseColor, rock, smoothstep(0.26, 0.72, slope));
       baseColor = mix(sand, baseColor, smoothstep(uWaterLevel - 0.4, uWaterLevel + 2.4, h));
+      #ifdef USE_COLOR
+      float biomeColorBlend = smoothstep(uWaterLevel + 0.2, uWaterLevel + 7.5, h);
+      baseColor = mix(baseColor, vColor.rgb, 0.58 * biomeColorBlend);
+      #endif
       baseColor = mix(baseColor, snow, smoothstep(38.0, 56.0, h));
-      baseColor = mix(baseColor, baseColor * uTint, 0.4);
+      baseColor = mix(baseColor, baseColor * uTint, 0.16);
       vec4 diffuseColor = vec4(baseColor, opacity);
       `
     );
@@ -1414,6 +1418,11 @@ function tryHandleLocalChatCommand(message) {
   const trimmed = typeof message === "string" ? message.trim() : "";
   if (!trimmed) return false;
   if (handlePendingWorldCommandConfirmation(trimmed)) return true;
+  const tpAliasMatch = trimmed.match(/^\/?tp\s+(.+)$/i);
+  if (tpAliasMatch) {
+    teleportPlayerToBiome(tpAliasMatch[1]);
+    return true;
+  }
   if (!/^\/world(?:\s|$)/i.test(trimmed)) return false;
   return handleLocalWorldCommand(trimmed);
 }
