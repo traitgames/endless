@@ -1,13 +1,20 @@
 import OpenAI from "openai";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { normalizeActions, randomId } from "../shared/protocol.js";
 import { loadPromptMarkdown } from "./prompts/index.js";
 
 const MODEL = process.env.CODEX_MODEL || "gpt-5";
 const SYSTEM_PROMPT = loadPromptMarkdown("world-system");
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const APP_COMMAND_HELP_PATH = path.resolve(__dirname, "../app/commandHelp.json");
+let cachedFrontendCommandContextText = null;
 const LOCAL_WORLD_COMMAND_CAPABILITIES = Object.freeze([
   {
     pattern: "/world ...",
-    routeHint: "World command handler for local runtime commands (help, biome teleport, biome style changes).",
+    routeHint: "World command handler for local runtime commands (help, biome teleport, terrain detail, biome style changes).",
     match: (text) => /^\/world(?:\s|$)/i.test(text),
   },
   {
@@ -31,6 +38,50 @@ export function getWorldRouterCapabilitiesText() {
     "- Natural-language runtime/in-world requests (for example setting time, changing terrain/world state) are also world-routable.",
     "- UI/help panel text, button labels, and frontend code changes are not world capabilities and should route to repo.",
   ].join("\n");
+}
+
+function getFrontendCommandHelpContextText() {
+  if (cachedFrontendCommandContextText) return cachedFrontendCommandContextText;
+  try {
+    const raw = fs.readFileSync(APP_COMMAND_HELP_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    const commands = Array.isArray(parsed?.commands) ? parsed.commands : [];
+    const relevant = commands.filter((entry) =>
+      ["frontend", "world", "confirmation"].includes(String(entry?.category || ""))
+    );
+    const lines = ["Frontend local command catalog (source: app/commandHelp.json):"];
+    for (const entry of relevant) {
+      const category = String(entry.category || "unknown");
+      const id = String(entry.id || "unknown");
+      const summaryLines = Array.isArray(entry.summaryLines) ? entry.summaryLines.filter((v) => typeof v === "string") : [];
+      if (summaryLines.length === 0) continue;
+      lines.push(`- [${category}] ${id}: ${summaryLines.join(" | ")}`);
+    }
+    cachedFrontendCommandContextText = lines.join("\n");
+    return cachedFrontendCommandContextText;
+  } catch {
+    cachedFrontendCommandContextText = [
+      "Frontend local command catalog unavailable (fallback summary).",
+      "- /time ...",
+      "- /world help|commands|?",
+      "- /world biome <biome-name>",
+      "- /world tp biome <biome-name>",
+      "- /world detail <meters|off>",
+      "- /world detail intensity <0..3>",
+      "- /world style ... (set/clear/tree forms)",
+      "- /tp <biome-name> or tp <biome-name>",
+      "- confirmation replies: yes / no",
+    ].join("\n");
+    return cachedFrontendCommandContextText;
+  }
+}
+
+function buildWorldSystemPrompt() {
+  return [
+    SYSTEM_PROMPT,
+    getWorldRouterCapabilitiesText(),
+    getFrontendCommandHelpContextText(),
+  ].join("\n\n");
 }
 
 export async function handleCodexMessage(payload, send) {
@@ -57,7 +108,7 @@ export async function handleCodexMessage(payload, send) {
   send({ type: "thinking", content: "Codex is planning updates..." });
 
   const input = [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: buildWorldSystemPrompt() },
     {
       role: "user",
       content:

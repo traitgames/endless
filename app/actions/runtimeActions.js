@@ -19,6 +19,7 @@ export function createRuntimeActionExecutor(deps) {
     setNoiseSeed,
     setTimeOfDay,
     runLocalWorldCommand,
+    applyBiomeSettingsUpdate,
   } = deps;
 
   function setTerrainNumber(key, value, min, max) {
@@ -57,6 +58,20 @@ export function createRuntimeActionExecutor(deps) {
       return applied
         ? traceResult("applied", "set_time", `time=${state.timeOfDay.toFixed(3)}`)
         : traceResult("rejected", "set_time", "invalid timeOfDay");
+    },
+    set_biome_settings(action) {
+      if (typeof applyBiomeSettingsUpdate !== "function") {
+        return traceResult("rejected", "set_biome_settings", "handler unavailable");
+      }
+      const result = applyBiomeSettingsUpdate(action);
+      if (!result?.ok) {
+        return traceResult("rejected", "set_biome_settings", result?.reason || "invalid biome settings");
+      }
+      return traceResult(
+        "applied",
+        "set_biome_settings",
+        `biome=${action.biomeId}${result.detail ? ` ${result.detail}` : ""}`
+      );
     },
     set_water(action) {
       let touched = false;

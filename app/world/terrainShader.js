@@ -15,7 +15,9 @@ export function configureTerrainMaterial({ material, state, getDetailRenderDista
       varying vec3 vWorldPos;
       varying vec3 vObjectNormal;
       attribute float detailBiome;
+      attribute float detailBiomeFade;
       varying float vDetailBiome;
+      varying float vDetailBiomeFade;
       `
       )
       .replace(
@@ -24,6 +26,7 @@ export function configureTerrainMaterial({ material, state, getDetailRenderDista
       vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
       vObjectNormal = normal;
       vDetailBiome = detailBiome;
+      vDetailBiomeFade = detailBiomeFade;
       `
       );
     const terrainDetailFragmentChunk = buildTerrainDetailFragmentChunk();

@@ -133,6 +133,7 @@ const DEFAULT_WORLD = {
   },
   terrainColor: "#4f8b50",
   biomeStyles: {},
+  biomeSettings: {},
   trees: {
     density: 0.22,
     trunkColor: "#5f4632",
@@ -156,12 +157,31 @@ const BIOME_VARIANTS = {
   hot: ["desert", "savanna", "badlands"],
 };
 
+const BIOME_BLEND_TRANSITION_WIDTH_METERS = 15;
+const BIOME_BLEND_HALF_WIDTH_METERS = BIOME_BLEND_TRANSITION_WIDTH_METERS * 0.5;
+const BIOME_BLEND_GRADIENT_STEP_METERS = 2;
+const BIOME_BLEND_PRECHECK_MARGIN = 0.03;
+
 const BIOME_DEFS = {
   glacier: {
     id: "glacier",
     label: "Glacier",
     category: "cold",
     groundColor: new THREE.Color("#ecf6ff"),
+    waterColor: new THREE.Color("#8fc5eb"),
+    fogColor: new THREE.Color("#dceefe"),
+    fogDensityMultiplier: 1.2,
+    terrainProfile: {
+      noiseAlgorithm: "ridged",
+      noiseScaleMultiplier: 0.82,
+      baseHeightMultiplier: 1.18,
+      ridgeScaleMultiplier: 1.35,
+      ridgeHeightMultiplier: 1.55,
+      octaves: 4,
+      lacunarity: 2.0,
+      gain: 0.5,
+      secondaryAmount: 0.06,
+    },
     hasTrees: false,
   },
   tundra: {
@@ -169,6 +189,20 @@ const BIOME_DEFS = {
     label: "Tundra",
     category: "cold",
     groundColor: new THREE.Color("#b7b7a3"),
+    waterColor: new THREE.Color("#6e8fa1"),
+    fogColor: new THREE.Color("#c7ccd0"),
+    fogDensityMultiplier: 1.08,
+    terrainProfile: {
+      noiseAlgorithm: "hybrid",
+      noiseScaleMultiplier: 0.95,
+      baseHeightMultiplier: 0.88,
+      ridgeScaleMultiplier: 1.05,
+      ridgeHeightMultiplier: 0.62,
+      octaves: 4,
+      lacunarity: 1.9,
+      gain: 0.52,
+      secondaryAmount: 0.08,
+    },
     hasTrees: false,
   },
   taiga: {
@@ -176,6 +210,20 @@ const BIOME_DEFS = {
     label: "Taiga",
     category: "cold",
     groundColor: new THREE.Color("#718292"),
+    waterColor: new THREE.Color("#567e9b"),
+    fogColor: new THREE.Color("#9db5c5"),
+    fogDensityMultiplier: 1.12,
+    terrainProfile: {
+      noiseAlgorithm: "fbm_ridged",
+      noiseScaleMultiplier: 1.08,
+      baseHeightMultiplier: 1.02,
+      ridgeScaleMultiplier: 1.2,
+      ridgeHeightMultiplier: 0.9,
+      octaves: 5,
+      lacunarity: 1.95,
+      gain: 0.49,
+      secondaryAmount: 0.05,
+    },
     hasTrees: true,
     treeStyle: "conifer",
     treeDensityMultiplier: 0.8,
@@ -187,6 +235,20 @@ const BIOME_DEFS = {
     label: "Meadow",
     category: "temperate",
     groundColor: new THREE.Color("#bfd05a"),
+    waterColor: new THREE.Color("#5fa7d4"),
+    fogColor: new THREE.Color("#d3ecd5"),
+    fogDensityMultiplier: 0.92,
+    terrainProfile: {
+      noiseAlgorithm: "billow",
+      noiseScaleMultiplier: 1.18,
+      baseHeightMultiplier: 0.76,
+      ridgeScaleMultiplier: 0.9,
+      ridgeHeightMultiplier: 0.36,
+      octaves: 4,
+      lacunarity: 1.85,
+      gain: 0.55,
+      secondaryAmount: 0.1,
+    },
     hasTrees: true,
     treeStyle: "broadleaf",
     treeDensityMultiplier: 0.38,
@@ -198,6 +260,20 @@ const BIOME_DEFS = {
     label: "Forest",
     category: "temperate",
     groundColor: new THREE.Color("#5b7e4d"),
+    waterColor: new THREE.Color("#4d88b7"),
+    fogColor: new THREE.Color("#b9d2b1"),
+    fogDensityMultiplier: 1.05,
+    terrainProfile: {
+      noiseAlgorithm: "hybrid",
+      noiseScaleMultiplier: 1.04,
+      baseHeightMultiplier: 0.98,
+      ridgeScaleMultiplier: 1.08,
+      ridgeHeightMultiplier: 0.72,
+      octaves: 5,
+      lacunarity: 1.92,
+      gain: 0.5,
+      secondaryAmount: 0.12,
+    },
     hasTrees: true,
     treeStyle: "broadleaf",
     treeDensityMultiplier: 1.1,
@@ -209,6 +285,22 @@ const BIOME_DEFS = {
     label: "Wetland",
     category: "temperate",
     groundColor: new THREE.Color("#4f7f74"),
+    waterColor: new THREE.Color("#3f796b"),
+    fogColor: new THREE.Color("#a9c6b8"),
+    fogDensityMultiplier: 1.35,
+    terrainProfile: {
+      noiseAlgorithm: "warped",
+      noiseScaleMultiplier: 1.34,
+      baseHeightMultiplier: 0.58,
+      ridgeScaleMultiplier: 0.84,
+      ridgeHeightMultiplier: 0.24,
+      octaves: 4,
+      lacunarity: 1.78,
+      gain: 0.58,
+      warpStrength: 0.28,
+      warpScaleMultiplier: 1.5,
+      secondaryAmount: 0.06,
+    },
     hasTrees: true,
     treeStyle: "wetland",
     treeDensityMultiplier: 0.72,
@@ -220,6 +312,20 @@ const BIOME_DEFS = {
     label: "Desert",
     category: "hot",
     groundColor: new THREE.Color("#efd48e"),
+    waterColor: new THREE.Color("#64b3c7"),
+    fogColor: new THREE.Color("#f0d7ab"),
+    fogDensityMultiplier: 0.86,
+    terrainProfile: {
+      noiseAlgorithm: "billow",
+      noiseScaleMultiplier: 0.86,
+      baseHeightMultiplier: 0.82,
+      ridgeScaleMultiplier: 1.26,
+      ridgeHeightMultiplier: 0.42,
+      octaves: 4,
+      lacunarity: 2.04,
+      gain: 0.47,
+      secondaryAmount: 0.16,
+    },
     hasTrees: false,
   },
   savanna: {
@@ -227,6 +333,20 @@ const BIOME_DEFS = {
     label: "Savanna",
     category: "hot",
     groundColor: new THREE.Color("#b99b4a"),
+    waterColor: new THREE.Color("#5f9db5"),
+    fogColor: new THREE.Color("#e2cb8f"),
+    fogDensityMultiplier: 0.95,
+    terrainProfile: {
+      noiseAlgorithm: "fbm_ridged",
+      noiseScaleMultiplier: 0.98,
+      baseHeightMultiplier: 0.9,
+      ridgeScaleMultiplier: 1.0,
+      ridgeHeightMultiplier: 0.5,
+      octaves: 4,
+      lacunarity: 1.9,
+      gain: 0.5,
+      secondaryAmount: 0.1,
+    },
     hasTrees: true,
     treeStyle: "savanna",
     treeDensityMultiplier: 0.48,
@@ -238,6 +358,20 @@ const BIOME_DEFS = {
     label: "Badlands",
     category: "hot",
     groundColor: new THREE.Color("#b7654c"),
+    waterColor: new THREE.Color("#8f6d58"),
+    fogColor: new THREE.Color("#d0a282"),
+    fogDensityMultiplier: 1.02,
+    terrainProfile: {
+      noiseAlgorithm: "ridged",
+      noiseScaleMultiplier: 1.12,
+      baseHeightMultiplier: 1.08,
+      ridgeScaleMultiplier: 1.42,
+      ridgeHeightMultiplier: 1.18,
+      octaves: 4,
+      lacunarity: 2.08,
+      gain: 0.48,
+      secondaryAmount: 0.08,
+    },
     hasTrees: false,
   },
 };
@@ -539,6 +673,7 @@ const treeTrunkMaterial = new THREE.MeshStandardMaterial({
 const treeCanopyMaterials = [0, 1, 2].map(() => new THREE.MeshStandardMaterial({ roughness: 0.88, metalness: 0.01 }));
 const biomeTreeMaterialSets = new Map();
 const biomeTerrainColorCache = new Map();
+const biomeTerrainProfileCache = new Map();
 const TERRAIN_HORIZONTAL_SCALE = 3;
 
 function buildCanopyPalette(baseHex) {
@@ -625,6 +760,34 @@ function getBiomeStyleOverride(biomeOrId) {
   return style && typeof style === "object" ? style : null;
 }
 
+function getBiomeSettingsOverride(biomeOrId) {
+  const biomeId = typeof biomeOrId === "string" ? biomeOrId : biomeOrId?.id;
+  if (!biomeId) return null;
+  const settings = state.world?.biomeSettings;
+  if (!settings || typeof settings !== "object") return null;
+  const entry = settings[biomeId];
+  return entry && typeof entry === "object" ? entry : null;
+}
+
+function ensureBiomeSettingsState() {
+  if (!state.world.biomeSettings || typeof state.world.biomeSettings !== "object") {
+    state.world.biomeSettings = {};
+  }
+  return state.world.biomeSettings;
+}
+
+function getBiomeTerrainProfile(biome) {
+  if (!biome) return null;
+  const baseProfile = biome.terrainProfile || null;
+  const override = getBiomeSettingsOverride(biome)?.terrainProfile;
+  if (!override || typeof override !== "object") return baseProfile;
+  const cached = biomeTerrainProfileCache.get(biome.id);
+  if (cached && cached._overrideRef === override) return cached;
+  const merged = { ...(baseProfile || {}), ...override, _overrideRef: override };
+  biomeTerrainProfileCache.set(biome.id, merged);
+  return merged;
+}
+
 function getBiomeTerrainColor(biome) {
   if (!biome) return new THREE.Color(state.world.terrainColor);
   const style = getBiomeStyleOverride(biome);
@@ -637,12 +800,90 @@ function getBiomeTerrainColor(biome) {
   return color;
 }
 
-function getBiomeFogColorHex(biome) {
-  return getBiomeStyleOverride(biome)?.fogColorHex || state.world.fog.colorHex;
+function getBiomeFogColor(biome) {
+  const override = getBiomeStyleOverride(biome)?.fogColorHex;
+  return override ? tempFogLookupColor.set(override) : biome?.fogColor || tempFogLookupColor.set(state.world.fog.colorHex);
 }
 
-function getBiomeWaterColorHex(biome) {
-  return getBiomeStyleOverride(biome)?.waterColorHex || state.world.water.colorHex;
+function getBiomeWaterColor(biome) {
+  const override = getBiomeStyleOverride(biome)?.waterColorHex;
+  return override ? tempWaterLookupColor.set(override) : biome?.waterColor || tempWaterLookupColor.set(state.world.water.colorHex);
+}
+
+function getBiomeFogDensityMultiplier(biome) {
+  const value = getBiomeSettingsOverride(biome)?.fogDensityMultiplier ?? biome?.fogDensityMultiplier;
+  return Number.isFinite(value) ? value : 1;
+}
+
+function fillBlendedTerrainColorAt(x, z, targetColor = tempTerrainBlendColor) {
+  const blend = fillBiomeBlendSample(x, z, terrainColorBlendScratch);
+  return fillTerrainColorFromBiomeBlend(blend, targetColor);
+}
+
+function fillTerrainColorFromBiomeBlend(blend, targetColor = tempTerrainBlendColor) {
+  if (!blend.count) {
+    return targetColor.set(state.world.terrainColor);
+  }
+  targetColor.setRGB(0, 0, 0);
+  for (let i = 0; i < blend.count; i += 1) {
+    const biome = blend.biomes[i];
+    const weight = blend.weights[i];
+    if (!biome || !(weight > 0)) continue;
+    const color = getBiomeTerrainColor(biome);
+    targetColor.r += color.r * weight;
+    targetColor.g += color.g * weight;
+    targetColor.b += color.b * weight;
+  }
+  return targetColor;
+}
+
+function getBiomeBlendDominantWeight(blend) {
+  if (!blend || !blend.count) return 1;
+  let best = 0;
+  for (let i = 0; i < blend.count; i += 1) {
+    const weight = blend.weights[i] || 0;
+    if (weight > best) best = weight;
+  }
+  return best;
+}
+
+function getTerrainDetailBiomeFadeFromBlend(blend) {
+  const dominantWeight = getBiomeBlendDominantWeight(blend);
+  return smoothstep(0.58, 0.92, dominantWeight);
+}
+
+function fillBlendedVisualSampleAt(x, z, target = blendedVisualStateScratch) {
+  const blend = fillBiomeBlendSample(x, z, visualBlendScratch);
+  const fogColor = target.fogColor || tempFogBlendColor;
+  const waterColor = target.waterColor || tempWaterBlendColor;
+  fogColor.setRGB(0, 0, 0);
+  waterColor.setRGB(0, 0, 0);
+  let fogDensity = 0;
+  if (!blend.count) {
+    fogColor.set(state.world.fog.colorHex);
+    waterColor.set(state.world.water.colorHex);
+    fogDensity = state.world.fog.density;
+  } else {
+    for (let i = 0; i < blend.count; i += 1) {
+      const biome = blend.biomes[i];
+      const weight = blend.weights[i];
+      if (!biome || !(weight > 0)) continue;
+      const biomeFog = getBiomeFogColor(biome);
+      const biomeWater = getBiomeWaterColor(biome);
+      fogColor.r += biomeFog.r * weight;
+      fogColor.g += biomeFog.g * weight;
+      fogColor.b += biomeFog.b * weight;
+      waterColor.r += biomeWater.r * weight;
+      waterColor.g += biomeWater.g * weight;
+      waterColor.b += biomeWater.b * weight;
+      fogDensity += state.world.fog.density * getBiomeFogDensityMultiplier(biome) * weight;
+    }
+  }
+  target.fogColor = fogColor;
+  target.waterColor = waterColor;
+  target.fogDensity = clampNumber(fogDensity, 0.001, 0.08, state.world.fog.density);
+  target.biome = blend.dominantBiome || null;
+  return target;
 }
 
 function getBiomeTreeMaterialSet(biome) {
@@ -697,15 +938,16 @@ function syncTerrainShaderUniforms() {
 }
 
 function syncAtmosphereFromState() {
-  const biome = getBiomeAt(player.position.x, player.position.z);
-  atmosphereBase.fogColor.set(getBiomeFogColorHex(biome));
+  const visual = fillBlendedVisualSampleAt(player.position.x, player.position.z);
+  atmosphereBase.fogColor.copy(visual.fogColor);
   scene.fog.color.set(atmosphereBase.fogColor);
+  scene.fog.density = visual.fogDensity;
   renderer.setClearColor(atmosphereBase.fogColor, 1);
 }
 
 function syncWaterColorFromState() {
-  const biome = getBiomeAt(player.position.x, player.position.z);
-  water.material.color.set(getBiomeWaterColorHex(biome));
+  const visual = fillBlendedVisualSampleAt(player.position.x, player.position.z);
+  water.material.color.copy(visual.waterColor);
 }
 
 function smoothstep(edge0, edge1, x) {
@@ -926,12 +1168,6 @@ function handleTimeCommand(message) {
   return true;
 }
 
-const heightAt = createTerrainHeightSampler({
-  getNoiseSeed: () => noiseSeed,
-  getTerrain: () => state.world.terrain,
-  terrainHorizontalScale: TERRAIN_HORIZONTAL_SCALE,
-});
-
 function hash2(x, z) {
   return seededHash2(x, z, noiseSeed);
 }
@@ -967,15 +1203,200 @@ function sampleBiomeClimate(x, z) {
   };
 }
 
-function getBiomeAt(x, z) {
+function sampleBiomeClimateFields(x, z) {
   const climate = sampleBiomeClimate(x, z);
+  return {
+    ...climate,
+    selector: clampNumber(climate.moisture * 0.72 + climate.detail * 0.28, 0, 1, 0.5),
+  };
+}
+
+function normalizeWeightTriplet(a, b, c) {
+  const total = a + b + c;
+  if (total <= 0) return [1, 0, 0];
+  return [a / total, b / total, c / total];
+}
+
+function metersBoundaryBlend(value, threshold, gradientPerMeter) {
+  const safeGradient = Math.max(Math.abs(gradientPerMeter), 1e-4);
+  const signedMeters = (value - threshold) / safeGradient;
+  return smoothstep(-BIOME_BLEND_HALF_WIDTH_METERS, BIOME_BLEND_HALF_WIDTH_METERS, signedMeters);
+}
+
+function getBiomeCategoryWeights(temperature, temperatureGradientPerMeter) {
+  const coldToTemperate = metersBoundaryBlend(temperature, 0.37, temperatureGradientPerMeter);
+  const temperateToHot = metersBoundaryBlend(temperature, 0.63, temperatureGradientPerMeter);
+  return normalizeWeightTriplet(
+    1 - coldToTemperate,
+    coldToTemperate * (1 - temperateToHot),
+    temperateToHot
+  );
+}
+
+function getBiomeVariantWeights(selector, selectorGradientPerMeter) {
+  const lowToMid = metersBoundaryBlend(selector, 1 / 3, selectorGradientPerMeter);
+  const midToHigh = metersBoundaryBlend(selector, 2 / 3, selectorGradientPerMeter);
+  return normalizeWeightTriplet(1 - lowToMid, lowToMid * (1 - midToHigh), midToHigh);
+}
+
+function createBiomeBlendSampleResult() {
+  return {
+    count: 0,
+    dominantBiome: null,
+    biomes: [null, null, null, null],
+    weights: [0, 0, 0, 0],
+  };
+}
+
+function setSingleBiomeBlendResult(target, biome) {
+  target.count = 1;
+  target.dominantBiome = biome || null;
+  target.biomes[0] = biome || null;
+  target.weights[0] = 1;
+  for (let i = 1; i < target.biomes.length; i += 1) {
+    target.biomes[i] = null;
+    target.weights[i] = 0;
+  }
+  return target;
+}
+
+function upsertBiomeBlendEntry(target, biome, weight) {
+  if (!biome || !(weight > 0)) return;
+  for (let i = 0; i < target.count; i += 1) {
+    if (target.biomes[i]?.id === biome.id) {
+      target.weights[i] += weight;
+      return;
+    }
+  }
+  if (target.count < target.biomes.length) {
+    target.biomes[target.count] = biome;
+    target.weights[target.count] = weight;
+    target.count += 1;
+    return;
+  }
+  let minIndex = 0;
+  for (let i = 1; i < target.count; i += 1) {
+    if (target.weights[i] < target.weights[minIndex]) minIndex = i;
+  }
+  if (weight > target.weights[minIndex]) {
+    target.biomes[minIndex] = biome;
+    target.weights[minIndex] = weight;
+  }
+}
+
+function normalizeBiomeBlendResult(target) {
+  let total = 0;
+  let bestIndex = 0;
+  let bestWeight = -Infinity;
+  for (let i = 0; i < target.count; i += 1) {
+    const w = Math.max(0, target.weights[i] || 0);
+    target.weights[i] = w;
+    total += w;
+    if (w > bestWeight) {
+      bestWeight = w;
+      bestIndex = i;
+    }
+  }
+  if (total <= 0 || target.count === 0) {
+    return setSingleBiomeBlendResult(target, target.dominantBiome || BIOME_DEFS.meadow);
+  }
+  for (let i = 0; i < target.count; i += 1) {
+    target.weights[i] /= total;
+  }
+  if (!target.dominantBiome || bestWeight <= 0) {
+    target.dominantBiome = target.biomes[bestIndex] || target.dominantBiome || null;
+  }
+  for (let i = target.count; i < target.biomes.length; i += 1) {
+    target.biomes[i] = null;
+    target.weights[i] = 0;
+  }
+  return target;
+}
+
+function fillBiomeBlendSample(x, z, target = createBiomeBlendSampleResult()) {
+  const center = sampleBiomeClimateFields(x, z);
+  const categoryIndex = center.temperature < 0.37 ? 0 : center.temperature > 0.63 ? 2 : 1;
+  const variantIndex = Math.min(2, Math.floor(center.selector * 3));
+  const dominantCategory = categoryIndex === 0 ? "cold" : categoryIndex === 2 ? "hot" : "temperate";
+  const dominantBiome = BIOME_DEFS[BIOME_VARIANTS[dominantCategory][variantIndex]];
+  target.dominantBiome = dominantBiome;
+
+  const nearTempBoundary =
+    Math.abs(center.temperature - 0.37) <= BIOME_BLEND_PRECHECK_MARGIN ||
+    Math.abs(center.temperature - 0.63) <= BIOME_BLEND_PRECHECK_MARGIN;
+  const nearSelectorBoundary =
+    Math.abs(center.selector - 1 / 3) <= BIOME_BLEND_PRECHECK_MARGIN ||
+    Math.abs(center.selector - 2 / 3) <= BIOME_BLEND_PRECHECK_MARGIN;
+
+  if (!nearTempBoundary && !nearSelectorBoundary) {
+    return setSingleBiomeBlendResult(target, dominantBiome);
+  }
+
+  const h = BIOME_BLEND_GRADIENT_STEP_METERS;
+  const xp = sampleBiomeClimateFields(x + h, z);
+  const xm = sampleBiomeClimateFields(x - h, z);
+  const zp = sampleBiomeClimateFields(x, z + h);
+  const zm = sampleBiomeClimateFields(x, z - h);
+  const invSpan = 1 / (2 * h);
+  const tempGradX = (xp.temperature - xm.temperature) * invSpan;
+  const tempGradZ = (zp.temperature - zm.temperature) * invSpan;
+  const selectorGradX = (xp.selector - xm.selector) * invSpan;
+  const selectorGradZ = (zp.selector - zm.selector) * invSpan;
+  const tempGradientPerMeter = Math.hypot(tempGradX, tempGradZ);
+  const selectorGradientPerMeter = Math.hypot(selectorGradX, selectorGradZ);
+
+  const [coldW, temperateW, hotW] = getBiomeCategoryWeights(center.temperature, tempGradientPerMeter);
+  const [lowW, midW, highW] = getBiomeVariantWeights(center.selector, selectorGradientPerMeter);
+
+  target.count = 0;
+  const categoryWeights = [coldW, temperateW, hotW];
+  const categoryKeys = ["cold", "temperate", "hot"];
+  const variantWeights = [lowW, midW, highW];
+  for (let ci = 0; ci < categoryKeys.length; ci += 1) {
+    const cWeight = categoryWeights[ci];
+    if (!(cWeight > 0.0001)) continue;
+    const variants = BIOME_VARIANTS[categoryKeys[ci]];
+    for (let vi = 0; vi < variants.length; vi += 1) {
+      const weight = cWeight * variantWeights[vi];
+      if (!(weight > 0.0001)) continue;
+      upsertBiomeBlendEntry(target, BIOME_DEFS[variants[vi]], weight);
+    }
+  }
+  if (target.count === 0) {
+    return setSingleBiomeBlendResult(target, dominantBiome);
+  }
+  return normalizeBiomeBlendResult(target);
+}
+
+const terrainColorBlendScratch = createBiomeBlendSampleResult();
+const visualBlendScratch = createBiomeBlendSampleResult();
+const tempTerrainBlendColor = new THREE.Color();
+const tempWaterBlendColor = new THREE.Color();
+const tempFogBlendColor = new THREE.Color();
+const tempFogLookupColor = new THREE.Color();
+const tempWaterLookupColor = new THREE.Color();
+const blendedVisualStateScratch = {
+  fogColor: tempFogBlendColor,
+  waterColor: tempWaterBlendColor,
+  fogDensity: 0,
+  biome: null,
+};
+
+const heightAt = createTerrainHeightSampler({
+  getNoiseSeed: () => noiseSeed,
+  getTerrain: () => state.world.terrain,
+  terrainHorizontalScale: TERRAIN_HORIZONTAL_SCALE,
+  sampleBiomeTerrainBlend: (x, z, target) => fillBiomeBlendSample(x, z, target),
+  getBiomeTerrainProfile,
+});
+
+function getBiomeAt(x, z) {
+  const climate = sampleBiomeClimateFields(x, z);
   let category = "temperate";
   if (climate.temperature < 0.37) category = "cold";
   else if (climate.temperature > 0.63) category = "hot";
-
   const variants = BIOME_VARIANTS[category];
-  const selector = clampNumber(climate.moisture * 0.72 + climate.detail * 0.28, 0, 1, 0.5);
-  const index = Math.min(2, Math.floor(selector * 3));
+  const index = Math.min(2, Math.floor(climate.selector * 3));
   return BIOME_DEFS[variants[index]];
 }
 
@@ -1352,23 +1773,28 @@ function buildChunk(cx, cz) {
   const vertices = geometry.attributes.position;
   const colors = new Float32Array(vertices.count * 3);
   const detailBiomes = new Float32Array(vertices.count);
+  const detailBiomeFades = new Float32Array(vertices.count);
+  const chunkBiomeBlendScratch = createBiomeBlendSampleResult();
   for (let i = 0; i < vertices.count; i += 1) {
     const x = vertices.getX(i) + cx * CHUNK_SIZE;
     const z = vertices.getZ(i) + cz * CHUNK_SIZE;
     const y = heightAt(x, z);
     vertices.setY(i, y);
-    const biome = getBiomeAt(x, z);
-    const color = getBiomeTerrainColor(biome);
+    const blend = fillBiomeBlendSample(x, z, chunkBiomeBlendScratch);
+    const biome = blend.dominantBiome || getBiomeAt(x, z);
+    const color = fillTerrainColorFromBiomeBlend(blend);
     const n = hash2(Math.floor(x * 0.5), Math.floor(z * 0.5));
     const brighten = 0.93 + n * 0.14;
     colors[i * 3] = color.r * brighten;
     colors[i * 3 + 1] = color.g * brighten;
     colors[i * 3 + 2] = color.b * brighten;
     detailBiomes[i] = getTerrainDetailBiomeId(biome);
+    detailBiomeFades[i] = getTerrainDetailBiomeFadeFromBlend(blend);
   }
   vertices.needsUpdate = true;
   geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   geometry.setAttribute("detailBiome", new THREE.BufferAttribute(detailBiomes, 1));
+  geometry.setAttribute("detailBiomeFade", new THREE.BufferAttribute(detailBiomeFades, 1));
   geometry.computeVertexNormals();
   const mesh = new THREE.Mesh(geometry, terrainMaterial);
   mesh.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
@@ -2263,6 +2689,163 @@ function applyBiomeStyleVisualRefresh(keys) {
   saveState();
 }
 
+function applyBiomeSettingsVisualRefresh({ terrainProfileTouched = false, fogDensityTouched = false, styleKeys = [] } = {}) {
+  if (terrainProfileTouched) {
+    biomeTerrainProfileCache.clear();
+    rebuildTerrain();
+  }
+  if (fogDensityTouched) {
+    syncAtmosphereFromState();
+  }
+  if (styleKeys.length > 0) {
+    applyBiomeStyleVisualRefresh(styleKeys);
+    return;
+  }
+  if (terrainProfileTouched || fogDensityTouched) {
+    saveState();
+  }
+}
+
+function applyBiomeSettingsUpdateFromAction(action) {
+  const biomeId = String(action?.biomeId || "").trim().toLowerCase();
+  if (!biomeId || !BIOME_DEFS[biomeId]) {
+    return { ok: false, reason: "unknown biomeId" };
+  }
+
+  const styleColorKeys = ["terrainColor", "waterColorHex", "fogColorHex"];
+  const hasStyleFields = styleColorKeys.some((key) => typeof action[key] === "string");
+  const hasTerrainProfileFields =
+    action.terrainProfile && typeof action.terrainProfile === "object" && Object.keys(action.terrainProfile).length > 0;
+  const hasFogDensityMultiplier = typeof action.fogDensityMultiplier === "number" && Number.isFinite(action.fogDensityMultiplier);
+  const isClear = action.clear === true;
+  if (!isClear && !hasStyleFields && !hasTerrainProfileFields && !hasFogDensityMultiplier) {
+    return { ok: false, reason: "no valid fields" };
+  }
+
+  let terrainProfileTouched = false;
+  let fogDensityTouched = false;
+  const touchedStyleKeys = [];
+
+  if (hasStyleFields || isClear) {
+    if (!state.world.biomeStyles || typeof state.world.biomeStyles !== "object") {
+      state.world.biomeStyles = {};
+    }
+    const currentStyle = state.world.biomeStyles[biomeId] && typeof state.world.biomeStyles[biomeId] === "object"
+      ? { ...state.world.biomeStyles[biomeId] }
+      : {};
+    const nextStyle = { ...currentStyle };
+
+    for (const key of styleColorKeys) {
+      if (isClear && (action[key] == null || typeof action[key] === "string")) {
+        if (key in nextStyle) {
+          delete nextStyle[key];
+          touchedStyleKeys.push(key);
+        }
+        continue;
+      }
+      if (typeof action[key] === "string") {
+        const normalized = toColorHex(action[key], null);
+        if (!normalized) continue;
+        if (nextStyle[key] !== normalized) {
+          nextStyle[key] = normalized;
+          touchedStyleKeys.push(key);
+        }
+      }
+    }
+    if (Object.keys(nextStyle).length > 0) {
+      state.world.biomeStyles[biomeId] = nextStyle;
+    } else {
+      delete state.world.biomeStyles[biomeId];
+    }
+  }
+
+  if (hasTerrainProfileFields || hasFogDensityMultiplier || isClear) {
+    const settings = ensureBiomeSettingsState();
+    const current = settings[biomeId] && typeof settings[biomeId] === "object" ? settings[biomeId] : {};
+    const next = { ...current };
+
+    if (isClear && (!action.terrainProfile || Object.keys(action.terrainProfile || {}).length > 0)) {
+      if (next.terrainProfile) {
+        delete next.terrainProfile;
+        terrainProfileTouched = true;
+      }
+    }
+    if (isClear && (action.fogDensityMultiplier == null || hasFogDensityMultiplier)) {
+      if (typeof next.fogDensityMultiplier === "number") {
+        delete next.fogDensityMultiplier;
+        fogDensityTouched = true;
+      }
+    }
+
+    if (hasTerrainProfileFields) {
+      const terrainProfile = { ...(next.terrainProfile && typeof next.terrainProfile === "object" ? next.terrainProfile : {}) };
+      const incoming = action.terrainProfile;
+      const assignNumber = (key, min, max, integer = false) => {
+        if (typeof incoming[key] !== "number" || !Number.isFinite(incoming[key])) return;
+        const raw = integer ? Math.round(incoming[key]) : incoming[key];
+        const clamped = clampNumber(raw, min, max, terrainProfile[key]);
+        if (terrainProfile[key] !== clamped) {
+          terrainProfile[key] = clamped;
+          terrainProfileTouched = true;
+        }
+      };
+      if (typeof incoming.noiseAlgorithm === "string") {
+        const nextAlgorithm = incoming.noiseAlgorithm;
+        if (terrainProfile.noiseAlgorithm !== nextAlgorithm) {
+          terrainProfile.noiseAlgorithm = nextAlgorithm;
+          terrainProfileTouched = true;
+        }
+      }
+      assignNumber("noiseScaleMultiplier", 0.2, 4);
+      assignNumber("baseHeightMultiplier", 0.1, 4);
+      assignNumber("ridgeScaleMultiplier", 0.2, 4);
+      assignNumber("ridgeHeightMultiplier", 0, 4);
+      assignNumber("octaves", 1, 8, true);
+      assignNumber("lacunarity", 1.1, 4);
+      assignNumber("gain", 0.1, 0.9);
+      assignNumber("warpStrength", 0, 1.2);
+      assignNumber("warpScaleMultiplier", 0.2, 5);
+      assignNumber("secondaryAmount", -1, 1);
+      if (Object.keys(terrainProfile).length > 0) next.terrainProfile = terrainProfile;
+      else if (next.terrainProfile) {
+        delete next.terrainProfile;
+        terrainProfileTouched = true;
+      }
+    }
+
+    if (hasFogDensityMultiplier) {
+      const clampedFogDensityMultiplier = clampNumber(action.fogDensityMultiplier, 0.2, 3, next.fogDensityMultiplier);
+      if (next.fogDensityMultiplier !== clampedFogDensityMultiplier) {
+        next.fogDensityMultiplier = clampedFogDensityMultiplier;
+        fogDensityTouched = true;
+      }
+    }
+
+    if (Object.keys(next).length > 0) settings[biomeId] = next;
+    else delete settings[biomeId];
+  }
+
+  const uniqueStyleKeys = [...new Set(touchedStyleKeys)];
+  if (!terrainProfileTouched && !fogDensityTouched && uniqueStyleKeys.length === 0) {
+    return { ok: false, reason: "no changes" };
+  }
+  applyBiomeSettingsVisualRefresh({
+    terrainProfileTouched,
+    fogDensityTouched,
+    styleKeys: uniqueStyleKeys,
+  });
+  return {
+    ok: true,
+    detail: [
+      terrainProfileTouched ? "terrainProfile" : null,
+      fogDensityTouched ? "fogDensityMultiplier" : null,
+      uniqueStyleKeys.length ? `style:${uniqueStyleKeys.join(",")}` : null,
+    ]
+      .filter(Boolean)
+      .join(" "),
+  };
+}
+
 function setBiomeStyleColor(biomeId, key, colorHex, label) {
   const styles = ensureBiomeStylesState();
   const next = { ...(styles[biomeId] || {}) };
@@ -2707,6 +3290,7 @@ const runtimeActionExecutor = createRuntimeActionExecutor({
   },
   setTimeOfDay,
   runLocalWorldCommand: (command) => tryHandleLocalChatCommand(command),
+  applyBiomeSettingsUpdate: applyBiomeSettingsUpdateFromAction,
 });
 
 function applyUpdate(update) {
