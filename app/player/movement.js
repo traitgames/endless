@@ -6,6 +6,7 @@ export function updatePlayerRuntime({
   sampleGroundHeight,
   ensureChunks,
   chunkSize,
+  xyzEl,
   chunkEl,
   camera,
   Vector3,
@@ -47,6 +48,14 @@ export function updatePlayerRuntime({
     player.position.y = ground;
     player.velocity.y = 0;
     player.grounded = true;
+  }
+
+  if (xyzEl) {
+    const formatCoord = (value) => {
+      const rounded = Math.round(value * 10) / 10;
+      return Object.is(rounded, -0) ? "0.0" : rounded.toFixed(1);
+    };
+    xyzEl.textContent = `${formatCoord(player.position.x)}, ${formatCoord(player.position.y)}, ${formatCoord(player.position.z)}`;
   }
 
   const cx = Math.floor(player.position.x / chunkSize);

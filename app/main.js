@@ -12,9 +12,11 @@ import { PROTOCOL_VERSION } from "../shared/protocol.js";
 
 const canvas = document.getElementById("scene");
 const seedEl = document.getElementById("seed");
+const xyzEl = document.getElementById("xyz");
 const chunkEl = document.getElementById("chunk");
 
 const biomeEl = document.getElementById("biome");
+const temperatureTypeEl = document.getElementById("temperature-type");
 const fpsEl = document.getElementById("fps");
 const clockTimeEl = document.getElementById("clock-time");
 const startupLoadingEl = document.getElementById("startup-loading");
@@ -2366,6 +2368,7 @@ function updatePlayer(dt) {
     sampleGroundHeight: sampleGroundHeightForCollision,
     ensureChunks,
     chunkSize: CHUNK_SIZE,
+    xyzEl,
     chunkEl,
     camera,
     Vector3: THREE.Vector3,
@@ -2387,6 +2390,10 @@ function updateBiomeHud() {
   applyVisualSampleToAtmosphereAndWater(visual);
   if (biomeEl) {
     biomeEl.textContent = visual?.biome?.label ?? visual?.biome?.id ?? "Unknown";
+  }
+  if (temperatureTypeEl) {
+    const category = visual?.biome?.category;
+    temperatureTypeEl.textContent = category ? `${category[0].toUpperCase()}${category.slice(1)}` : "Unknown";
   }
   lastVisualSampleX = x;
   lastVisualSampleZ = z;
