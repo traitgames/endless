@@ -76,7 +76,7 @@ function getFrontendCommandHelpContextText() {
   }
 }
 
-function buildWorldSystemPrompt() {
+export function buildWorldSystemPrompt() {
   return [
     SYSTEM_PROMPT,
     getWorldRouterCapabilitiesText(),
