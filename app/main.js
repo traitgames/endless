@@ -66,9 +66,14 @@ let lastDisplayedFps = -1;
 let fpsSmoothed = 60;
 let fpsUpdateAccumulator = 0;
 let startupLoadingDismissed = false;
+let lastVisualSampleAtMs = -Infinity;
+let lastVisualSampleX = Number.NaN;
+let lastVisualSampleZ = Number.NaN;
 let activeChunkBuildJobId = 0;
 let chunkBuildInProgress = false;
 let chunkBuildContext = null;
+const VISUAL_SAMPLE_MIN_INTERVAL_MS = 100;
+const VISUAL_SAMPLE_MIN_DISTANCE_SQ = 4;
 
 if (!backendModeEl) {
   const metrics = document.querySelector("#status .metrics");
@@ -774,6 +779,8 @@ const terrainShaderState = configureTerrainMaterial({
 
 const CHUNK_SIZE = 64;
 const CHUNK_RES = 32;
+const CHUNK_GRID_STRIDE = CHUNK_RES + 1;
+const CHUNK_CELL_SIZE = CHUNK_SIZE / CHUNK_RES;
 const CHUNK_RADIUS = 8;
 const chunks = new Map();
 const treeChunks = new Map();
@@ -1057,15 +1064,25 @@ function syncTerrainShaderUniforms() {
 
 function syncAtmosphereFromState() {
   const visual = fillBlendedVisualSampleAt(player.position.x, player.position.z);
-  atmosphereBase.fogColor.copy(visual.fogColor);
-  scene.fog.color.set(atmosphereBase.fogColor);
-  scene.fog.density = visual.fogDensity;
-  renderer.setClearColor(atmosphereBase.fogColor, 1);
+  applyVisualSampleToAtmosphereAndWater(visual, { updateWater: false });
 }
 
 function syncWaterColorFromState() {
   const visual = fillBlendedVisualSampleAt(player.position.x, player.position.z);
-  water.material.color.copy(visual.waterColor);
+  applyVisualSampleToAtmosphereAndWater(visual, { updateAtmosphere: false });
+}
+
+function applyVisualSampleToAtmosphereAndWater(visual, options = {}) {
+  if (!visual) return;
+  if (options.updateAtmosphere !== false) {
+    atmosphereBase.fogColor.copy(visual.fogColor);
+    scene.fog.color.set(atmosphereBase.fogColor);
+    scene.fog.density = visual.fogDensity;
+    renderer.setClearColor(atmosphereBase.fogColor, 1);
+  }
+  if (options.updateWater !== false) {
+    water.material.color.copy(visual.waterColor);
+  }
 }
 
 function smoothstep(edge0, edge1, x) {
@@ -2063,16 +2080,22 @@ function buildChunk(cx, cz) {
   const colors = new Float32Array(vertices.count * 3);
   const detailBiomes = new Float32Array(vertices.count);
   const detailBiomeFades = new Float32Array(vertices.count);
+  const heightGrid = new Float32Array(CHUNK_GRID_STRIDE * CHUNK_GRID_STRIDE);
   const chunkBiomeBlendScratch = createBiomeBlendSampleResult();
   for (let i = 0; i < vertices.count; i += 1) {
-    const x = vertices.getX(i) + cx * CHUNK_SIZE;
-    const z = vertices.getZ(i) + cz * CHUNK_SIZE;
+    const localX = vertices.getX(i);
+    const localZ = vertices.getZ(i);
+    const x = localX + cx * CHUNK_SIZE;
+    const z = localZ + cz * CHUNK_SIZE;
     const blend = fillBiomeBlendSample(x, z, chunkBiomeBlendScratch);
     const y =
       typeof heightAt.sampleWithBiomeBlend === "function"
         ? heightAt.sampleWithBiomeBlend(x, z, blend)
         : heightAt(x, z);
     vertices.setY(i, y);
+    const gx = clampNumber(Math.round((localX + CHUNK_SIZE * 0.5) / CHUNK_CELL_SIZE), 0, CHUNK_RES, 0);
+    const gz = clampNumber(Math.round((localZ + CHUNK_SIZE * 0.5) / CHUNK_CELL_SIZE), 0, CHUNK_RES, 0);
+    heightGrid[gz * CHUNK_GRID_STRIDE + gx] = y;
     const biome = blend.dominantBiome || getBiomeAt(x, z);
     const color = fillTerrainColorFromBiomeBlend(blend);
     const n = hash2(Math.floor(x * 0.5), Math.floor(z * 0.5));
@@ -2092,7 +2115,50 @@ function buildChunk(cx, cz) {
   mesh.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
   mesh.receiveShadow = true;
   mesh.castShadow = false;
+  mesh.userData.heightGrid = heightGrid;
+  mesh.userData.chunkCoordX = cx;
+  mesh.userData.chunkCoordZ = cz;
   return mesh;
+}
+
+function sampleChunkHeightGridAt(x, z) {
+  const cx = Math.floor((x + CHUNK_SIZE * 0.5) / CHUNK_SIZE);
+  const cz = Math.floor((z + CHUNK_SIZE * 0.5) / CHUNK_SIZE);
+  const mesh = chunks.get(`${cx},${cz}`);
+  const grid = mesh?.userData?.heightGrid;
+  if (!(grid instanceof Float32Array)) return null;
+
+  const localX = x - cx * CHUNK_SIZE;
+  const localZ = z - cz * CHUNK_SIZE;
+  if (localX < -CHUNK_SIZE * 0.5 || localX > CHUNK_SIZE * 0.5 || localZ < -CHUNK_SIZE * 0.5 || localZ > CHUNK_SIZE * 0.5) {
+    return null;
+  }
+  const gridX = clampNumber((localX + CHUNK_SIZE * 0.5) / CHUNK_CELL_SIZE, 0, CHUNK_RES, 0);
+  const gridZ = clampNumber((localZ + CHUNK_SIZE * 0.5) / CHUNK_CELL_SIZE, 0, CHUNK_RES, 0);
+  const x0 = Math.floor(gridX);
+  const z0 = Math.floor(gridZ);
+  const x1 = Math.min(CHUNK_RES, x0 + 1);
+  const z1 = Math.min(CHUNK_RES, z0 + 1);
+  const tx = gridX - x0;
+  const tz = gridZ - z0;
+
+  const h00 = grid[z0 * CHUNK_GRID_STRIDE + x0];
+  const h10 = grid[z0 * CHUNK_GRID_STRIDE + x1];
+  const h01 = grid[z1 * CHUNK_GRID_STRIDE + x0];
+  const h11 = grid[z1 * CHUNK_GRID_STRIDE + x1];
+  // Match THREE.PlaneGeometry triangulation:
+  // triangles are (00, 01, 10) and (01, 11, 10), i.e. diagonal 01 -> 10.
+  if (tx + tz <= 1) {
+    return h00 + (h10 - h00) * tx + (h01 - h00) * tz;
+  }
+  const ux = 1 - tx;
+  const uz = 1 - tz;
+  return h11 + (h01 - h11) * ux + (h10 - h11) * uz;
+}
+
+function sampleGroundHeightForCollision(x, z) {
+  const fast = sampleChunkHeightGridAt(x, z);
+  return Number.isFinite(fast) ? fast : heightAt(x, z);
 }
 
 const player = {
@@ -2297,6 +2363,7 @@ function updatePlayer(dt) {
     keys,
     player,
     heightAt,
+    sampleGroundHeight: sampleGroundHeightForCollision,
     ensureChunks,
     chunkSize: CHUNK_SIZE,
     chunkEl,
@@ -2306,11 +2373,24 @@ function updatePlayer(dt) {
 }
 
 function updateBiomeHud() {
-  const biome = getBiomeAt(player.position.x, player.position.z);
-  syncAtmosphereFromState();
-  syncWaterColorFromState();
-  if (!biomeEl) return;
-  biomeEl.textContent = biome?.label ?? biome?.id ?? "Unknown";
+  const x = player.position.x;
+  const z = player.position.z;
+  const nowMs = performance.now();
+  const movedFar =
+    !Number.isFinite(lastVisualSampleX) ||
+    !Number.isFinite(lastVisualSampleZ) ||
+    (x - lastVisualSampleX) * (x - lastVisualSampleX) + (z - lastVisualSampleZ) * (z - lastVisualSampleZ) >= VISUAL_SAMPLE_MIN_DISTANCE_SQ;
+  const stale = nowMs - lastVisualSampleAtMs >= VISUAL_SAMPLE_MIN_INTERVAL_MS;
+  if (!movedFar && !stale) return;
+
+  const visual = fillBlendedVisualSampleAt(x, z);
+  applyVisualSampleToAtmosphereAndWater(visual);
+  if (biomeEl) {
+    biomeEl.textContent = visual?.biome?.label ?? visual?.biome?.id ?? "Unknown";
+  }
+  lastVisualSampleX = x;
+  lastVisualSampleZ = z;
+  lastVisualSampleAtMs = nowMs;
 }
 
 function animate() {
