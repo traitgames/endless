@@ -66,6 +66,9 @@ let lastDisplayedFps = -1;
 let fpsSmoothed = 60;
 let fpsUpdateAccumulator = 0;
 let startupLoadingDismissed = false;
+let activeChunkBuildJobId = 0;
+let chunkBuildInProgress = false;
+let chunkBuildContext = null;
 
 if (!backendModeEl) {
   const metrics = document.querySelector("#status .metrics");
@@ -136,6 +139,27 @@ function setStartupLoadingMessage(title, subtitle = null) {
   }
   if (startupLoadingSubtitleEl && typeof subtitle === "string") {
     startupLoadingSubtitleEl.textContent = subtitle;
+  }
+}
+
+function beginChunkBuildUi(context, subtitle) {
+  chunkBuildInProgress = true;
+  chunkBuildContext = context;
+  setStartupLoadingVisible(true);
+  setStartupLoadingMessage("Loading...", subtitle);
+  if (stateEl && context !== "startup") {
+    stateEl.textContent = "loading";
+  }
+}
+
+function finishChunkBuildUi(context) {
+  if (chunkBuildContext !== context) return;
+  chunkBuildInProgress = false;
+  chunkBuildContext = null;
+  if (context !== "startup") {
+    setStartupLoadingVisible(false);
+    startupLoadingDismissed = true;
+    if (stateEl) stateEl.textContent = "ready";
   }
 }
 
@@ -1781,12 +1805,14 @@ function buildChunkCoordinateQueue(cx, cz, radius = CHUNK_RADIUS) {
 }
 
 function ensureChunksIncremental(cx, cz, options = {}) {
+  const jobId = ++activeChunkBuildJobId;
   const queue = buildChunkCoordinateQueue(cx, cz, CHUNK_RADIUS);
   const total = queue.length;
   const batchSize = Math.max(1, Math.floor(options.batchSize ?? 4));
   let index = 0;
 
   const step = () => {
+    if (jobId !== activeChunkBuildJobId) return;
     const end = Math.min(total, index + batchSize);
     for (; index < end; index += 1) {
       const { x, z } = queue[index];
@@ -1800,7 +1826,7 @@ function ensureChunksIncremental(cx, cz, options = {}) {
     }
 
     if (typeof options.onProgress === "function") {
-      options.onProgress(index, total);
+      options.onProgress(index, total, jobId);
     }
 
     if (index < total) {
@@ -1823,11 +1849,12 @@ function ensureChunksIncremental(cx, cz, options = {}) {
     }
 
     if (typeof options.onComplete === "function") {
-      options.onComplete();
+      options.onComplete(jobId);
     }
   };
 
   requestAnimationFrame(step);
+  return jobId;
 }
 
 function clearChunks() {
@@ -1846,8 +1873,18 @@ function rebuildTerrain() {
   clearChunks();
   const cx = Math.floor(player.position.x / CHUNK_SIZE);
   const cz = Math.floor(player.position.z / CHUNK_SIZE);
-  ensureChunks(cx, cz);
-  rebuildLandmarks();
+  beginChunkBuildUi("rebuild", "Rebuilding terrain chunks (0%)");
+  ensureChunksIncremental(cx, cz, {
+    batchSize: 3,
+    onProgress(done, total) {
+      const pct = total > 0 ? Math.round((done / total) * 100) : 100;
+      setStartupLoadingMessage("Loading...", `Rebuilding terrain chunks (${pct}%)`);
+    },
+    onComplete() {
+      rebuildLandmarks();
+      finishChunkBuildUi("rebuild");
+    },
+  });
 }
 
 function rebuildLandmarks() {
@@ -2278,7 +2315,9 @@ function updateBiomeHud() {
 
 function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
-  updatePlayer(dt);
+  if (!chunkBuildInProgress || chunkBuildContext === "startup") {
+    updatePlayer(dt);
+  }
   updateBiomeHud();
   updateDayNightCycle(dt);
   updateStatusClock();
@@ -2306,7 +2345,9 @@ function animate() {
   renderer.render(scene, camera);
   if (!startupLoadingDismissed) {
     startupLoadingDismissed = true;
-    setStartupLoadingVisible(false);
+    if (chunkBuildContext !== "rebuild") {
+      setStartupLoadingVisible(false);
+    }
   }
   requestAnimationFrame(animate);
 }
@@ -2320,7 +2361,7 @@ function runStartupPhase(title, subtitle, task, next) {
 }
 
 function startAppBootSequence() {
-  setStartupLoadingVisible(true);
+  beginChunkBuildUi("startup", "Preparing world systems");
   runStartupPhase("Loading...", "Preparing world systems", () => {}, () => {
     setStartupLoadingMessage("Loading...", "Generating nearby terrain chunks (0%)");
     ensureChunksIncremental(0, 0, {
@@ -2334,6 +2375,8 @@ function startAppBootSequence() {
           rebuildLandmarks();
         }, () => {
           setStartupLoadingMessage("Loading...", "Starting renderer");
+          chunkBuildInProgress = false;
+          chunkBuildContext = "startup";
           animate();
         });
       },
@@ -3674,10 +3717,6 @@ function restoreRuntimeState(snapshot) {
   });
   treeChunks.clear();
   rebuildTerrain();
-  const cx = Math.floor(player.position.x / CHUNK_SIZE);
-  const cz = Math.floor(player.position.z / CHUNK_SIZE);
-  ensureChunks(cx, cz);
-  rebuildLandmarks();
 }
 
 function applyAction(action) {
