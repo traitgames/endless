@@ -74,6 +74,10 @@ let lastVisualSampleZ = Number.NaN;
 let activeChunkBuildJobId = 0;
 let chunkBuildInProgress = false;
 let chunkBuildContext = null;
+let runtimeChunkBuildJobId = 0;
+let runtimeChunkBuildRunning = false;
+let runtimeChunkBuildQueuedTarget = null;
+let runtimeChunkBuildAppliedTarget = null;
 const VISUAL_SAMPLE_MIN_INTERVAL_MS = 100;
 const VISUAL_SAMPLE_MIN_DISTANCE_SQ = 4;
 
@@ -150,6 +154,9 @@ function setStartupLoadingMessage(title, subtitle = null) {
 }
 
 function beginChunkBuildUi(context, subtitle) {
+  // Cancel/clear any queued runtime chunk streaming while a full chunk build UI flow takes over.
+  runtimeChunkBuildRunning = false;
+  runtimeChunkBuildQueuedTarget = null;
   chunkBuildInProgress = true;
   chunkBuildContext = context;
   setStartupLoadingVisible(true);
@@ -1876,6 +1883,38 @@ function ensureChunksIncremental(cx, cz, options = {}) {
   return jobId;
 }
 
+function ensureChunksRuntimeIncremental(cx, cz) {
+  const target = { x: cx, z: cz };
+  runtimeChunkBuildQueuedTarget = target;
+  if (runtimeChunkBuildAppliedTarget && runtimeChunkBuildAppliedTarget.x === cx && runtimeChunkBuildAppliedTarget.z === cz) {
+    return;
+  }
+  if (chunkBuildInProgress) {
+    return;
+  }
+  if (runtimeChunkBuildRunning) {
+    return;
+  }
+
+  const jobId = ++runtimeChunkBuildJobId;
+  const runTarget = target;
+  runtimeChunkBuildRunning = true;
+  ensureChunksIncremental(runTarget.x, runTarget.z, {
+    batchSize: 4,
+    onComplete() {
+      if (jobId !== runtimeChunkBuildJobId) return;
+      runtimeChunkBuildRunning = false;
+      runtimeChunkBuildAppliedTarget = runTarget;
+      if (
+        runtimeChunkBuildQueuedTarget &&
+        (runtimeChunkBuildQueuedTarget.x !== runTarget.x || runtimeChunkBuildQueuedTarget.z !== runTarget.z)
+      ) {
+        ensureChunksRuntimeIncremental(runtimeChunkBuildQueuedTarget.x, runtimeChunkBuildQueuedTarget.z);
+      }
+    },
+  });
+}
+
 function clearChunks() {
   chunks.forEach((mesh) => {
     scene.remove(mesh);
@@ -2183,6 +2222,66 @@ let suppressNextUnlockChatOpen = false;
 let resumePointerLockAfterUnlock = false;
 let lastEscapeChatCloseAt = -Infinity;
 const ESCAPE_CHAT_REOPEN_GUARD_MS = 250;
+const LOOK_SENSITIVITY = 0.002;
+const LOOK_MAX_PITCH = Math.PI / 2 - 0.02;
+const LOOK_SMOOTHING_HZ = 20;
+const LOOK_MAX_EVENT_DELTA_PX = 180;
+const LOOK_REJECT_EVENT_DELTA_PX = 1200;
+const LOOK_MAX_RADIANS_PER_FRAME = Math.PI / 8;
+const lookInput = {
+  pendingYaw: 0,
+  pendingPitch: 0,
+  ignoreEventsRemaining: 0,
+};
+
+function resetQueuedLookInput() {
+  lookInput.pendingYaw = 0;
+  lookInput.pendingPitch = 0;
+}
+
+function queueLookDelta(event) {
+  if (!pointerLocked) return;
+  if (lookInput.ignoreEventsRemaining > 0) {
+    lookInput.ignoreEventsRemaining -= 1;
+    return;
+  }
+  const rawX = Number(event.movementX);
+  const rawY = Number(event.movementY);
+  if (!Number.isFinite(rawX) || !Number.isFinite(rawY)) {
+    return;
+  }
+  if (Math.abs(rawX) > LOOK_REJECT_EVENT_DELTA_PX || Math.abs(rawY) > LOOK_REJECT_EVENT_DELTA_PX) {
+    return;
+  }
+  const clampedX = clampNumber(rawX, -LOOK_MAX_EVENT_DELTA_PX, LOOK_MAX_EVENT_DELTA_PX, 0);
+  const clampedY = clampNumber(rawY, -LOOK_MAX_EVENT_DELTA_PX, LOOK_MAX_EVENT_DELTA_PX, 0);
+  lookInput.pendingYaw -= clampedX * LOOK_SENSITIVITY;
+  lookInput.pendingPitch -= clampedY * LOOK_SENSITIVITY;
+}
+
+function applyQueuedLookInput(dt) {
+  if (!(dt > 0)) return;
+  if (!Number.isFinite(lookInput.pendingYaw) || !Number.isFinite(lookInput.pendingPitch)) {
+    resetQueuedLookInput();
+    return;
+  }
+  const alpha = 1 - Math.exp(-LOOK_SMOOTHING_HZ * dt);
+  if (!(alpha > 0)) return;
+  const applyAxis = (pending) => {
+    if (pending === 0) return 0;
+    const step = pending * alpha;
+    return clampNumber(step, -LOOK_MAX_RADIANS_PER_FRAME, LOOK_MAX_RADIANS_PER_FRAME, 0);
+  };
+  const yawStep = applyAxis(lookInput.pendingYaw);
+  const pitchStep = applyAxis(lookInput.pendingPitch);
+  player.yaw += yawStep;
+  player.pitch += pitchStep;
+  lookInput.pendingYaw -= yawStep;
+  lookInput.pendingPitch -= pitchStep;
+  if (Math.abs(lookInput.pendingYaw) < 1e-5) lookInput.pendingYaw = 0;
+  if (Math.abs(lookInput.pendingPitch) < 1e-5) lookInput.pendingPitch = 0;
+  player.pitch = Math.max(-LOOK_MAX_PITCH, Math.min(LOOK_MAX_PITCH, player.pitch));
+}
 
 function isChatFocused() {
   return document.activeElement === chatInput;
@@ -2318,12 +2417,7 @@ chatMinimizeBtn?.addEventListener("click", () => {
 });
 
 window.addEventListener("mousemove", (event) => {
-  if (!pointerLocked) return;
-  const sensitivity = 0.002;
-  player.yaw -= event.movementX * sensitivity;
-  player.pitch -= event.movementY * sensitivity;
-  const maxPitch = Math.PI / 2 - 0.02;
-  player.pitch = Math.max(-maxPitch, Math.min(maxPitch, player.pitch));
+  queueLookDelta(event);
 });
 
 document.addEventListener("pointerlockchange", () => {
@@ -2340,6 +2434,11 @@ document.addEventListener("pointerlockchange", () => {
 
   if (pointerLocked) {
     resumePointerLockAfterUnlock = false;
+    resetQueuedLookInput();
+    lookInput.ignoreEventsRemaining = 1;
+  } else {
+    resetQueuedLookInput();
+    lookInput.ignoreEventsRemaining = 0;
   }
 
   if (suppressAutoOpen) {
@@ -2366,7 +2465,7 @@ function updatePlayer(dt) {
     player,
     heightAt,
     sampleGroundHeight: sampleGroundHeightForCollision,
-    ensureChunks,
+    ensureChunks: ensureChunksRuntimeIncremental,
     chunkSize: CHUNK_SIZE,
     xyzEl,
     chunkEl,
@@ -2402,8 +2501,11 @@ function updateBiomeHud() {
 
 function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
+  applyQueuedLookInput(dt);
   if (!chunkBuildInProgress || chunkBuildContext === "startup") {
     updatePlayer(dt);
+  } else {
+    camera.rotation.set(player.pitch, player.yaw, 0, "YXZ");
   }
   updateBiomeHud();
   updateDayNightCycle(dt);
@@ -3824,7 +3926,7 @@ function saveState() {
   });
 }
 
-const saveTimer = setInterval(saveState, 2000);
+const saveTimer = setInterval(saveState, 10000);
 function handleBeforeUnload() {
   saveState();
 }
