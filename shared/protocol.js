@@ -18,6 +18,7 @@ const ACTION_TYPES = new Set([
   "set_seed",
   "set_time",
   "set_terrain",
+  "set_biome_settings",
   "set_water",
   "set_fog",
   "set_terrain_color",
@@ -137,6 +138,41 @@ export function normalizeAction(action) {
     return Object.keys(out).length > 1 ? out : null;
   }
 
+  if (type === "set_biome_settings") {
+    const biomeId = safeBiomeId(action.biomeId ?? action.biome ?? action.id);
+    if (!biomeId) return null;
+    const out = { type, biomeId };
+    if (typeof action.clear === "boolean") out.clear = action.clear;
+    maybeColor(action, out, "terrainColor");
+    maybeColor(action, out, "waterColorHex");
+    maybeColor(action, out, "fogColorHex");
+    maybeNumber(action, out, "fogDensityMultiplier");
+
+    const terrainProfileIn =
+      action.terrainProfile && typeof action.terrainProfile === "object"
+        ? action.terrainProfile
+        : action.terrain && typeof action.terrain === "object"
+          ? action.terrain
+          : null;
+    if (terrainProfileIn) {
+      const terrainProfile = {};
+      maybeNumber(terrainProfileIn, terrainProfile, "noiseScaleMultiplier");
+      maybeNumber(terrainProfileIn, terrainProfile, "baseHeightMultiplier");
+      maybeNumber(terrainProfileIn, terrainProfile, "ridgeScaleMultiplier");
+      maybeNumber(terrainProfileIn, terrainProfile, "ridgeHeightMultiplier");
+      maybeNumber(terrainProfileIn, terrainProfile, "octaves");
+      maybeNumber(terrainProfileIn, terrainProfile, "lacunarity");
+      maybeNumber(terrainProfileIn, terrainProfile, "gain");
+      maybeNumber(terrainProfileIn, terrainProfile, "warpStrength");
+      maybeNumber(terrainProfileIn, terrainProfile, "warpScaleMultiplier");
+      maybeNumber(terrainProfileIn, terrainProfile, "secondaryAmount");
+      const algorithm = safeTerrainNoiseAlgorithm(terrainProfileIn.noiseAlgorithm ?? terrainProfileIn.algorithm);
+      if (algorithm) terrainProfile.noiseAlgorithm = algorithm;
+      if (Object.keys(terrainProfile).length > 0) out.terrainProfile = terrainProfile;
+    }
+    return Object.keys(out).length > 2 || out.clear ? out : null;
+  }
+
   if (type === "set_water") {
     const out = { type };
     maybeNumber(action, out, "level");
@@ -224,6 +260,19 @@ function toColor(value) {
 function safeText(value) {
   if (typeof value !== "string") return "";
   return value.trim();
+}
+
+function safeBiomeId(value) {
+  const text = safeText(value).toLowerCase();
+  if (!text) return "";
+  if (!/^[a-z][a-z0-9_-]*$/.test(text)) return "";
+  return text;
+}
+
+function safeTerrainNoiseAlgorithm(value) {
+  const text = safeText(value).toLowerCase();
+  if (!text) return "";
+  return ["fbm_ridged", "billow", "ridged", "warped", "hybrid"].includes(text) ? text : "";
 }
 
 export function randomId(prefix = "id") {

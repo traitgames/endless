@@ -3,8 +3,10 @@ export function updatePlayerRuntime({
   keys,
   player,
   heightAt,
+  sampleGroundHeight,
   ensureChunks,
   chunkSize,
+  xyzEl,
   chunkEl,
   camera,
   Vector3,
@@ -37,17 +39,33 @@ export function updatePlayerRuntime({
 
   player.position.addScaledVector(player.velocity, dt);
 
-  const ground = heightAt(player.position.x, player.position.z) + 2.2;
+  const groundHeight =
+    typeof sampleGroundHeight === "function"
+      ? sampleGroundHeight(player.position.x, player.position.z)
+      : heightAt(player.position.x, player.position.z);
+  const ground = groundHeight + 2.2;
   if (player.position.y <= ground) {
     player.position.y = ground;
     player.velocity.y = 0;
     player.grounded = true;
   }
 
+  if (xyzEl) {
+    const formatCoord = (value) => {
+      const rounded = Math.round(value * 10) / 10;
+      return Object.is(rounded, -0) ? "0.0" : rounded.toFixed(1);
+    };
+    xyzEl.textContent = `${formatCoord(player.position.x)}, ${formatCoord(player.position.y)}, ${formatCoord(player.position.z)}`;
+  }
+
   const cx = Math.floor(player.position.x / chunkSize);
   const cz = Math.floor(player.position.z / chunkSize);
-  ensureChunks(cx, cz);
-  chunkEl.textContent = `${cx},${cz}`;
+  if (player._lastChunkX !== cx || player._lastChunkZ !== cz) {
+    ensureChunks(cx, cz);
+    player._lastChunkX = cx;
+    player._lastChunkZ = cz;
+    chunkEl.textContent = `${cx},${cz}`;
+  }
 
   camera.position.copy(player.position);
   camera.rotation.set(player.pitch, player.yaw, 0, "YXZ");

@@ -85,7 +85,9 @@ function migrateState(parsed, { defaultState, stateVersion }) {
 function normalizeWorld(value, { defaultWorld, legacyWorld }) {
   const source = value && typeof value === "object" ? value : {};
   const terrain = source.terrain && typeof source.terrain === "object" ? source.terrain : {};
+  const terrainDetailCfg = source.terrainDetail && typeof source.terrainDetail === "object" ? source.terrainDetail : {};
   const biomeStylesCfg = source.biomeStyles && typeof source.biomeStyles === "object" ? source.biomeStyles : {};
+  const biomeSettingsCfg = source.biomeSettings && typeof source.biomeSettings === "object" ? source.biomeSettings : {};
   const waterCfg = source.water && typeof source.water === "object" ? source.water : {};
   const fogCfg = source.fog && typeof source.fog === "object" ? source.fog : {};
   const treesCfg = source.trees && typeof source.trees === "object" ? source.trees : {};
@@ -124,8 +126,13 @@ function normalizeWorld(value, { defaultWorld, legacyWorld }) {
       ridgeScale: clampNumber(terrain.ridgeScale, 0.5, 6, defaultWorld.terrain.ridgeScale),
       ridgeHeight: clampNumber(terrain.ridgeHeight, 0, 50, defaultWorld.terrain.ridgeHeight),
     },
+    terrainDetail: {
+      renderDistance: clampNumber(terrainDetailCfg.renderDistance, 0, 300, defaultWorld.terrainDetail.renderDistance),
+      intensity: clampNumber(terrainDetailCfg.intensity, 0, 3, defaultWorld.terrainDetail.intensity ?? 1),
+    },
     terrainColor,
     biomeStyles: normalizeBiomeStyles(biomeStylesCfg),
+    biomeSettings: normalizeBiomeSettings(biomeSettingsCfg),
     trees: {
       density: clampNumber(treesCfg.density, 0, 1.2, defaultWorld.trees.density),
       trunkColor,
@@ -172,6 +179,50 @@ function normalizeBiomeStyles(value) {
     if (Object.keys(next).length > 0) out[String(biomeId)] = next;
   }
   return out;
+}
+
+function normalizeBiomeSettings(value) {
+  if (!value || typeof value !== "object") return {};
+  const out = {};
+  for (const [biomeId, cfg] of Object.entries(value)) {
+    if (!cfg || typeof cfg !== "object") continue;
+    const next = {};
+    const fogDensityMultiplier = clampNumber(cfg.fogDensityMultiplier, 0.2, 3, null);
+    if (typeof fogDensityMultiplier === "number") {
+      next.fogDensityMultiplier = fogDensityMultiplier;
+    }
+    const terrainCfg = cfg.terrainProfile && typeof cfg.terrainProfile === "object" ? cfg.terrainProfile : {};
+    const terrainProfile = {};
+    if (typeof terrainCfg.noiseAlgorithm === "string") {
+      const algorithm = String(terrainCfg.noiseAlgorithm).trim().toLowerCase();
+      if (["fbm_ridged", "billow", "ridged", "warped", "hybrid"].includes(algorithm)) {
+        terrainProfile.noiseAlgorithm = algorithm;
+      }
+    }
+    copyClampedNumber(terrainCfg, terrainProfile, "noiseScaleMultiplier", 0.2, 4);
+    copyClampedNumber(terrainCfg, terrainProfile, "baseHeightMultiplier", 0.1, 4);
+    copyClampedNumber(terrainCfg, terrainProfile, "ridgeScaleMultiplier", 0.2, 4);
+    copyClampedNumber(terrainCfg, terrainProfile, "ridgeHeightMultiplier", 0, 4);
+    copyClampedNumber(terrainCfg, terrainProfile, "octaves", 1, 8, true);
+    copyClampedNumber(terrainCfg, terrainProfile, "lacunarity", 1.1, 4);
+    copyClampedNumber(terrainCfg, terrainProfile, "gain", 0.1, 0.9);
+    copyClampedNumber(terrainCfg, terrainProfile, "warpStrength", 0, 1.2);
+    copyClampedNumber(terrainCfg, terrainProfile, "warpScaleMultiplier", 0.2, 5);
+    copyClampedNumber(terrainCfg, terrainProfile, "secondaryAmount", -1, 1);
+    if (Object.keys(terrainProfile).length > 0) {
+      next.terrainProfile = terrainProfile;
+    }
+    if (Object.keys(next).length > 0) {
+      out[String(biomeId)] = next;
+    }
+  }
+  return out;
+}
+
+function copyClampedNumber(src, target, key, min, max, integer = false) {
+  if (typeof src?.[key] !== "number" || !Number.isFinite(src[key])) return;
+  const raw = integer ? Math.round(src[key]) : src[key];
+  target[key] = clampNumber(raw, min, max, raw);
 }
 
 export function clampNumber(value, min, max, fallback) {
