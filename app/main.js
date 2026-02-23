@@ -15,7 +15,11 @@ const seedEl = document.getElementById("seed");
 const chunkEl = document.getElementById("chunk");
 
 const biomeEl = document.getElementById("biome");
+const fpsEl = document.getElementById("fps");
 const clockTimeEl = document.getElementById("clock-time");
+const startupLoadingEl = document.getElementById("startup-loading");
+const startupLoadingTitleEl = document.getElementById("startup-loading-title");
+const startupLoadingSubtitleEl = document.getElementById("startup-loading-subtitle");
 let backendModeEl = document.getElementById("backend-mode");
 const stateEl = document.getElementById("state");
 const chatLog = document.getElementById("chat-log");
@@ -58,6 +62,10 @@ const FALLBACK_WORLD_COMMAND_HELP_LINES = [
 let localCommandHelpCatalog = null;
 let localCommandHelpCatalogPromise = null;
 let lastStatusClockMinuteKey = "";
+let lastDisplayedFps = -1;
+let fpsSmoothed = 60;
+let fpsUpdateAccumulator = 0;
+let startupLoadingDismissed = false;
 
 if (!backendModeEl) {
   const metrics = document.querySelector("#status .metrics");
@@ -100,6 +108,35 @@ function updateStatusClock() {
   if (minuteKey === lastStatusClockMinuteKey) return;
   lastStatusClockMinuteKey = minuteKey;
   clockTimeEl.textContent = formatStatusClockTime(normalized);
+}
+
+function updateStatusFps(dt) {
+  if (!fpsEl || !(dt > 0)) return;
+  const instantFps = 1 / dt;
+  const smoothing = 0.12;
+  fpsSmoothed += (instantFps - fpsSmoothed) * smoothing;
+  fpsUpdateAccumulator += dt;
+  if (fpsUpdateAccumulator < 0.2) return;
+  fpsUpdateAccumulator = 0;
+  const nextFps = Math.round(clampNumber(fpsSmoothed, 0, 999, 0));
+  if (nextFps === lastDisplayedFps) return;
+  lastDisplayedFps = nextFps;
+  fpsEl.textContent = String(nextFps);
+}
+
+function setStartupLoadingVisible(visible) {
+  if (!startupLoadingEl) return;
+  startupLoadingEl.classList.toggle("hidden", !visible);
+  startupLoadingEl.setAttribute("aria-hidden", String(!visible));
+}
+
+function setStartupLoadingMessage(title, subtitle = null) {
+  if (startupLoadingTitleEl && typeof title === "string" && title.trim()) {
+    startupLoadingTitleEl.textContent = title;
+  }
+  if (startupLoadingSubtitleEl && typeof subtitle === "string") {
+    startupLoadingSubtitleEl.textContent = subtitle;
+  }
 }
 
 const STORAGE_KEY = "endless_state_v1";
@@ -157,10 +194,13 @@ const BIOME_VARIANTS = {
   hot: ["desert", "savanna", "badlands"],
 };
 
-const BIOME_BLEND_TRANSITION_WIDTH_METERS = 15;
+const BIOME_BLEND_TRANSITION_WIDTH_METERS = 30;
 const BIOME_BLEND_HALF_WIDTH_METERS = BIOME_BLEND_TRANSITION_WIDTH_METERS * 0.5;
 const BIOME_BLEND_GRADIENT_STEP_METERS = 2;
-const BIOME_BLEND_PRECHECK_MARGIN = 0.03;
+const BIOME_BLEND_PRECHECK_MARGIN = 0.05;
+const MOUNTAIN_BIOME_BORDER_BLEND_HEIGHT_METERS = 24;
+const BIOME_BLEND_MAX_SLOTS = 8;
+const MOUNTAIN_BIOME_SUFFIX = "_mountains";
 
 const BIOME_DEFS = {
   glacier: {
@@ -375,6 +415,59 @@ const BIOME_DEFS = {
     hasTrees: false,
   },
 };
+
+function blendBiomeColorToMountain(baseColor, amount, lift = 0) {
+  const target = new THREE.Color(baseColor);
+  target.lerp(new THREE.Color("#7d8790"), amount);
+  if (lift !== 0) {
+    target.r = clampNumber(target.r + lift, 0, 1, target.r);
+    target.g = clampNumber(target.g + lift, 0, 1, target.g);
+    target.b = clampNumber(target.b + lift, 0, 1, target.b);
+  }
+  return target;
+}
+
+function createMountainTerrainProfile(baseProfile) {
+  const profile = { ...(baseProfile || {}) };
+  const baseOctaves = Math.max(1, Math.floor(profile.octaves ?? 4));
+  return {
+    ...profile,
+    noiseAlgorithm: profile.noiseAlgorithm === "billow" ? "hybrid" : profile.noiseAlgorithm ?? "fbm_ridged",
+    noiseScaleMultiplier: (profile.noiseScaleMultiplier ?? 1) * 0.9,
+    baseHeightMultiplier: (profile.baseHeightMultiplier ?? 1) * 1.16,
+    ridgeScaleMultiplier: (profile.ridgeScaleMultiplier ?? 1) * 1.18,
+    ridgeHeightMultiplier: (profile.ridgeHeightMultiplier ?? 1) * 1.35,
+    octaves: Math.min(6, baseOctaves + 1),
+    lacunarity: Number.isFinite(profile.lacunarity) ? profile.lacunarity : 1.95,
+    gain: Number.isFinite(profile.gain) ? profile.gain : 0.5,
+    warpStrength: Math.max(0.12, Number(profile.warpStrength) || 0),
+    warpScaleMultiplier: Number.isFinite(profile.warpScaleMultiplier) ? profile.warpScaleMultiplier : 1.7,
+    secondaryAmount: (profile.secondaryAmount ?? 0) + 0.05,
+  };
+}
+
+function createMountainBiomeVariant(baseBiome) {
+  const mountainId = `${baseBiome.id}${MOUNTAIN_BIOME_SUFFIX}`;
+  return {
+    ...baseBiome,
+    id: mountainId,
+    baseBiomeId: baseBiome.id,
+    isMountainVariant: true,
+    label: `${baseBiome.label} Mountains`,
+    groundColor: blendBiomeColorToMountain(baseBiome.groundColor, 0.28, 0.015),
+    waterColor: blendBiomeColorToMountain(baseBiome.waterColor, 0.12, 0.02),
+    fogColor: blendBiomeColorToMountain(baseBiome.fogColor, 0.16, 0.025),
+    fogDensityMultiplier: (baseBiome.fogDensityMultiplier ?? 1) * 1.08,
+    terrainProfile: createMountainTerrainProfile(baseBiome.terrainProfile),
+    treeDensityMultiplier: (baseBiome.treeDensityMultiplier ?? 1) * 0.7,
+    trunkTint: baseBiome.trunkTint ? blendBiomeColorToMountain(baseBiome.trunkTint, 0.1) : baseBiome.trunkTint,
+    canopyTint: baseBiome.canopyTint ? blendBiomeColorToMountain(baseBiome.canopyTint, 0.2) : baseBiome.canopyTint,
+  };
+}
+
+for (const biome of Object.values({ ...BIOME_DEFS })) {
+  BIOME_DEFS[`${biome.id}${MOUNTAIN_BIOME_SUFFIX}`] = createMountainBiomeVariant(biome);
+}
 
 const DEFAULT_STATE = {
   seed: BOOT_SEED,
@@ -727,7 +820,8 @@ function setTerrainDetailIntensity(intensity) {
 }
 
 function getTerrainDetailBiomeId(biome) {
-  switch (biome?.id) {
+  const biomeId = typeof biome?.baseBiomeId === "string" ? biome.baseBiomeId : biome?.id;
+  switch (biomeId) {
     case "glacier":
       return 1; // crystalline ice facets
     case "tundra":
@@ -1243,8 +1337,8 @@ function createBiomeBlendSampleResult() {
   return {
     count: 0,
     dominantBiome: null,
-    biomes: [null, null, null, null],
-    weights: [0, 0, 0, 0],
+    biomes: Array(BIOME_BLEND_MAX_SLOTS).fill(null),
+    weights: Array(BIOME_BLEND_MAX_SLOTS).fill(0),
   };
 }
 
@@ -1313,6 +1407,100 @@ function normalizeBiomeBlendResult(target) {
   return target;
 }
 
+const mountainBiomeAdditiveScratch = {
+  gentleAdditiveHeight: 0,
+  mountainAdditiveHeight: 0,
+  totalAdditiveHeight: 0,
+  rangeMask: 0,
+  rangeClass: 0,
+  peakPotential: 0,
+};
+
+function getMountainBiomeThresholdMeters() {
+  return Number.isFinite(heightAt?.mountainBiomeThresholdMeters) ? heightAt.mountainBiomeThresholdMeters : 50;
+}
+
+function fillTerrainAdditiveSampleAt(x, z, target = mountainBiomeAdditiveScratch) {
+  if (typeof heightAt?.sampleTerrainAdditive === "function") {
+    return heightAt.sampleTerrainAdditive(x, z, target);
+  }
+  target.gentleAdditiveHeight = 0;
+  target.mountainAdditiveHeight = 0;
+  target.totalAdditiveHeight = 0;
+  target.rangeMask = 0;
+  target.rangeClass = 0;
+  target.peakPotential = 0;
+  return target;
+}
+
+function getMountainBiomeVariant(biome) {
+  if (!biome) return null;
+  if (biome.isMountainVariant) return biome;
+  return BIOME_DEFS[`${biome.id}${MOUNTAIN_BIOME_SUFFIX}`] || biome;
+}
+
+function getBaseBiomeVariant(biome) {
+  if (!biome) return null;
+  if (!biome.isMountainVariant) return biome;
+  return BIOME_DEFS[biome.baseBiomeId] || biome;
+}
+
+function getMountainBiomeBlendWeightAt(x, z) {
+  const center = fillTerrainAdditiveSampleAt(x, z, mountainBiomeAdditiveScratch);
+  const centerHeight = center.mountainAdditiveHeight || 0;
+  const threshold = getMountainBiomeThresholdMeters();
+  const blendHalfWidth = MOUNTAIN_BIOME_BORDER_BLEND_HEIGHT_METERS;
+  if (centerHeight <= threshold - blendHalfWidth) return 0;
+  if (centerHeight >= threshold + blendHalfWidth) return 1;
+  return smoothstep(threshold - blendHalfWidth, threshold + blendHalfWidth, centerHeight);
+}
+
+function applyMountainVariantsToBiomeBlend(x, z, target) {
+  if (!target) return target;
+  const mountainWeight = getMountainBiomeBlendWeightAt(x, z);
+  if (!(mountainWeight > 0)) {
+    return target;
+  }
+  if (mountainWeight >= 0.999) {
+    for (let i = 0; i < target.count; i += 1) {
+      target.biomes[i] = getMountainBiomeVariant(target.biomes[i]);
+    }
+    target.dominantBiome = getMountainBiomeVariant(target.dominantBiome);
+    return target;
+  }
+
+  const baseWeight = 1 - mountainWeight;
+  const originalCount = target.count;
+  const originalBiomes = target.biomes.slice(0, originalCount);
+  const originalWeights = target.weights.slice(0, originalCount);
+  const dominantBaseBiome = getBaseBiomeVariant(target.dominantBiome);
+
+  target.count = 0;
+  for (let i = 0; i < target.biomes.length; i += 1) {
+    target.biomes[i] = null;
+    target.weights[i] = 0;
+  }
+
+  for (let i = 0; i < originalCount; i += 1) {
+    const biome = getBaseBiomeVariant(originalBiomes[i]);
+    const weight = originalWeights[i];
+    if (!biome || !(weight > 0)) continue;
+    if (baseWeight > 0.0001) upsertBiomeBlendEntry(target, biome, weight * baseWeight);
+    if (mountainWeight > 0.0001) upsertBiomeBlendEntry(target, getMountainBiomeVariant(biome), weight * mountainWeight);
+  }
+
+  normalizeBiomeBlendResult(target);
+  target.dominantBiome = mountainWeight >= 0.5 ? getMountainBiomeVariant(dominantBaseBiome) : dominantBaseBiome;
+  return target;
+}
+
+function getBiomeWithMountainVariantAt(x, z, biome) {
+  if (!biome) return biome;
+  return getMountainBiomeBlendWeightAt(x, z) >= 0.5
+    ? getMountainBiomeVariant(biome)
+    : biome;
+}
+
 function fillBiomeBlendSample(x, z, target = createBiomeBlendSampleResult()) {
   const center = sampleBiomeClimateFields(x, z);
   const categoryIndex = center.temperature < 0.37 ? 0 : center.temperature > 0.63 ? 2 : 1;
@@ -1329,7 +1517,8 @@ function fillBiomeBlendSample(x, z, target = createBiomeBlendSampleResult()) {
     Math.abs(center.selector - 2 / 3) <= BIOME_BLEND_PRECHECK_MARGIN;
 
   if (!nearTempBoundary && !nearSelectorBoundary) {
-    return setSingleBiomeBlendResult(target, dominantBiome);
+    setSingleBiomeBlendResult(target, dominantBiome);
+    return applyMountainVariantsToBiomeBlend(x, z, target);
   }
 
   const h = BIOME_BLEND_GRADIENT_STEP_METERS;
@@ -1363,9 +1552,11 @@ function fillBiomeBlendSample(x, z, target = createBiomeBlendSampleResult()) {
     }
   }
   if (target.count === 0) {
-    return setSingleBiomeBlendResult(target, dominantBiome);
+    setSingleBiomeBlendResult(target, dominantBiome);
+    return applyMountainVariantsToBiomeBlend(x, z, target);
   }
-  return normalizeBiomeBlendResult(target);
+  normalizeBiomeBlendResult(target);
+  return applyMountainVariantsToBiomeBlend(x, z, target);
 }
 
 const terrainColorBlendScratch = createBiomeBlendSampleResult();
@@ -1397,7 +1588,7 @@ function getBiomeAt(x, z) {
   else if (climate.temperature > 0.63) category = "hot";
   const variants = BIOME_VARIANTS[category];
   const index = Math.min(2, Math.floor(climate.selector * 3));
-  return BIOME_DEFS[variants[index]];
+  return getBiomeWithMountainVariantAt(x, z, BIOME_DEFS[variants[index]]);
 }
 
 function getGroundPointInfo(x, z) {
@@ -1576,6 +1767,67 @@ function ensureChunks(cx, cz) {
       chunks.delete(key);
     }
   }
+}
+
+function buildChunkCoordinateQueue(cx, cz, radius = CHUNK_RADIUS) {
+  const coords = [];
+  for (let dz = -radius; dz <= radius; dz += 1) {
+    for (let dx = -radius; dx <= radius; dx += 1) {
+      coords.push({ x: cx + dx, z: cz + dz, d2: dx * dx + dz * dz });
+    }
+  }
+  coords.sort((a, b) => a.d2 - b.d2);
+  return coords;
+}
+
+function ensureChunksIncremental(cx, cz, options = {}) {
+  const queue = buildChunkCoordinateQueue(cx, cz, CHUNK_RADIUS);
+  const total = queue.length;
+  const batchSize = Math.max(1, Math.floor(options.batchSize ?? 4));
+  let index = 0;
+
+  const step = () => {
+    const end = Math.min(total, index + batchSize);
+    for (; index < end; index += 1) {
+      const { x, z } = queue[index];
+      const key = `${x},${z}`;
+      if (!chunks.has(key)) {
+        const mesh = buildChunk(x, z);
+        scene.add(mesh);
+        chunks.set(key, mesh);
+      }
+      ensureTreeChunk(x, z, key);
+    }
+
+    if (typeof options.onProgress === "function") {
+      options.onProgress(index, total);
+    }
+
+    if (index < total) {
+      requestAnimationFrame(step);
+      return;
+    }
+
+    for (const [key, mesh] of chunks.entries()) {
+      const [x, z] = key.split(",").map(Number);
+      if (Math.abs(x - cx) > CHUNK_RADIUS + 1 || Math.abs(z - cz) > CHUNK_RADIUS + 1) {
+        scene.remove(mesh);
+        mesh.geometry.dispose();
+        const treeGroup = treeChunks.get(key);
+        if (treeGroup) {
+          scene.remove(treeGroup);
+        }
+        treeChunks.delete(key);
+        chunks.delete(key);
+      }
+    }
+
+    if (typeof options.onComplete === "function") {
+      options.onComplete();
+    }
+  };
+
+  requestAnimationFrame(step);
 }
 
 function clearChunks() {
@@ -1778,9 +2030,12 @@ function buildChunk(cx, cz) {
   for (let i = 0; i < vertices.count; i += 1) {
     const x = vertices.getX(i) + cx * CHUNK_SIZE;
     const z = vertices.getZ(i) + cz * CHUNK_SIZE;
-    const y = heightAt(x, z);
-    vertices.setY(i, y);
     const blend = fillBiomeBlendSample(x, z, chunkBiomeBlendScratch);
+    const y =
+      typeof heightAt.sampleWithBiomeBlend === "function"
+        ? heightAt.sampleWithBiomeBlend(x, z, blend)
+        : heightAt(x, z);
+    vertices.setY(i, y);
     const biome = blend.dominantBiome || getBiomeAt(x, z);
     const color = fillTerrainColorFromBiomeBlend(blend);
     const n = hash2(Math.floor(x * 0.5), Math.floor(z * 0.5));
@@ -2027,6 +2282,7 @@ function animate() {
   updateBiomeHud();
   updateDayNightCycle(dt);
   updateStatusClock();
+  updateStatusFps(dt);
   sky.position.set(player.position.x, 0, player.position.z);
   if (cloudGroup.parent) {
     cloudGroup.position.set(
@@ -2048,12 +2304,44 @@ function animate() {
     water.material.roughness = clampNumber(0.2 + Math.sin(clock.elapsedTime * 0.35) * 0.04, 0.12, 0.3, 0.2);
   }
   renderer.render(scene, camera);
+  if (!startupLoadingDismissed) {
+    startupLoadingDismissed = true;
+    setStartupLoadingVisible(false);
+  }
   requestAnimationFrame(animate);
 }
 
-ensureChunks(0, 0);
-rebuildLandmarks();
-animate();
+function runStartupPhase(title, subtitle, task, next) {
+  setStartupLoadingMessage(title, subtitle);
+  requestAnimationFrame(() => {
+    task();
+    if (typeof next === "function") requestAnimationFrame(next);
+  });
+}
+
+function startAppBootSequence() {
+  setStartupLoadingVisible(true);
+  runStartupPhase("Loading...", "Preparing world systems", () => {}, () => {
+    setStartupLoadingMessage("Loading...", "Generating nearby terrain chunks (0%)");
+    ensureChunksIncremental(0, 0, {
+      batchSize: 3,
+      onProgress(done, total) {
+        const pct = total > 0 ? Math.round((done / total) * 100) : 100;
+        setStartupLoadingMessage("Loading...", `Generating nearby terrain chunks (${pct}%)`);
+      },
+      onComplete() {
+        runStartupPhase("Loading...", "Placing landmarks and finishing scene", () => {
+          rebuildLandmarks();
+        }, () => {
+          setStartupLoadingMessage("Loading...", "Starting renderer");
+          animate();
+        });
+      },
+    });
+  });
+}
+
+startAppBootSequence();
 setChatOpen(Boolean(state.ui?.chatOpen));
 
 const chatStore = createChatStore({
