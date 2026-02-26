@@ -4,6 +4,7 @@ export function createTerrainHeightSampler({
   terrainHorizontalScale,
   sampleBiomeTerrainBlend,
   getBiomeTerrainProfile,
+  getWaterLevel,
 }) {
   function hash2(x, z) {
     const h = Math.sin(x * 127.1 + z * 311.7 + getNoiseSeed()) * 43758.5453;
@@ -28,6 +29,38 @@ export function createTerrainHeightSampler({
     if (edge0 === edge1) return x >= edge1 ? 1 : 0;
     const t = clamp01((x - edge0) / (edge1 - edge0));
     return t * t * (3 - 2 * t);
+  }
+
+  const WETLAND_WATERLINE_COMPRESS = 0.45;
+  const WETLAND_WATERLINE_BIAS = -0.35;
+  const WETLAND_FLATTEN_START_METERS = 1.5;
+  const WETLAND_FLATTEN_END_METERS = 6.5;
+  const WETLAND_FLATTEN_DEPTH_SCALE = 0.6;
+  const WETLAND_FLATTEN_DEPTH_BIAS = 0.9;
+
+  function getWetlandWeight(blend) {
+    if (!blend || !blend.count) return 0;
+    let weight = 0;
+    for (let i = 0; i < blend.count; i += 1) {
+      const biome = blend.biomes[i];
+      if (biome?.id === "wetland") {
+        weight += blend.weights[i];
+      }
+    }
+    return weight;
+  }
+
+  function applyWetlandWaterline(height, waterLevel, wetlandWeight) {
+    if (!(wetlandWeight > 0) || !Number.isFinite(waterLevel)) return height;
+    const relative = height - waterLevel + WETLAND_WATERLINE_BIAS;
+    let adjusted = waterLevel + relative * WETLAND_WATERLINE_COMPRESS;
+    if (adjusted < waterLevel) {
+      const depth = waterLevel - adjusted;
+      const flatten = smoothstep(WETLAND_FLATTEN_START_METERS, WETLAND_FLATTEN_END_METERS, depth);
+      const targetDepth = Math.min(depth, depth * WETLAND_FLATTEN_DEPTH_SCALE + WETLAND_FLATTEN_DEPTH_BIAS);
+      adjusted = waterLevel - lerp(depth, targetDepth, flatten);
+    }
+    return lerp(height, adjusted, clamp01(wetlandWeight));
   }
 
   function valueNoise(x, z) {
@@ -307,7 +340,12 @@ export function createTerrainHeightSampler({
       return sampleBiomeTerrainHeight(x, z, terrain, null) + additive.totalAdditiveHeight;
     }
     const additive = fillMountainAdditiveSample(x, z);
-    return height / totalWeight + additive.totalAdditiveHeight;
+    let blendedHeight = height / totalWeight + additive.totalAdditiveHeight;
+    const wetlandWeight = getWetlandWeight(blend);
+    if (wetlandWeight > 0 && typeof getWaterLevel === "function") {
+      blendedHeight = applyWetlandWaterline(blendedHeight, getWaterLevel(), wetlandWeight);
+    }
+    return blendedHeight;
   }
 
   function heightAt(x, z) {
