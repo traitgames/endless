@@ -2518,12 +2518,19 @@ function ensureChunks(cx, cz) {
 
 function buildChunkCoordinateQueue(cx, cz, radius = CHUNK_RADIUS) {
   const coords = [];
-  const radiusSq = radius * radius;
+  const playerX = player.position.x;
+  const playerZ = player.position.z;
+  const radiusMeters = radius * CHUNK_SIZE;
+  const radiusSq = radiusMeters * radiusMeters;
   for (let dz = -radius; dz <= radius; dz += 1) {
     for (let dx = -radius; dx <= radius; dx += 1) {
-      const d2 = dx * dx + dz * dz;
+      const tileX = cx + dx;
+      const tileZ = cz + dz;
+      const centerX = tileX * CHUNK_SIZE - playerX;
+      const centerZ = tileZ * CHUNK_SIZE - playerZ;
+      const d2 = centerX * centerX + centerZ * centerZ;
       if (d2 > radiusSq) continue;
-      coords.push({ x: cx + dx, z: cz + dz, d2 });
+      coords.push({ x: tileX, z: tileZ, d2 });
     }
   }
   coords.sort((a, b) => a.d2 - b.d2);
@@ -2534,14 +2541,18 @@ function buildMidTileCoordinateQueue(cx, cz, radius = MID_TILE_RADIUS) {
   const coords = [];
   const outerRadiusSq = MID_TILE_CULL_RADIUS * MID_TILE_CULL_RADIUS;
   const innerRadiusSq = MID_TILE_INNER_CULL_RADIUS * MID_TILE_INNER_CULL_RADIUS;
+  const playerX = player.position.x;
+  const playerZ = player.position.z;
   for (let dz = -radius; dz <= radius; dz += 1) {
     for (let dx = -radius; dx <= radius; dx += 1) {
-      const centerX = dx * MID_TILE_SIZE;
-      const centerZ = dz * MID_TILE_SIZE;
+      const tileX = cx + dx;
+      const tileZ = cz + dz;
+      const centerX = tileX * MID_TILE_SIZE - playerX;
+      const centerZ = tileZ * MID_TILE_SIZE - playerZ;
       const d2 = centerX * centerX + centerZ * centerZ;
       if (d2 > outerRadiusSq) continue;
       if (innerRadiusSq > 0 && d2 <= innerRadiusSq) continue;
-      coords.push({ x: cx + dx, z: cz + dz, d2 });
+      coords.push({ x: tileX, z: tileZ, d2 });
     }
   }
   coords.sort((a, b) => a.d2 - b.d2);
@@ -2552,14 +2563,18 @@ function buildFarTileCoordinateQueue(cx, cz, radius = FAR_TILE_RADIUS) {
   const coords = [];
   const outerRadiusSq = FAR_TILE_CULL_RADIUS * FAR_TILE_CULL_RADIUS;
   const innerRadiusSq = FAR_TILE_INNER_CULL_RADIUS * FAR_TILE_INNER_CULL_RADIUS;
+  const playerX = player.position.x;
+  const playerZ = player.position.z;
   for (let dz = -radius; dz <= radius; dz += 1) {
     for (let dx = -radius; dx <= radius; dx += 1) {
-      const centerX = dx * FAR_TILE_SIZE;
-      const centerZ = dz * FAR_TILE_SIZE;
+      const tileX = cx + dx;
+      const tileZ = cz + dz;
+      const centerX = tileX * FAR_TILE_SIZE - playerX;
+      const centerZ = tileZ * FAR_TILE_SIZE - playerZ;
       const d2 = centerX * centerX + centerZ * centerZ;
       if (d2 > outerRadiusSq) continue;
       if (innerRadiusSq > 0 && d2 <= innerRadiusSq) continue;
-      coords.push({ x: cx + dx, z: cz + dz, d2 });
+      coords.push({ x: tileX, z: tileZ, d2 });
     }
   }
   coords.sort((a, b) => a.d2 - b.d2);
@@ -2596,12 +2611,16 @@ function ensureChunksIncremental(cx, cz, options = {}) {
       return;
     }
 
-    const chunkKeepRadiusSq = (CHUNK_RADIUS + 1) * (CHUNK_RADIUS + 1);
+    const playerX = player.position.x;
+    const playerZ = player.position.z;
+    const chunkKeepRadiusMeters = (CHUNK_RADIUS + 1) * CHUNK_SIZE;
+    const chunkKeepRadiusSq = chunkKeepRadiusMeters * chunkKeepRadiusMeters;
     for (const [key, mesh] of chunks.entries()) {
       const [x, z] = key.split(",").map(Number);
-      const dx = x - cx;
-      const dz = z - cz;
-      if (dx * dx + dz * dz > chunkKeepRadiusSq) {
+      const centerX = x * CHUNK_SIZE - playerX;
+      const centerZ = z * CHUNK_SIZE - playerZ;
+      const d2 = centerX * centerX + centerZ * centerZ;
+      if (d2 > chunkKeepRadiusSq) {
         scene.remove(mesh);
         mesh.geometry.dispose();
         const treeGroup = treeChunks.get(key);
@@ -2653,12 +2672,12 @@ function ensureMidTerrainIncremental(cx, cz, options = {}) {
 
     const outerKeepRadiusSq = MID_TILE_KEEP_RADIUS * MID_TILE_KEEP_RADIUS;
     const innerRadiusSq = MID_TILE_INNER_CULL_RADIUS * MID_TILE_INNER_CULL_RADIUS;
+    const playerX = player.position.x;
+    const playerZ = player.position.z;
     for (const [key, mesh] of midTiles.entries()) {
       const [x, z] = key.split(",").map(Number);
-      const dx = x - cx;
-      const dz = z - cz;
-      const centerX = dx * MID_TILE_SIZE;
-      const centerZ = dz * MID_TILE_SIZE;
+      const centerX = x * MID_TILE_SIZE - playerX;
+      const centerZ = z * MID_TILE_SIZE - playerZ;
       const d2 = centerX * centerX + centerZ * centerZ;
       if (d2 > outerKeepRadiusSq || (innerRadiusSq > 0 && d2 <= innerRadiusSq)) {
         scene.remove(mesh);
@@ -2707,12 +2726,12 @@ function ensureFarTerrainIncremental(cx, cz, options = {}) {
 
     const outerKeepRadiusSq = FAR_TILE_KEEP_RADIUS * FAR_TILE_KEEP_RADIUS;
     const innerRadiusSq = FAR_TILE_INNER_CULL_RADIUS * FAR_TILE_INNER_CULL_RADIUS;
+    const playerX = player.position.x;
+    const playerZ = player.position.z;
     for (const [key, mesh] of farTiles.entries()) {
       const [x, z] = key.split(",").map(Number);
-      const dx = x - cx;
-      const dz = z - cz;
-      const centerX = dx * FAR_TILE_SIZE;
-      const centerZ = dz * FAR_TILE_SIZE;
+      const centerX = x * FAR_TILE_SIZE - playerX;
+      const centerZ = z * FAR_TILE_SIZE - playerZ;
       const d2 = centerX * centerX + centerZ * centerZ;
       if (d2 > outerKeepRadiusSq || (innerRadiusSq > 0 && d2 <= innerRadiusSq)) {
         scene.remove(mesh);
@@ -3842,7 +3861,9 @@ function startAppBootSequence() {
   beginChunkBuildUi("startup", "Preparing world systems");
   runStartupPhase("Loading...", "Preparing world systems", () => {}, () => {
     setStartupLoadingMessage("Loading...", "Generating nearby terrain chunks (0%)");
-    ensureChunksIncremental(0, 0, {
+    const startCx = Math.floor(player.position.x / CHUNK_SIZE);
+    const startCz = Math.floor(player.position.z / CHUNK_SIZE);
+    ensureChunksIncremental(startCx, startCz, {
       batchSize: 3,
       onProgress(done, total) {
         const pct = total > 0 ? Math.round((done / total) * 100) : 100;
