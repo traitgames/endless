@@ -78,6 +78,9 @@ let runtimeChunkBuildJobId = 0;
 let runtimeChunkBuildRunning = false;
 let runtimeChunkBuildQueuedTarget = null;
 let runtimeChunkBuildAppliedTarget = null;
+let currentNightAmount = 0;
+let pendingInitialNightSync = false;
+let pendingTimeCycleRefresh = false;
 const VISUAL_SAMPLE_MIN_INTERVAL_MS = 100;
 const VISUAL_SAMPLE_MIN_DISTANCE_SQ = 4;
 
@@ -220,7 +223,7 @@ const DEFAULT_WORLD = {
     opacity: 0.6,
   },
   fog: {
-    colorHex: "#c5ddf4",
+    colorHex: "#9db5c5",
     density: 0.0012,
   },
   landmarks: [],
@@ -650,6 +653,9 @@ const moon = new THREE.Mesh(
     opacity: 0.9,
   })
 );
+moon.renderOrder = -1;
+moon.material.depthTest = false;
+moon.material.depthWrite = false;
 scene.add(moon);
 
 function createCloudTexture(size = 256) {
@@ -701,8 +707,11 @@ if (cloudTexture) {
   scene.add(cloudGroup);
 }
 
+const NIGHT_TINT_COLOR = new THREE.Color("#000000");
+const TERRAIN_NIGHT_TINT = NIGHT_TINT_COLOR;
+const WATER_PLANE_SIZE = 8000;
 const water = new THREE.Mesh(
-  new THREE.PlaneGeometry(4000, 4000),
+  new THREE.PlaneGeometry(WATER_PLANE_SIZE, WATER_PLANE_SIZE),
   new THREE.MeshPhysicalMaterial({
     color: state.world.water.colorHex,
     transparent: true,
@@ -713,9 +722,67 @@ const water = new THREE.Mesh(
     clearcoatRoughness: 0.25,
   })
 );
+const WATER_FADE_START_METERS = 1600;
+const WATER_FADE_END_METERS = 5200;
+const WATER_NIGHT_DARKEN_STRENGTH = 0.95;
+const WATER_NIGHT_DARKEN_START_METERS = 0;
+const WATER_NIGHT_DARKEN_END_METERS = WATER_FADE_END_METERS;
+const waterShaderState = { shader: null };
+if (water.material) {
+  water.material.onBeforeCompile = (shader) => {
+    shader.uniforms.uWaterFadeStart = { value: WATER_FADE_START_METERS };
+    shader.uniforms.uWaterFadeEnd = { value: WATER_FADE_END_METERS };
+    shader.uniforms.uWaterNightAmount = { value: 0 };
+    shader.uniforms.uWaterNightStrength = { value: WATER_NIGHT_DARKEN_STRENGTH };
+    shader.uniforms.uWaterNightStart = { value: WATER_NIGHT_DARKEN_START_METERS };
+    shader.uniforms.uWaterNightEnd = { value: WATER_NIGHT_DARKEN_END_METERS };
+    shader.uniforms.uWaterNightTint = { value: NIGHT_TINT_COLOR };
+    waterShaderState.shader = shader;
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        "#include <common>",
+        `#include <common>
+      varying vec3 vWorldPos;
+      `
+      )
+      .replace(
+        "#include <begin_vertex>",
+        `#include <begin_vertex>
+      vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      `
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        `#include <common>
+      uniform float uWaterFadeStart;
+      uniform float uWaterFadeEnd;
+      uniform float uWaterNightAmount;
+      uniform float uWaterNightStrength;
+      uniform float uWaterNightStart;
+      uniform float uWaterNightEnd;
+      uniform vec3 uWaterNightTint;
+      varying vec3 vWorldPos;
+      `
+      )
+      .replace(
+        "vec4 diffuseColor = vec4( diffuse, opacity );",
+        `
+      vec4 diffuseColor = vec4( diffuse, opacity );
+      float waterFade = smoothstep(uWaterFadeStart, uWaterFadeEnd, length(vWorldPos.xz - cameraPosition.xz));
+      diffuseColor.a *= clamp(1.0 - waterFade, 0.0, 1.0);
+      float waterNightFade = smoothstep(uWaterNightStart, uWaterNightEnd, length(vWorldPos.xz - cameraPosition.xz));
+      float waterNightMix = clamp(uWaterNightAmount * uWaterNightStrength * mix(0.35, 1.0, waterNightFade), 0.0, 1.0);
+      diffuseColor.rgb = mix(diffuseColor.rgb, uWaterNightTint, waterNightMix);
+      `
+      );
+  };
+  water.material.needsUpdate = true;
+}
 water.rotation.x = -Math.PI / 2;
 water.position.y = state.world.water.level;
 water.receiveShadow = true;
+water.renderOrder = 2;
 scene.add(water);
 
 const atmosphereBase = {
@@ -739,6 +806,10 @@ const atmosphericColors = {
   nightGround: new THREE.Color("#1a2436"),
   moonTint: new THREE.Color("#b2c8f4"),
 };
+const FOG_SKY_BLEND_BASE = 0.3;
+const FOG_SKY_BLEND_DAY_BOOST = 0.12;
+const FOG_NIGHT_MUTE_BASE = 0.3;
+const FOG_NIGHT_MUTE_BOOST = 0.4;
 const atmosphereTemp = {
   sunVector: new THREE.Vector3(),
   moonVector: new THREE.Vector3(),
@@ -773,41 +844,239 @@ const dynamicLightColors = {
   mutedNight: new THREE.Color("#5f6f86"),
 };
 
-const terrainMaterial = new THREE.MeshStandardMaterial({
-  color: state.world.terrainColor,
-  vertexColors: true,
-  roughness: 0.95,
-  metalness: 0.05,
-});
-const terrainShaderState = configureTerrainMaterial({
-  material: terrainMaterial,
-  state,
-  getDetailRenderDistance: getTerrainDetailRenderDistance,
-  THREE,
-});
-
 const CHUNK_SIZE = 64;
 const CHUNK_RES = 32;
 const CHUNK_GRID_STRIDE = CHUNK_RES + 1;
 const CHUNK_CELL_SIZE = CHUNK_SIZE / CHUNK_RES;
 const CHUNK_RADIUS = 8;
+const NEAR_FADE_RANGE_METERS = 96;
+const NEAR_FADE_END_METERS = CHUNK_RADIUS * CHUNK_SIZE;
+const NEAR_FADE_START_METERS = Math.max(0, NEAR_FADE_END_METERS - NEAR_FADE_RANGE_METERS);
+const NEAR_NIGHT_DARKEN_STRENGTH = 1;
+const NEAR_NIGHT_DARKEN_START = 0;
+const NEAR_NIGHT_DARKEN_END = NEAR_FADE_END_METERS;
+const NEAR_NIGHT_FOG_STRENGTH = 0.4;
+const terrainMaterial = new THREE.MeshStandardMaterial({
+  color: state.world.terrainColor,
+  vertexColors: true,
+  roughness: 0.95,
+  metalness: 0.05,
+  transparent: true,
+  opacity: 1,
+  depthWrite: true,
+  alphaTest: 0.02,
+});
+const terrainShaderState = configureTerrainMaterial({
+  material: terrainMaterial,
+  state,
+  getDetailRenderDistance: getTerrainDetailRenderDistance,
+  fade: {
+    start: NEAR_FADE_START_METERS,
+    end: NEAR_FADE_END_METERS,
+    opacity: 1,
+    invert: true,
+  },
+  night: {
+    amount: () => currentNightAmount,
+    strength: NEAR_NIGHT_DARKEN_STRENGTH,
+    fogStrength: NEAR_NIGHT_FOG_STRENGTH,
+    start: NEAR_NIGHT_DARKEN_START,
+    end: NEAR_NIGHT_DARKEN_END,
+    tint: TERRAIN_NIGHT_TINT,
+  },
+  THREE,
+});
+
+const MID_RADIUS_METERS = 2400;
+const MID_TILE_SIZE = 128;
+const MID_TILE_RES = 8;
+const MID_TILE_RADIUS = Math.ceil(MID_RADIUS_METERS / MID_TILE_SIZE);
+const MID_BLEND_IN_START_METERS = NEAR_FADE_START_METERS;
+const MID_BLEND_IN_END_METERS = NEAR_FADE_END_METERS;
+const MID_BLEND_OUT_START_METERS = 1800;
+const MID_BLEND_OUT_END_METERS = 2300;
+const MID_FOG_INTENSITY = 0.8;
+const MID_TILE_HALF_DIAGONAL = MID_TILE_SIZE * Math.SQRT2 * 0.5;
+const MID_TILE_CULL_RADIUS = MID_RADIUS_METERS + MID_TILE_HALF_DIAGONAL;
+const MID_TILE_KEEP_RADIUS = MID_TILE_CULL_RADIUS + MID_TILE_SIZE;
+const MID_TILE_INNER_CULL_RADIUS = Math.max(0, MID_BLEND_IN_START_METERS - MID_TILE_HALF_DIAGONAL);
+const MID_NIGHT_DARKEN_STRENGTH = 0.8;
+const MID_NIGHT_DARKEN_START = MID_BLEND_IN_END_METERS;
+const MID_NIGHT_DARKEN_END = MID_BLEND_OUT_END_METERS;
+const MID_NIGHT_FOG_STRENGTH = 0.9;
+const midTerrainMaterial = new THREE.MeshStandardMaterial({
+  color: state.world.terrainColor,
+  vertexColors: true,
+  roughness: 0.96,
+  metalness: 0.03,
+  transparent: true,
+  opacity: 1,
+  depthWrite: true,
+  alphaTest: 0.02,
+});
+const midTerrainShaderState = configureTerrainMaterial({
+  material: midTerrainMaterial,
+  state,
+  getDetailRenderDistance: () => 0,
+  fade: {
+    start: MID_BLEND_OUT_START_METERS,
+    end: MID_BLEND_OUT_END_METERS,
+    opacity: 1,
+    invert: true,
+  },
+  fadeSecondary: {
+    start: MID_BLEND_IN_START_METERS,
+    end: MID_BLEND_IN_END_METERS,
+    opacity: 1,
+    invert: false,
+  },
+  night: {
+    amount: () => currentNightAmount,
+    strength: MID_NIGHT_DARKEN_STRENGTH,
+    fogStrength: MID_NIGHT_FOG_STRENGTH,
+    start: MID_NIGHT_DARKEN_START,
+    end: MID_NIGHT_DARKEN_END,
+    tint: TERRAIN_NIGHT_TINT,
+  },
+  fog: {
+    intensity: MID_FOG_INTENSITY,
+  },
+  THREE,
+});
+
+const FAR_RADIUS_METERS = 14000;
+const FAR_TILE_SIZE = 1024;
+const FAR_TILE_RES = 8;
+const FAR_TILE_RADIUS = Math.ceil(FAR_RADIUS_METERS / FAR_TILE_SIZE);
+const FAR_BLEND_START_METERS = 2000;
+const FAR_BLEND_END_METERS = 3000;
+const FAR_NIGHT_DARKEN_STRENGTH = 1;
+const FAR_NIGHT_FOG_STRENGTH = 1;
+const FAR_NIGHT_DARKEN_START = FAR_BLEND_START_METERS;
+const FAR_NIGHT_DARKEN_END = FAR_RADIUS_METERS;
+const FAR_FOG_INTENSITY = 0.8;
+const FAR_TILE_HALF_DIAGONAL = FAR_TILE_SIZE * Math.SQRT2 * 0.5;
+const FAR_TILE_CULL_RADIUS = FAR_RADIUS_METERS + FAR_TILE_HALF_DIAGONAL;
+const FAR_TILE_KEEP_RADIUS = FAR_TILE_CULL_RADIUS + FAR_TILE_SIZE;
+const FAR_TILE_INNER_CULL_RADIUS = Math.max(0, FAR_BLEND_START_METERS - FAR_TILE_HALF_DIAGONAL);
+const farTerrainMaterial = new THREE.MeshStandardMaterial({
+  color: state.world.terrainColor,
+  vertexColors: true,
+  roughness: 0.97,
+  metalness: 0.03,
+  transparent: true,
+  opacity: 1,
+  depthWrite: false,
+  polygonOffset: true,
+  polygonOffsetFactor: 1,
+  polygonOffsetUnits: 1,
+});
+const farTerrainShaderState = configureTerrainMaterial({
+  material: farTerrainMaterial,
+  state,
+  getDetailRenderDistance: () => 0,
+  fade: {
+    start: FAR_BLEND_START_METERS,
+    end: FAR_BLEND_END_METERS,
+    opacity: 1,
+  },
+  night: {
+    amount: () => currentNightAmount,
+    strength: FAR_NIGHT_DARKEN_STRENGTH,
+    fogStrength: FAR_NIGHT_FOG_STRENGTH,
+    start: FAR_NIGHT_DARKEN_START,
+    end: FAR_NIGHT_DARKEN_END,
+    tint: TERRAIN_NIGHT_TINT,
+  },
+  fog: {
+    intensity: FAR_FOG_INTENSITY,
+  },
+  THREE,
+});
 const chunks = new Map();
 const treeChunks = new Map();
+const midTiles = new Map();
+const farTiles = new Map();
+const treeFadeMaterials = new Set();
+let activeFarBuildJobId = 0;
+let runtimeFarBuildJobId = 0;
+let runtimeFarBuildRunning = false;
+let runtimeFarBuildQueuedTarget = null;
+let runtimeFarBuildAppliedTarget = null;
+let activeMidBuildJobId = 0;
+let runtimeMidBuildJobId = 0;
+let runtimeMidBuildRunning = false;
+let runtimeMidBuildQueuedTarget = null;
+let runtimeMidBuildAppliedTarget = null;
 const landmarkGroup = new THREE.Group();
 scene.add(landmarkGroup);
 const treeTrunkGeometry = new THREE.CylinderGeometry(0.18, 0.28, 5.2, 8);
 const treeCanopyConeGeometry = new THREE.ConeGeometry(1.05, 5.2, 10);
 const treeCanopySphereGeometry = new THREE.SphereGeometry(1.45, 10, 8);
+const TREE_RENDER_ORDER = 1.5;
 const treeTrunkMaterial = new THREE.MeshStandardMaterial({
   color: state.world.trees.trunkColor,
   roughness: 0.94,
   metalness: 0.02,
 });
 const treeCanopyMaterials = [0, 1, 2].map(() => new THREE.MeshStandardMaterial({ roughness: 0.88, metalness: 0.01 }));
+applyNearFadeToTreeMaterial(treeTrunkMaterial);
+treeCanopyMaterials.forEach(applyNearFadeToTreeMaterial);
 const biomeTreeMaterialSets = new Map();
 const biomeTerrainColorCache = new Map();
 const biomeTerrainProfileCache = new Map();
 const TERRAIN_HORIZONTAL_SCALE = 3;
+
+function applyNearFadeToTreeMaterial(material) {
+  if (!material || material.userData?.hasTreeFade) return;
+  material.transparent = true;
+  material.opacity = 1;
+  material.depthWrite = true;
+  material.alphaTest = 0.02;
+  material.userData.hasTreeFade = true;
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uFadeStart = { value: NEAR_FADE_START_METERS };
+    shader.uniforms.uFadeEnd = { value: NEAR_FADE_END_METERS };
+    shader.uniforms.uFadeOpacity = { value: 1 };
+    shader.uniforms.uFadeInvert = { value: 1 };
+    material.userData.fadeShader = shader;
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        "#include <common>",
+        `#include <common>
+      varying vec3 vWorldPos;
+      `
+      )
+      .replace(
+        "#include <begin_vertex>",
+        `#include <begin_vertex>
+      vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      `
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        `#include <common>
+      uniform float uFadeStart;
+      uniform float uFadeEnd;
+      uniform float uFadeOpacity;
+      uniform float uFadeInvert;
+      varying vec3 vWorldPos;
+      `
+      )
+      .replace(
+        "vec4 diffuseColor = vec4( diffuse, opacity );",
+        `
+      vec4 diffuseColor = vec4( diffuse, opacity );
+      float terrainFade = smoothstep(uFadeStart, uFadeEnd, length(vWorldPos.xz - cameraPosition.xz));
+      terrainFade = mix(terrainFade, 1.0 - terrainFade, clamp(uFadeInvert, 0.0, 1.0));
+      diffuseColor.a *= clamp(terrainFade * uFadeOpacity, 0.0, 1.0);
+      `
+      );
+  };
+  material.needsUpdate = true;
+  treeFadeMaterials.add(material);
+}
 
 function buildCanopyPalette(baseHex) {
   const base = new THREE.Color(baseHex);
@@ -1030,6 +1299,8 @@ function getBiomeTreeMaterialSet(biome) {
       trunk: new THREE.MeshStandardMaterial({ roughness: 0.94, metalness: 0.02 }),
       canopies: [0, 1, 2].map(() => new THREE.MeshStandardMaterial({ roughness: 0.88, metalness: 0.01 })),
     };
+    applyNearFadeToTreeMaterial(set.trunk);
+    set.canopies.forEach(applyNearFadeToTreeMaterial);
     biomeTreeMaterialSets.set(biome.id, set);
   }
   return set;
@@ -1062,18 +1333,186 @@ function syncTreeMaterials() {
 syncTreeMaterials();
 
 function syncTerrainShaderUniforms() {
-  if (!terrainShaderState.shader) return;
-  terrainShaderState.shader.uniforms.uWaterLevel.value = state.world.water.level;
-  terrainShaderState.shader.uniforms.uTint.value.set(state.world.terrainColor);
-  terrainShaderState.shader.uniforms.uDetailRenderDistance.value = getTerrainDetailRenderDistance();
-  if (terrainShaderState.shader.uniforms.uDetailIntensity) {
-    terrainShaderState.shader.uniforms.uDetailIntensity.value = getTerrainDetailIntensity();
+  if (terrainShaderState.shader) {
+    terrainShaderState.shader.uniforms.uWaterLevel.value = state.world.water.level;
+    terrainShaderState.shader.uniforms.uTint.value.set(state.world.terrainColor);
+    terrainShaderState.shader.uniforms.uDetailRenderDistance.value = getTerrainDetailRenderDistance();
+    if (terrainShaderState.shader.uniforms.uDetailIntensity) {
+      terrainShaderState.shader.uniforms.uDetailIntensity.value = getTerrainDetailIntensity();
+    }
+    if (terrainShaderState.shader.uniforms.uFadeStart) {
+      terrainShaderState.shader.uniforms.uFadeStart.value = NEAR_FADE_START_METERS;
+    }
+    if (terrainShaderState.shader.uniforms.uFadeEnd) {
+      terrainShaderState.shader.uniforms.uFadeEnd.value = NEAR_FADE_END_METERS;
+    }
+    if (terrainShaderState.shader.uniforms.uFadeOpacity) {
+      terrainShaderState.shader.uniforms.uFadeOpacity.value = 1;
+    }
+    if (terrainShaderState.shader.uniforms.uFadeInvert) {
+      terrainShaderState.shader.uniforms.uFadeInvert.value = 1;
+    }
+    if (terrainShaderState.shader.uniforms.uNightAmount) {
+      terrainShaderState.shader.uniforms.uNightAmount.value = currentNightAmount;
+    }
+    if (terrainShaderState.shader.uniforms.uNightStrength) {
+      terrainShaderState.shader.uniforms.uNightStrength.value = NEAR_NIGHT_DARKEN_STRENGTH;
+    }
+    if (terrainShaderState.shader.uniforms.uNightFogStrength) {
+      terrainShaderState.shader.uniforms.uNightFogStrength.value = NEAR_NIGHT_FOG_STRENGTH;
+    }
+    if (terrainShaderState.shader.uniforms.uNightStart) {
+      terrainShaderState.shader.uniforms.uNightStart.value = NEAR_NIGHT_DARKEN_START;
+    }
+    if (terrainShaderState.shader.uniforms.uNightEnd) {
+      terrainShaderState.shader.uniforms.uNightEnd.value = NEAR_NIGHT_DARKEN_END;
+    }
+    if (terrainShaderState.shader.uniforms.uNightTint) {
+      terrainShaderState.shader.uniforms.uNightTint.value.copy(TERRAIN_NIGHT_TINT);
+    }
+  }
+  if (waterShaderState.shader) {
+    if (waterShaderState.shader.uniforms.uWaterFadeStart) {
+      waterShaderState.shader.uniforms.uWaterFadeStart.value = WATER_FADE_START_METERS;
+    }
+    if (waterShaderState.shader.uniforms.uWaterFadeEnd) {
+      waterShaderState.shader.uniforms.uWaterFadeEnd.value = WATER_FADE_END_METERS;
+    }
+    if (waterShaderState.shader.uniforms.uWaterNightAmount) {
+      waterShaderState.shader.uniforms.uWaterNightAmount.value = currentNightAmount;
+    }
+    if (waterShaderState.shader.uniforms.uWaterNightStrength) {
+      waterShaderState.shader.uniforms.uWaterNightStrength.value = WATER_NIGHT_DARKEN_STRENGTH;
+    }
+    if (waterShaderState.shader.uniforms.uWaterNightStart) {
+      waterShaderState.shader.uniforms.uWaterNightStart.value = WATER_NIGHT_DARKEN_START_METERS;
+    }
+    if (waterShaderState.shader.uniforms.uWaterNightEnd) {
+      waterShaderState.shader.uniforms.uWaterNightEnd.value = WATER_NIGHT_DARKEN_END_METERS;
+    }
+    if (waterShaderState.shader.uniforms.uWaterNightTint) {
+      waterShaderState.shader.uniforms.uWaterNightTint.value.copy(NIGHT_TINT_COLOR);
+    }
+  }
+  if (midTerrainShaderState.shader) {
+    midTerrainShaderState.shader.uniforms.uWaterLevel.value = state.world.water.level;
+    midTerrainShaderState.shader.uniforms.uTint.value.set(state.world.terrainColor);
+    if (midTerrainShaderState.shader.uniforms.uDetailRenderDistance) {
+      midTerrainShaderState.shader.uniforms.uDetailRenderDistance.value = 0;
+    }
+    if (midTerrainShaderState.shader.uniforms.uDetailIntensity) {
+      midTerrainShaderState.shader.uniforms.uDetailIntensity.value = 0;
+    }
+    if (midTerrainShaderState.shader.uniforms.uFadeStart) {
+      midTerrainShaderState.shader.uniforms.uFadeStart.value = MID_BLEND_OUT_START_METERS;
+    }
+    if (midTerrainShaderState.shader.uniforms.uFadeEnd) {
+      midTerrainShaderState.shader.uniforms.uFadeEnd.value = MID_BLEND_OUT_END_METERS;
+    }
+    if (midTerrainShaderState.shader.uniforms.uFadeOpacity) {
+      midTerrainShaderState.shader.uniforms.uFadeOpacity.value = 1;
+    }
+    if (midTerrainShaderState.shader.uniforms.uFadeInvert) {
+      midTerrainShaderState.shader.uniforms.uFadeInvert.value = 1;
+    }
+    if (midTerrainShaderState.shader.uniforms.uFadeStart2) {
+      midTerrainShaderState.shader.uniforms.uFadeStart2.value = MID_BLEND_IN_START_METERS;
+    }
+    if (midTerrainShaderState.shader.uniforms.uFadeEnd2) {
+      midTerrainShaderState.shader.uniforms.uFadeEnd2.value = MID_BLEND_IN_END_METERS;
+    }
+    if (midTerrainShaderState.shader.uniforms.uFadeOpacity2) {
+      midTerrainShaderState.shader.uniforms.uFadeOpacity2.value = 1;
+    }
+    if (midTerrainShaderState.shader.uniforms.uFadeInvert2) {
+      midTerrainShaderState.shader.uniforms.uFadeInvert2.value = 0;
+    }
+    if (midTerrainShaderState.shader.uniforms.uNightStrength) {
+      midTerrainShaderState.shader.uniforms.uNightStrength.value = MID_NIGHT_DARKEN_STRENGTH;
+    }
+    if (midTerrainShaderState.shader.uniforms.uNightAmount) {
+      midTerrainShaderState.shader.uniforms.uNightAmount.value = currentNightAmount;
+    }
+    if (midTerrainShaderState.shader.uniforms.uNightFogStrength) {
+      midTerrainShaderState.shader.uniforms.uNightFogStrength.value = MID_NIGHT_FOG_STRENGTH;
+    }
+    if (midTerrainShaderState.shader.uniforms.uNightStart) {
+      midTerrainShaderState.shader.uniforms.uNightStart.value = MID_NIGHT_DARKEN_START;
+    }
+    if (midTerrainShaderState.shader.uniforms.uNightEnd) {
+      midTerrainShaderState.shader.uniforms.uNightEnd.value = MID_NIGHT_DARKEN_END;
+    }
+    if (midTerrainShaderState.shader.uniforms.uNightTint) {
+      midTerrainShaderState.shader.uniforms.uNightTint.value.copy(TERRAIN_NIGHT_TINT);
+    }
+    if (midTerrainShaderState.shader.uniforms.uFogIntensity) {
+      midTerrainShaderState.shader.uniforms.uFogIntensity.value = MID_FOG_INTENSITY;
+    }
+  }
+  if (farTerrainShaderState.shader) {
+    farTerrainShaderState.shader.uniforms.uWaterLevel.value = state.world.water.level;
+    farTerrainShaderState.shader.uniforms.uTint.value.set(state.world.terrainColor);
+    if (farTerrainShaderState.shader.uniforms.uDetailRenderDistance) {
+      farTerrainShaderState.shader.uniforms.uDetailRenderDistance.value = 0;
+    }
+    if (farTerrainShaderState.shader.uniforms.uDetailIntensity) {
+      farTerrainShaderState.shader.uniforms.uDetailIntensity.value = 0;
+    }
+    if (farTerrainShaderState.shader.uniforms.uFadeStart) {
+      farTerrainShaderState.shader.uniforms.uFadeStart.value = FAR_BLEND_START_METERS;
+    }
+    if (farTerrainShaderState.shader.uniforms.uFadeEnd) {
+      farTerrainShaderState.shader.uniforms.uFadeEnd.value = FAR_BLEND_END_METERS;
+    }
+    if (farTerrainShaderState.shader.uniforms.uFadeOpacity) {
+      farTerrainShaderState.shader.uniforms.uFadeOpacity.value = 1;
+    }
+    if (farTerrainShaderState.shader.uniforms.uNightAmount) {
+      farTerrainShaderState.shader.uniforms.uNightAmount.value = currentNightAmount;
+    }
+    if (farTerrainShaderState.shader.uniforms.uNightFogStrength) {
+      farTerrainShaderState.shader.uniforms.uNightFogStrength.value = FAR_NIGHT_FOG_STRENGTH;
+    }
+    if (farTerrainShaderState.shader.uniforms.uNightStrength) {
+      farTerrainShaderState.shader.uniforms.uNightStrength.value = FAR_NIGHT_DARKEN_STRENGTH;
+    }
+    if (farTerrainShaderState.shader.uniforms.uNightStart) {
+      farTerrainShaderState.shader.uniforms.uNightStart.value = FAR_NIGHT_DARKEN_START;
+    }
+    if (farTerrainShaderState.shader.uniforms.uNightEnd) {
+      farTerrainShaderState.shader.uniforms.uNightEnd.value = FAR_NIGHT_DARKEN_END;
+    }
+    if (farTerrainShaderState.shader.uniforms.uNightTint) {
+      farTerrainShaderState.shader.uniforms.uNightTint.value.copy(TERRAIN_NIGHT_TINT);
+    }
+    if (farTerrainShaderState.shader.uniforms.uFogIntensity) {
+      farTerrainShaderState.shader.uniforms.uFogIntensity.value = FAR_FOG_INTENSITY;
+    }
+  }
+  if (treeFadeMaterials.size > 0) {
+    for (const material of treeFadeMaterials) {
+      const shader = material.userData?.fadeShader;
+      if (!shader) continue;
+      if (shader.uniforms.uFadeStart) {
+        shader.uniforms.uFadeStart.value = NEAR_FADE_START_METERS;
+      }
+      if (shader.uniforms.uFadeEnd) {
+        shader.uniforms.uFadeEnd.value = NEAR_FADE_END_METERS;
+      }
+      if (shader.uniforms.uFadeOpacity) {
+        shader.uniforms.uFadeOpacity.value = 1;
+      }
+      if (shader.uniforms.uFadeInvert) {
+        shader.uniforms.uFadeInvert.value = 1;
+      }
+    }
   }
 }
 
 function syncAtmosphereFromState() {
   const visual = fillBlendedVisualSampleAt(player.position.x, player.position.z);
   applyVisualSampleToAtmosphereAndWater(visual, { updateWater: false });
+  updateDayNightCycle(0);
 }
 
 function syncWaterColorFromState() {
@@ -1152,11 +1591,13 @@ function updateDayNightCycle(dt) {
     .copy(atmosphericColors.nightGround)
     .lerp(atmosphericColors.dayGround, dayAmount)
     .lerp(atmosphericColors.sunsetGround, twilight * 0.75);
-  const fogMix = atmosphereTemp.fogMix.copy(atmosphereBase.fogColor).lerp(skyHorizon, 0.42 + dayAmount * 0.26);
+  const fogSkyBlend = clampNumber(FOG_SKY_BLEND_BASE + dayAmount * FOG_SKY_BLEND_DAY_BOOST, 0, 0.9, 0.4);
+  const fogMix = atmosphereTemp.fogMix.copy(atmosphereBase.fogColor).lerp(skyHorizon, fogSkyBlend);
   skyTop.lerp(dynamicLightColors.mutedNight, nightMute * 0.26);
   skyHorizon.lerp(dynamicLightColors.mutedNight, nightMute * 0.2);
   skyGround.lerp(dynamicLightColors.mutedNight, nightMute * 0.34);
-  fogMix.lerp(dynamicLightColors.mutedNight, nightMute * 0.28);
+  const fogNightMute = clampNumber(FOG_NIGHT_MUTE_BASE + nightMute * FOG_NIGHT_MUTE_BOOST, 0, 0.85, 0.4);
+  fogMix.lerp(dynamicLightColors.mutedNight, fogNightMute);
 
   skyUniforms.topColor.value.copy(skyTop);
   skyUniforms.horizonColor.value.copy(skyHorizon);
@@ -1201,11 +1642,30 @@ function updateDayNightCycle(dt) {
   moon.material.color
     .copy(atmosphericColors.moonTint)
     .lerp(dynamicLightColors.moonWarm, twilight * 0.2);
+  currentNightAmount = nightAmount;
+  if (midTerrainShaderState.shader?.uniforms.uNightAmount) {
+    midTerrainShaderState.shader.uniforms.uNightAmount.value = nightAmount;
+  }
+  if (farTerrainShaderState.shader?.uniforms.uNightAmount) {
+    farTerrainShaderState.shader.uniforms.uNightAmount.value = nightAmount;
+  }
+  if (terrainShaderState.shader?.uniforms.uNightAmount) {
+    terrainShaderState.shader.uniforms.uNightAmount.value = nightAmount;
+  }
+  if (waterShaderState.shader?.uniforms.uWaterNightAmount) {
+    waterShaderState.shader.uniforms.uWaterNightAmount.value = nightAmount;
+  }
 }
 
 function normalizeTimeCycle(value) {
   if (!Number.isFinite(value)) return null;
   return ((value % 1) + 1) % 1;
+}
+
+function isNightCycle(cycle) {
+  const normalized = normalizeTimeCycle(cycle);
+  if (normalized == null) return false;
+  return normalized >= 0.78 || normalized <= 0.24;
 }
 
 function formatTimeOfDayClock(cycle) {
@@ -1281,6 +1741,18 @@ function setTimeOfDay(cycle, sourceLabel = null, options = {}) {
     });
   }
   return true;
+}
+
+function forceTimeCycleRefresh() {
+  const original = normalizeTimeCycle(state.timeOfDay);
+  if (original == null) return;
+  const tempCycle = isNightCycle(original) ? 0.5 : 0;
+  setTimeOfDay(tempCycle, null, { silent: true });
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      setTimeOfDay(original, null, { silent: true });
+    });
+  });
 }
 
 function handleTimeCommand(message) {
@@ -1794,6 +2266,8 @@ function maybeRetargetInitialSpawnToLand() {
 function ensureChunks(cx, cz) {
   for (let dz = -CHUNK_RADIUS; dz <= CHUNK_RADIUS; dz += 1) {
     for (let dx = -CHUNK_RADIUS; dx <= CHUNK_RADIUS; dx += 1) {
+      const d2 = dx * dx + dz * dz;
+      if (d2 > CHUNK_RADIUS * CHUNK_RADIUS) continue;
       const key = `${cx + dx},${cz + dz}`;
       if (!chunks.has(key)) {
         const mesh = buildChunk(cx + dx, cz + dz);
@@ -1804,9 +2278,12 @@ function ensureChunks(cx, cz) {
     }
   }
 
+  const chunkKeepRadiusSq = (CHUNK_RADIUS + 1) * (CHUNK_RADIUS + 1);
   for (const [key, mesh] of chunks.entries()) {
     const [x, z] = key.split(",").map(Number);
-    if (Math.abs(x - cx) > CHUNK_RADIUS + 1 || Math.abs(z - cz) > CHUNK_RADIUS + 1) {
+    const dx = x - cx;
+    const dz = z - cz;
+    if (dx * dx + dz * dz > chunkKeepRadiusSq) {
       scene.remove(mesh);
       mesh.geometry.dispose();
       const treeGroup = treeChunks.get(key);
@@ -1821,9 +2298,48 @@ function ensureChunks(cx, cz) {
 
 function buildChunkCoordinateQueue(cx, cz, radius = CHUNK_RADIUS) {
   const coords = [];
+  const radiusSq = radius * radius;
   for (let dz = -radius; dz <= radius; dz += 1) {
     for (let dx = -radius; dx <= radius; dx += 1) {
-      coords.push({ x: cx + dx, z: cz + dz, d2: dx * dx + dz * dz });
+      const d2 = dx * dx + dz * dz;
+      if (d2 > radiusSq) continue;
+      coords.push({ x: cx + dx, z: cz + dz, d2 });
+    }
+  }
+  coords.sort((a, b) => a.d2 - b.d2);
+  return coords;
+}
+
+function buildMidTileCoordinateQueue(cx, cz, radius = MID_TILE_RADIUS) {
+  const coords = [];
+  const outerRadiusSq = MID_TILE_CULL_RADIUS * MID_TILE_CULL_RADIUS;
+  const innerRadiusSq = MID_TILE_INNER_CULL_RADIUS * MID_TILE_INNER_CULL_RADIUS;
+  for (let dz = -radius; dz <= radius; dz += 1) {
+    for (let dx = -radius; dx <= radius; dx += 1) {
+      const centerX = dx * MID_TILE_SIZE;
+      const centerZ = dz * MID_TILE_SIZE;
+      const d2 = centerX * centerX + centerZ * centerZ;
+      if (d2 > outerRadiusSq) continue;
+      if (innerRadiusSq > 0 && d2 <= innerRadiusSq) continue;
+      coords.push({ x: cx + dx, z: cz + dz, d2 });
+    }
+  }
+  coords.sort((a, b) => a.d2 - b.d2);
+  return coords;
+}
+
+function buildFarTileCoordinateQueue(cx, cz, radius = FAR_TILE_RADIUS) {
+  const coords = [];
+  const outerRadiusSq = FAR_TILE_CULL_RADIUS * FAR_TILE_CULL_RADIUS;
+  const innerRadiusSq = FAR_TILE_INNER_CULL_RADIUS * FAR_TILE_INNER_CULL_RADIUS;
+  for (let dz = -radius; dz <= radius; dz += 1) {
+    for (let dx = -radius; dx <= radius; dx += 1) {
+      const centerX = dx * FAR_TILE_SIZE;
+      const centerZ = dz * FAR_TILE_SIZE;
+      const d2 = centerX * centerX + centerZ * centerZ;
+      if (d2 > outerRadiusSq) continue;
+      if (innerRadiusSq > 0 && d2 <= innerRadiusSq) continue;
+      coords.push({ x: cx + dx, z: cz + dz, d2 });
     }
   }
   coords.sort((a, b) => a.d2 - b.d2);
@@ -1860,9 +2376,12 @@ function ensureChunksIncremental(cx, cz, options = {}) {
       return;
     }
 
+    const chunkKeepRadiusSq = (CHUNK_RADIUS + 1) * (CHUNK_RADIUS + 1);
     for (const [key, mesh] of chunks.entries()) {
       const [x, z] = key.split(",").map(Number);
-      if (Math.abs(x - cx) > CHUNK_RADIUS + 1 || Math.abs(z - cz) > CHUNK_RADIUS + 1) {
+      const dx = x - cx;
+      const dz = z - cz;
+      if (dx * dx + dz * dz > chunkKeepRadiusSq) {
         scene.remove(mesh);
         mesh.geometry.dispose();
         const treeGroup = treeChunks.get(key);
@@ -1871,6 +2390,114 @@ function ensureChunksIncremental(cx, cz, options = {}) {
         }
         treeChunks.delete(key);
         chunks.delete(key);
+      }
+    }
+
+    if (typeof options.onComplete === "function") {
+      options.onComplete(jobId);
+    }
+  };
+
+  requestAnimationFrame(step);
+  return jobId;
+}
+
+function ensureMidTerrainIncremental(cx, cz, options = {}) {
+  const jobId = ++activeMidBuildJobId;
+  const queue = buildMidTileCoordinateQueue(cx, cz, MID_TILE_RADIUS);
+  const total = queue.length;
+  const batchSize = Math.max(1, Math.floor(options.batchSize ?? 3));
+  let index = 0;
+
+  const step = () => {
+    if (jobId !== activeMidBuildJobId) return;
+    const end = Math.min(total, index + batchSize);
+    for (; index < end; index += 1) {
+      const { x, z } = queue[index];
+      const key = `${x},${z}`;
+      if (!midTiles.has(key)) {
+        const mesh = buildMidTile(x, z);
+        scene.add(mesh);
+        midTiles.set(key, mesh);
+      }
+    }
+
+    if (typeof options.onProgress === "function") {
+      options.onProgress(index, total, jobId);
+    }
+
+    if (index < total) {
+      requestAnimationFrame(step);
+      return;
+    }
+
+    const outerKeepRadiusSq = MID_TILE_KEEP_RADIUS * MID_TILE_KEEP_RADIUS;
+    const innerRadiusSq = MID_TILE_INNER_CULL_RADIUS * MID_TILE_INNER_CULL_RADIUS;
+    for (const [key, mesh] of midTiles.entries()) {
+      const [x, z] = key.split(",").map(Number);
+      const dx = x - cx;
+      const dz = z - cz;
+      const centerX = dx * MID_TILE_SIZE;
+      const centerZ = dz * MID_TILE_SIZE;
+      const d2 = centerX * centerX + centerZ * centerZ;
+      if (d2 > outerKeepRadiusSq || (innerRadiusSq > 0 && d2 <= innerRadiusSq)) {
+        scene.remove(mesh);
+        mesh.geometry.dispose();
+        midTiles.delete(key);
+      }
+    }
+
+    if (typeof options.onComplete === "function") {
+      options.onComplete(jobId);
+    }
+  };
+
+  requestAnimationFrame(step);
+  return jobId;
+}
+
+function ensureFarTerrainIncremental(cx, cz, options = {}) {
+  const jobId = ++activeFarBuildJobId;
+  const queue = buildFarTileCoordinateQueue(cx, cz, FAR_TILE_RADIUS);
+  const total = queue.length;
+  const batchSize = Math.max(1, Math.floor(options.batchSize ?? 2));
+  let index = 0;
+
+  const step = () => {
+    if (jobId !== activeFarBuildJobId) return;
+    const end = Math.min(total, index + batchSize);
+    for (; index < end; index += 1) {
+      const { x, z } = queue[index];
+      const key = `${x},${z}`;
+      if (!farTiles.has(key)) {
+        const mesh = buildFarTile(x, z);
+        scene.add(mesh);
+        farTiles.set(key, mesh);
+      }
+    }
+
+    if (typeof options.onProgress === "function") {
+      options.onProgress(index, total, jobId);
+    }
+
+    if (index < total) {
+      requestAnimationFrame(step);
+      return;
+    }
+
+    const outerKeepRadiusSq = FAR_TILE_KEEP_RADIUS * FAR_TILE_KEEP_RADIUS;
+    const innerRadiusSq = FAR_TILE_INNER_CULL_RADIUS * FAR_TILE_INNER_CULL_RADIUS;
+    for (const [key, mesh] of farTiles.entries()) {
+      const [x, z] = key.split(",").map(Number);
+      const dx = x - cx;
+      const dz = z - cz;
+      const centerX = dx * FAR_TILE_SIZE;
+      const centerZ = dz * FAR_TILE_SIZE;
+      const d2 = centerX * centerX + centerZ * centerZ;
+      if (d2 > outerKeepRadiusSq || (innerRadiusSq > 0 && d2 <= innerRadiusSq)) {
+        scene.remove(mesh);
+        mesh.geometry.dispose();
+        farTiles.delete(key);
       }
     }
 
@@ -1915,6 +2542,70 @@ function ensureChunksRuntimeIncremental(cx, cz) {
   });
 }
 
+function ensureMidTerrainRuntimeIncremental(cx, cz) {
+  const target = { x: cx, z: cz };
+  runtimeMidBuildQueuedTarget = target;
+  if (runtimeMidBuildAppliedTarget && runtimeMidBuildAppliedTarget.x === cx && runtimeMidBuildAppliedTarget.z === cz) {
+    return;
+  }
+  if (chunkBuildInProgress) {
+    return;
+  }
+  if (runtimeMidBuildRunning) {
+    return;
+  }
+
+  const jobId = ++runtimeMidBuildJobId;
+  const runTarget = target;
+  runtimeMidBuildRunning = true;
+  ensureMidTerrainIncremental(runTarget.x, runTarget.z, {
+    batchSize: 3,
+    onComplete() {
+      if (jobId !== runtimeMidBuildJobId) return;
+      runtimeMidBuildRunning = false;
+      runtimeMidBuildAppliedTarget = runTarget;
+      if (
+        runtimeMidBuildQueuedTarget &&
+        (runtimeMidBuildQueuedTarget.x !== runTarget.x || runtimeMidBuildQueuedTarget.z !== runTarget.z)
+      ) {
+        ensureMidTerrainRuntimeIncremental(runtimeMidBuildQueuedTarget.x, runtimeMidBuildQueuedTarget.z);
+      }
+    },
+  });
+}
+
+function ensureFarTerrainRuntimeIncremental(cx, cz) {
+  const target = { x: cx, z: cz };
+  runtimeFarBuildQueuedTarget = target;
+  if (runtimeFarBuildAppliedTarget && runtimeFarBuildAppliedTarget.x === cx && runtimeFarBuildAppliedTarget.z === cz) {
+    return;
+  }
+  if (chunkBuildInProgress) {
+    return;
+  }
+  if (runtimeFarBuildRunning) {
+    return;
+  }
+
+  const jobId = ++runtimeFarBuildJobId;
+  const runTarget = target;
+  runtimeFarBuildRunning = true;
+  ensureFarTerrainIncremental(runTarget.x, runTarget.z, {
+    batchSize: 2,
+    onComplete() {
+      if (jobId !== runtimeFarBuildJobId) return;
+      runtimeFarBuildRunning = false;
+      runtimeFarBuildAppliedTarget = runTarget;
+      if (
+        runtimeFarBuildQueuedTarget &&
+        (runtimeFarBuildQueuedTarget.x !== runTarget.x || runtimeFarBuildQueuedTarget.z !== runTarget.z)
+      ) {
+        ensureFarTerrainRuntimeIncremental(runtimeFarBuildQueuedTarget.x, runtimeFarBuildQueuedTarget.z);
+      }
+    },
+  });
+}
+
 function clearChunks() {
   chunks.forEach((mesh) => {
     scene.remove(mesh);
@@ -1927,8 +2618,36 @@ function clearChunks() {
   treeChunks.clear();
 }
 
+function clearFarTerrain() {
+  farTiles.forEach((mesh) => {
+    scene.remove(mesh);
+    mesh.geometry.dispose();
+  });
+  farTiles.clear();
+  runtimeFarBuildAppliedTarget = null;
+  runtimeFarBuildQueuedTarget = null;
+  runtimeFarBuildRunning = false;
+  runtimeFarBuildJobId += 1;
+  activeFarBuildJobId += 1;
+}
+
+function clearMidTerrain() {
+  midTiles.forEach((mesh) => {
+    scene.remove(mesh);
+    mesh.geometry.dispose();
+  });
+  midTiles.clear();
+  runtimeMidBuildAppliedTarget = null;
+  runtimeMidBuildQueuedTarget = null;
+  runtimeMidBuildRunning = false;
+  runtimeMidBuildJobId += 1;
+  activeMidBuildJobId += 1;
+}
+
 function rebuildTerrain() {
   clearChunks();
+  clearMidTerrain();
+  clearFarTerrain();
   const cx = Math.floor(player.position.x / CHUNK_SIZE);
   const cz = Math.floor(player.position.z / CHUNK_SIZE);
   beginChunkBuildUi("rebuild", "Rebuilding terrain chunks (0%)");
@@ -1941,6 +2660,8 @@ function rebuildTerrain() {
     onComplete() {
       rebuildLandmarks();
       finishChunkBuildUi("rebuild");
+      ensureMidTerrainRuntimeIncremental(Math.floor(player.position.x / MID_TILE_SIZE), Math.floor(player.position.z / MID_TILE_SIZE));
+      ensureFarTerrainRuntimeIncremental(Math.floor(player.position.x / FAR_TILE_SIZE), Math.floor(player.position.z / FAR_TILE_SIZE));
     },
   });
 }
@@ -2003,6 +2724,7 @@ function buildTreeChunk(cx, cz) {
     trunk.scale.set(1.5 * scale, scale, 1.5 * scale);
     trunk.receiveShadow = true;
     trunk.castShadow = scale > 0.92;
+    trunk.renderOrder = TREE_RENDER_ORDER;
     group.add(trunk);
 
     const canopyMaterial =
@@ -2016,12 +2738,14 @@ function buildTreeChunk(cx, cz) {
       canopy.scale.set(2.05 * scale, 1.15 * scale, 2.05 * scale);
       canopy.receiveShadow = true;
       canopy.castShadow = scale > 0.96;
+      canopy.renderOrder = TREE_RENDER_ORDER;
       group.add(canopy);
       const upper = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
       upper.position.set(worldX, groundY + 7.3 * scale, worldZ);
       upper.scale.set(1.28 * scale, 0.72 * scale, 1.28 * scale);
       upper.receiveShadow = true;
       upper.castShadow = false;
+      upper.renderOrder = TREE_RENDER_ORDER;
       group.add(upper);
     } else if (treeStyle === "savanna") {
       const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
@@ -2029,6 +2753,7 @@ function buildTreeChunk(cx, cz) {
       canopyMain.scale.set(1.9 * scale, 0.56 * scale, 1.65 * scale);
       canopyMain.receiveShadow = true;
       canopyMain.castShadow = scale > 1;
+      canopyMain.renderOrder = TREE_RENDER_ORDER;
       group.add(canopyMain);
 
       if (variant !== 0) {
@@ -2037,6 +2762,7 @@ function buildTreeChunk(cx, cz) {
         canopySide.scale.set(0.92 * scale, 0.42 * scale, 0.84 * scale);
         canopySide.receiveShadow = true;
         canopySide.castShadow = false;
+        canopySide.renderOrder = TREE_RENDER_ORDER;
         group.add(canopySide);
       }
     } else if (treeStyle === "wetland") {
@@ -2045,6 +2771,7 @@ function buildTreeChunk(cx, cz) {
       canopyMain.scale.set(1.68 * scale, 1.02 * scale, 1.68 * scale);
       canopyMain.receiveShadow = true;
       canopyMain.castShadow = scale > 0.92;
+      canopyMain.renderOrder = TREE_RENDER_ORDER;
       group.add(canopyMain);
 
       const droop = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
@@ -2052,6 +2779,7 @@ function buildTreeChunk(cx, cz) {
       droop.scale.set(1.65 * scale, 0.6 * scale, 1.65 * scale);
       droop.receiveShadow = true;
       droop.castShadow = false;
+      droop.renderOrder = TREE_RENDER_ORDER;
       group.add(droop);
     } else if (variant === 1) {
       const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
@@ -2059,6 +2787,7 @@ function buildTreeChunk(cx, cz) {
       canopyMain.scale.set(1.5 * scale, 1.16 * scale, 1.5 * scale);
       canopyMain.receiveShadow = true;
       canopyMain.castShadow = scale > 0.92;
+      canopyMain.renderOrder = TREE_RENDER_ORDER;
       group.add(canopyMain);
 
       const canopyCap = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
@@ -2066,6 +2795,7 @@ function buildTreeChunk(cx, cz) {
       canopyCap.scale.set(0.84 * scale, 0.68 * scale, 0.84 * scale);
       canopyCap.receiveShadow = true;
       canopyCap.castShadow = false;
+      canopyCap.renderOrder = TREE_RENDER_ORDER;
       group.add(canopyCap);
     } else {
       const lower = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
@@ -2073,6 +2803,7 @@ function buildTreeChunk(cx, cz) {
       lower.scale.set(1.9 * scale, 0.88 * scale, 1.9 * scale);
       lower.receiveShadow = true;
       lower.castShadow = scale > 1.0;
+      lower.renderOrder = TREE_RENDER_ORDER;
       group.add(lower);
 
       const upper = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
@@ -2080,6 +2811,7 @@ function buildTreeChunk(cx, cz) {
       upper.scale.set(1.2 * scale, 0.78 * scale, 1.2 * scale);
       upper.receiveShadow = true;
       upper.castShadow = false;
+      upper.renderOrder = TREE_RENDER_ORDER;
       group.add(upper);
     }
   }
@@ -2156,9 +2888,98 @@ function buildChunk(cx, cz) {
   mesh.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
   mesh.receiveShadow = true;
   mesh.castShadow = false;
+  mesh.renderOrder = 1;
   mesh.userData.heightGrid = heightGrid;
   mesh.userData.chunkCoordX = cx;
   mesh.userData.chunkCoordZ = cz;
+  return mesh;
+}
+
+function buildFarTile(cx, cz) {
+  const geometry = new THREE.PlaneGeometry(FAR_TILE_SIZE, FAR_TILE_SIZE, FAR_TILE_RES, FAR_TILE_RES);
+  geometry.rotateX(-Math.PI / 2);
+  const vertices = geometry.attributes.position;
+  const colors = new Float32Array(vertices.count * 3);
+  const detailBiomes = new Float32Array(vertices.count);
+  const detailBiomeFades = new Float32Array(vertices.count);
+  const tileBiomeBlendScratch = createBiomeBlendSampleResult();
+  for (let i = 0; i < vertices.count; i += 1) {
+    const localX = vertices.getX(i);
+    const localZ = vertices.getZ(i);
+    const x = localX + cx * FAR_TILE_SIZE;
+    const z = localZ + cz * FAR_TILE_SIZE;
+    const blend = fillBiomeBlendSample(x, z, tileBiomeBlendScratch);
+    const y =
+      typeof heightAt.sampleWithBiomeBlend === "function"
+        ? heightAt.sampleWithBiomeBlend(x, z, blend)
+        : heightAt(x, z);
+    vertices.setY(i, y);
+    const biome = blend.dominantBiome || getBiomeAt(x, z);
+    const color = fillTerrainColorFromBiomeBlend(blend);
+    const n = hash2(Math.floor(x * 0.5), Math.floor(z * 0.5));
+    const brighten = 0.93 + n * 0.14;
+    colors[i * 3] = color.r * brighten;
+    colors[i * 3 + 1] = color.g * brighten;
+    colors[i * 3 + 2] = color.b * brighten;
+    detailBiomes[i] = getTerrainDetailBiomeId(biome);
+    detailBiomeFades[i] = getTerrainDetailBiomeFadeFromBlend(blend);
+  }
+  vertices.needsUpdate = true;
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  geometry.setAttribute("detailBiome", new THREE.BufferAttribute(detailBiomes, 1));
+  geometry.setAttribute("detailBiomeFade", new THREE.BufferAttribute(detailBiomeFades, 1));
+  geometry.computeVertexNormals();
+  const mesh = new THREE.Mesh(geometry, farTerrainMaterial);
+  mesh.position.set(cx * FAR_TILE_SIZE, 0, cz * FAR_TILE_SIZE);
+  mesh.receiveShadow = false;
+  mesh.castShadow = false;
+  mesh.matrixAutoUpdate = false;
+  mesh.updateMatrix();
+  mesh.renderOrder = 0;
+  return mesh;
+}
+
+function buildMidTile(cx, cz) {
+  const geometry = new THREE.PlaneGeometry(MID_TILE_SIZE, MID_TILE_SIZE, MID_TILE_RES, MID_TILE_RES);
+  geometry.rotateX(-Math.PI / 2);
+  const vertices = geometry.attributes.position;
+  const colors = new Float32Array(vertices.count * 3);
+  const detailBiomes = new Float32Array(vertices.count);
+  const detailBiomeFades = new Float32Array(vertices.count);
+  const tileBiomeBlendScratch = createBiomeBlendSampleResult();
+  for (let i = 0; i < vertices.count; i += 1) {
+    const localX = vertices.getX(i);
+    const localZ = vertices.getZ(i);
+    const x = localX + cx * MID_TILE_SIZE;
+    const z = localZ + cz * MID_TILE_SIZE;
+    const blend = fillBiomeBlendSample(x, z, tileBiomeBlendScratch);
+    const y =
+      typeof heightAt.sampleWithBiomeBlend === "function"
+        ? heightAt.sampleWithBiomeBlend(x, z, blend)
+        : heightAt(x, z);
+    vertices.setY(i, y);
+    const biome = blend.dominantBiome || getBiomeAt(x, z);
+    const color = fillTerrainColorFromBiomeBlend(blend);
+    const n = hash2(Math.floor(x * 0.5), Math.floor(z * 0.5));
+    const brighten = 0.93 + n * 0.14;
+    colors[i * 3] = color.r * brighten;
+    colors[i * 3 + 1] = color.g * brighten;
+    colors[i * 3 + 2] = color.b * brighten;
+    detailBiomes[i] = getTerrainDetailBiomeId(biome);
+    detailBiomeFades[i] = getTerrainDetailBiomeFadeFromBlend(blend);
+  }
+  vertices.needsUpdate = true;
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  geometry.setAttribute("detailBiome", new THREE.BufferAttribute(detailBiomes, 1));
+  geometry.setAttribute("detailBiomeFade", new THREE.BufferAttribute(detailBiomeFades, 1));
+  geometry.computeVertexNormals();
+  const mesh = new THREE.Mesh(geometry, midTerrainMaterial);
+  mesh.position.set(cx * MID_TILE_SIZE, 0, cz * MID_TILE_SIZE);
+  mesh.receiveShadow = false;
+  mesh.castShadow = false;
+  mesh.matrixAutoUpdate = false;
+  mesh.updateMatrix();
+  mesh.renderOrder = 0.5;
   return mesh;
 }
 
@@ -2213,6 +3034,7 @@ maybeRetargetInitialSpawnToLand();
 player.position.set(state.player.position.x, state.player.position.y, state.player.position.z);
 syncAtmosphereFromState();
 syncWaterColorFromState();
+updateDayNightCycle(0);
 
 const keys = new Set();
 let pointerLocked = false;
@@ -2474,6 +3296,18 @@ function updatePlayer(dt) {
   });
 }
 
+function updateFarTerrainFromPlayer() {
+  const tileX = Math.floor(player.position.x / FAR_TILE_SIZE);
+  const tileZ = Math.floor(player.position.z / FAR_TILE_SIZE);
+  ensureFarTerrainRuntimeIncremental(tileX, tileZ);
+}
+
+function updateMidTerrainFromPlayer() {
+  const tileX = Math.floor(player.position.x / MID_TILE_SIZE);
+  const tileZ = Math.floor(player.position.z / MID_TILE_SIZE);
+  ensureMidTerrainRuntimeIncremental(tileX, tileZ);
+}
+
 function updateBiomeHud() {
   const x = player.position.x;
   const z = player.position.z;
@@ -2507,6 +3341,8 @@ function animate() {
   } else {
     camera.rotation.set(player.pitch, player.yaw, 0, "YXZ");
   }
+  updateMidTerrainFromPlayer();
+  updateFarTerrainFromPlayer();
   updateBiomeHud();
   updateDayNightCycle(dt);
   updateStatusClock();
@@ -2532,10 +3368,21 @@ function animate() {
     water.material.roughness = clampNumber(0.2 + Math.sin(clock.elapsedTime * 0.35) * 0.04, 0.12, 0.3, 0.2);
   }
   renderer.render(scene, camera);
+  if (pendingInitialNightSync) {
+    pendingInitialNightSync = false;
+    updateDayNightCycle(0);
+    syncTerrainShaderUniforms();
+  }
   if (!startupLoadingDismissed) {
     startupLoadingDismissed = true;
     if (chunkBuildContext !== "rebuild") {
       setStartupLoadingVisible(false);
+    }
+    if (pendingTimeCycleRefresh) {
+      pendingTimeCycleRefresh = false;
+      // Hack: on cold boot at night the mid/far fog uniforms can stick to a light blend
+      // until time is changed. Force a silent time flip after the initial load completes.
+      forceTimeCycleRefresh();
     }
   }
   requestAnimationFrame(animate);
@@ -2564,6 +3411,9 @@ function startAppBootSequence() {
           rebuildLandmarks();
         }, () => {
           setStartupLoadingMessage("Loading...", "Starting renderer");
+          setTimeOfDay(state.timeOfDay, null, { silent: true });
+          pendingInitialNightSync = true;
+          pendingTimeCycleRefresh = true;
           chunkBuildInProgress = false;
           chunkBuildContext = "startup";
           animate();
