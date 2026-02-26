@@ -1796,8 +1796,10 @@ function seededHash2(x, z, seed) {
 function sampleBiomeClimate(x, z) {
   const phaseA = noiseSeed * 0.000017;
   const phaseB = noiseSeed * 0.000023;
-  const sx = x * 0.00115;
-  const sz = z * 0.00105;
+  // Larger temperature zones (~9x area) without changing local biome granularity.
+  const TEMPERATURE_ZONE_SCALE = 1 / 3;
+  const sx = x * 0.00115 * TEMPERATURE_ZONE_SCALE;
+  const sz = z * 0.00105 * TEMPERATURE_ZONE_SCALE;
   const tempRaw =
     0.5 +
     Math.sin(sx + phaseA) * 0.22 +
