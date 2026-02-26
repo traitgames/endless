@@ -40,6 +40,8 @@ const traceClearBtn = document.getElementById("trace-clear");
 const traceOpenBtn = document.getElementById("action-trace-open");
 const minimapCanvas = document.getElementById("minimap-canvas");
 const minimapCtx = minimapCanvas?.getContext("2d");
+const minimapZoomInBtn = document.getElementById("minimap-zoom-in");
+const minimapZoomOutBtn = document.getElementById("minimap-zoom-out");
 const LOCAL_COMMAND_HELP_URL = new URL("./commandHelp.json", import.meta.url);
 const FALLBACK_FRONTEND_COMMAND_HELP_LINES = [
   "/help <command>",
@@ -81,6 +83,8 @@ let lastMinimapUpdateAt = -Infinity;
 let lastMinimapSampleX = Number.NaN;
 let lastMinimapSampleZ = Number.NaN;
 let lastMinimapSampleYaw = Number.NaN;
+let lastMinimapSampleZoomIndex = Number.NaN;
+let minimapNeedsRender = true;
 let activeChunkBuildJobId = 0;
 let chunkBuildInProgress = false;
 let chunkBuildContext = null;
@@ -995,12 +999,59 @@ const FAR_TILE_HALF_DIAGONAL = FAR_TILE_SIZE * Math.SQRT2 * 0.5;
 const FAR_TILE_CULL_RADIUS = FAR_RADIUS_METERS + FAR_TILE_HALF_DIAGONAL;
 const FAR_TILE_KEEP_RADIUS = FAR_TILE_CULL_RADIUS + FAR_TILE_SIZE;
 const FAR_TILE_INNER_CULL_RADIUS = Math.max(0, FAR_BLEND_START_METERS - FAR_TILE_HALF_DIAGONAL);
-const MINIMAP_WORLD_RADIUS = 5000;
+const MINIMAP_ZOOM_PRESETS_METERS = [
+  100, 150, 250, 350, 550, 850, 1300, 1950, 2950, 4450, 6650, 10000, 15000, 22500, 25000,
+];
+const DEFAULT_MINIMAP_SPAN_METERS = 10000;
 const MINIMAP_MIN_UPDATE_INTERVAL_MS = 180;
 const MINIMAP_STALE_UPDATE_MS = 1000;
 const MINIMAP_MOVE_THRESHOLD_SQ = 9;
 const MINIMAP_YAW_THRESHOLD = 0.05;
 const MINIMAP_FALLBACK_COLOR = { r: 0.06, g: 0.08, b: 0.1 };
+
+function findClosestMinimapZoomIndex(targetMeters) {
+  let bestIndex = 0;
+  let bestDistance = Infinity;
+  for (let i = 0; i < MINIMAP_ZOOM_PRESETS_METERS.length; i += 1) {
+    const distance = Math.abs(MINIMAP_ZOOM_PRESETS_METERS[i] - targetMeters);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = i;
+    }
+  }
+  return bestIndex;
+}
+
+let minimapZoomIndex = (() => {
+  const exact = MINIMAP_ZOOM_PRESETS_METERS.indexOf(DEFAULT_MINIMAP_SPAN_METERS);
+  return exact >= 0 ? exact : findClosestMinimapZoomIndex(DEFAULT_MINIMAP_SPAN_METERS);
+})();
+let minimapWorldRadius = MINIMAP_ZOOM_PRESETS_METERS[minimapZoomIndex] * 0.5;
+
+function updateMinimapZoomControls() {
+  if (minimapZoomInBtn) {
+    minimapZoomInBtn.disabled = minimapZoomIndex <= 0;
+  }
+  if (minimapZoomOutBtn) {
+    minimapZoomOutBtn.disabled = minimapZoomIndex >= MINIMAP_ZOOM_PRESETS_METERS.length - 1;
+  }
+}
+
+function setMinimapZoomIndex(nextIndex, { force = false } = {}) {
+  const clamped = clampNumber(
+    Math.round(nextIndex),
+    0,
+    MINIMAP_ZOOM_PRESETS_METERS.length - 1,
+    minimapZoomIndex
+  );
+  if (!force && clamped === minimapZoomIndex) return;
+  minimapZoomIndex = clamped;
+  minimapWorldRadius = MINIMAP_ZOOM_PRESETS_METERS[minimapZoomIndex] * 0.5;
+  minimapNeedsRender = true;
+  updateMinimapZoomControls();
+}
+
+updateMinimapZoomControls();
 const farTerrainMaterial = new THREE.MeshStandardMaterial({
   color: state.world.terrainColor,
   vertexColors: true,
@@ -3243,6 +3294,7 @@ function syncMinimapCanvasSize() {
   minimapCtx.imageSmoothingEnabled = false;
   minimapImageData = minimapCtx.createImageData(width, height);
   minimapPixelData = minimapImageData.data;
+  minimapNeedsRender = true;
 }
 
 function normalizeYawDelta(delta) {
@@ -3296,9 +3348,11 @@ function sampleColorFromTileMap(tileMap, size, res, x, z, out) {
   return sampleColorFromMeshGrid(mesh, x, z, size, res, out);
 }
 
-function sampleLoadedBiomeColorAt(x, z, out) {
-  if (sampleColorFromTileMap(chunks, CHUNK_SIZE, CHUNK_RES, x, z, out)) return out;
-  if (sampleColorFromTileMap(midTiles, MID_TILE_SIZE, MID_TILE_RES, x, z, out)) return out;
+function sampleLoadedBiomeColorAt(x, z, out, useNearOnly = false) {
+  if (useNearOnly) {
+    if (sampleColorFromTileMap(chunks, CHUNK_SIZE, CHUNK_RES, x, z, out)) return out;
+    return null;
+  }
   if (sampleColorFromTileMap(farTiles, FAR_TILE_SIZE, FAR_TILE_RES, x, z, out)) return out;
   return null;
 }
@@ -3309,9 +3363,11 @@ function renderMinimap() {
   const width = minimapPixelWidth;
   const height = minimapPixelHeight;
   if (!width || !height) return;
-  const span = MINIMAP_WORLD_RADIUS * 2;
-  const startX = player.position.x - MINIMAP_WORLD_RADIUS;
-  const startZ = player.position.z - MINIMAP_WORLD_RADIUS;
+  const nearSafeRadius = NEAR_FADE_END_METERS - CHUNK_SIZE * 0.5;
+  const useNearOnly = minimapWorldRadius * Math.SQRT2 <= nearSafeRadius;
+  const span = minimapWorldRadius * 2;
+  const startX = player.position.x - minimapWorldRadius;
+  const startZ = player.position.z - minimapWorldRadius;
   const stepX = span / width;
   const stepZ = span / height;
   if (!minimapPixelData || minimapPixelData.length !== width * height * 4) {
@@ -3324,7 +3380,7 @@ function renderMinimap() {
     const worldZ = startZ + py * stepZ;
     for (let px = 0; px < width; px += 1) {
       const worldX = startX + px * stepX;
-      const color = sampleLoadedBiomeColorAt(worldX, worldZ, minimapColorScratch);
+      const color = sampleLoadedBiomeColorAt(worldX, worldZ, minimapColorScratch, useNearOnly);
       const r = clampNumber(color ? color.r : MINIMAP_FALLBACK_COLOR.r, 0, 1, 0) * 255;
       const g = clampNumber(color ? color.g : MINIMAP_FALLBACK_COLOR.g, 0, 1, 0) * 255;
       const b = clampNumber(color ? color.b : MINIMAP_FALLBACK_COLOR.b, 0, 1, 0) * 255;
@@ -3340,7 +3396,7 @@ function renderMinimap() {
   const pointerSize = Math.max(6, Math.min(width, height) * 0.07);
   minimapCtx.save();
   minimapCtx.translate(width * 0.5, height * 0.5);
-  minimapCtx.rotate(player.yaw);
+  minimapCtx.rotate(-player.yaw);
   minimapCtx.beginPath();
   minimapCtx.moveTo(0, -pointerSize);
   minimapCtx.lineTo(pointerSize * 0.6, pointerSize * 0.7);
@@ -3371,12 +3427,15 @@ function updateMinimap() {
     : Infinity;
   const turned = yawDelta >= MINIMAP_YAW_THRESHOLD;
   const stale = interval >= MINIMAP_STALE_UPDATE_MS;
-  if (!moved && !turned && !stale) return;
+  const zoomed = minimapZoomIndex !== lastMinimapSampleZoomIndex;
+  if (!moved && !turned && !stale && !zoomed && !minimapNeedsRender) return;
   renderMinimap();
   lastMinimapUpdateAt = now;
   lastMinimapSampleX = player.position.x;
   lastMinimapSampleZ = player.position.z;
   lastMinimapSampleYaw = player.yaw;
+  lastMinimapSampleZoomIndex = minimapZoomIndex;
+  minimapNeedsRender = false;
 }
 
 const player = {
@@ -3558,6 +3617,21 @@ window.addEventListener("keydown", (event) => {
     return;
   }
 
+  const zoomInKey =
+    event.key === "+" ||
+    event.key === "=" ||
+    event.code === "Equal" ||
+    event.code === "NumpadAdd" ||
+    event.code === "NumpadEqual";
+  const zoomOutKey =
+    event.key === "-" || event.key === "_" || event.code === "Minus" || event.code === "NumpadSubtract";
+  if (zoomInKey || zoomOutKey) {
+    setMinimapZoomIndex(minimapZoomIndex + (zoomInKey ? -1 : 1));
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+
   if (event.code === "Enter") {
     if (document.activeElement !== chatInput) {
       setChatOpen(true, { focusInput: true });
@@ -3593,6 +3667,16 @@ chatInput.addEventListener("focus", () => {
 
 chatMinimizeBtn?.addEventListener("click", () => {
   setChatOpen(!chatOpen, { focusInput: !chatOpen });
+});
+
+minimapZoomInBtn?.addEventListener("click", (event) => {
+  event.preventDefault();
+  setMinimapZoomIndex(minimapZoomIndex - 1);
+});
+
+minimapZoomOutBtn?.addEventListener("click", (event) => {
+  event.preventDefault();
+  setMinimapZoomIndex(minimapZoomIndex + 1);
 });
 
 window.addEventListener("mousemove", (event) => {
