@@ -38,6 +38,8 @@ const traceLog = document.getElementById("trace-log");
 const traceToggleBtn = document.getElementById("trace-toggle");
 const traceClearBtn = document.getElementById("trace-clear");
 const traceOpenBtn = document.getElementById("action-trace-open");
+const minimapCanvas = document.getElementById("minimap-canvas");
+const minimapCtx = minimapCanvas?.getContext("2d");
 const LOCAL_COMMAND_HELP_URL = new URL("./commandHelp.json", import.meta.url);
 const FALLBACK_FRONTEND_COMMAND_HELP_LINES = [
   "/help <command>",
@@ -71,6 +73,14 @@ let startupLoadingDismissed = false;
 let lastVisualSampleAtMs = -Infinity;
 let lastVisualSampleX = Number.NaN;
 let lastVisualSampleZ = Number.NaN;
+let minimapImageData = null;
+let minimapPixelWidth = 0;
+let minimapPixelHeight = 0;
+let minimapPixelData = null;
+let lastMinimapUpdateAt = -Infinity;
+let lastMinimapSampleX = Number.NaN;
+let lastMinimapSampleZ = Number.NaN;
+let lastMinimapSampleYaw = Number.NaN;
 let activeChunkBuildJobId = 0;
 let chunkBuildInProgress = false;
 let chunkBuildContext = null;
@@ -240,6 +250,7 @@ const BIOME_BLEND_HALF_WIDTH_METERS = BIOME_BLEND_TRANSITION_WIDTH_METERS * 0.5;
 const BIOME_BLEND_GRADIENT_STEP_METERS = 2;
 const BIOME_BLEND_PRECHECK_MARGIN = 0.05;
 const MOUNTAIN_BIOME_BORDER_BLEND_HEIGHT_METERS = 24;
+const WETLAND_MOUNTAIN_HEIGHT_MAX_METERS = 10;
 const BIOME_BLEND_MAX_SLOTS = 8;
 const MOUNTAIN_BIOME_SUFFIX = "_mountains";
 
@@ -388,6 +399,29 @@ const BIOME_DEFS = {
     trunkTint: new THREE.Color("#5a4637"),
     canopyTint: new THREE.Color("#5f8f58"),
   },
+  rocky_mountains: {
+    id: "rocky_mountains",
+    label: "Rocky Mountains",
+    category: "temperate",
+    baseBiomeId: "wetland",
+    isMountainVariant: true,
+    groundColor: new THREE.Color("#8a8f87"),
+    waterColor: new THREE.Color("#5d7586"),
+    fogColor: new THREE.Color("#b1b9bf"),
+    fogDensityMultiplier: 1.1,
+    terrainProfile: {
+      noiseAlgorithm: "ridged",
+      noiseScaleMultiplier: 0.9,
+      baseHeightMultiplier: 1.22,
+      ridgeScaleMultiplier: 1.45,
+      ridgeHeightMultiplier: 1.3,
+      octaves: 5,
+      lacunarity: 2.0,
+      gain: 0.48,
+      secondaryAmount: 0.12,
+    },
+    hasTrees: false,
+  },
   desert: {
     id: "desert",
     label: "Desert",
@@ -507,8 +541,10 @@ function createMountainBiomeVariant(baseBiome) {
 }
 
 for (const biome of Object.values({ ...BIOME_DEFS })) {
+  if (biome.isMountainVariant) continue;
   BIOME_DEFS[`${biome.id}${MOUNTAIN_BIOME_SUFFIX}`] = createMountainBiomeVariant(biome);
 }
+BIOME_DEFS.wetland_mountains = BIOME_DEFS.rocky_mountains;
 
 const DEFAULT_STATE = {
   seed: BOOT_SEED,
@@ -959,6 +995,12 @@ const FAR_TILE_HALF_DIAGONAL = FAR_TILE_SIZE * Math.SQRT2 * 0.5;
 const FAR_TILE_CULL_RADIUS = FAR_RADIUS_METERS + FAR_TILE_HALF_DIAGONAL;
 const FAR_TILE_KEEP_RADIUS = FAR_TILE_CULL_RADIUS + FAR_TILE_SIZE;
 const FAR_TILE_INNER_CULL_RADIUS = Math.max(0, FAR_BLEND_START_METERS - FAR_TILE_HALF_DIAGONAL);
+const MINIMAP_WORLD_RADIUS = 5000;
+const MINIMAP_MIN_UPDATE_INTERVAL_MS = 180;
+const MINIMAP_STALE_UPDATE_MS = 1000;
+const MINIMAP_MOVE_THRESHOLD_SQ = 9;
+const MINIMAP_YAW_THRESHOLD = 0.05;
+const MINIMAP_FALLBACK_COLOR = { r: 0.06, g: 0.08, b: 0.1 };
 const farTerrainMaterial = new THREE.MeshStandardMaterial({
   color: state.world.terrainColor,
   vertexColors: true,
@@ -1793,27 +1835,104 @@ function seededHash2(x, z, seed) {
   return h - Math.floor(h);
 }
 
+const SIMPLEX_GRAD_2D = [
+  [1, 1],
+  [-1, 1],
+  [1, -1],
+  [-1, -1],
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1],
+];
+const SIMPLEX_F2 = 0.5 * (Math.sqrt(3) - 1);
+const SIMPLEX_G2 = (3 - Math.sqrt(3)) / 6;
+
+function fastSimplex2(x, z, seed) {
+  const s = (x + z) * SIMPLEX_F2;
+  const i = Math.floor(x + s);
+  const j = Math.floor(z + s);
+  const t = (i + j) * SIMPLEX_G2;
+  const x0 = x - (i - t);
+  const z0 = z - (j - t);
+  const i1 = x0 > z0 ? 1 : 0;
+  const j1 = x0 > z0 ? 0 : 1;
+  const x1 = x0 - i1 + SIMPLEX_G2;
+  const z1 = z0 - j1 + SIMPLEX_G2;
+  const x2 = x0 - 1 + 2 * SIMPLEX_G2;
+  const z2 = z0 - 1 + 2 * SIMPLEX_G2;
+
+  let n0 = 0;
+  let n1 = 0;
+  let n2 = 0;
+  let t0 = 0.5 - x0 * x0 - z0 * z0;
+  if (t0 > 0) {
+    t0 *= t0;
+    const grad = SIMPLEX_GRAD_2D[Math.floor(seededHash2(i, j, seed) * 8)];
+    n0 = t0 * t0 * (grad[0] * x0 + grad[1] * z0);
+  }
+  let t1 = 0.5 - x1 * x1 - z1 * z1;
+  if (t1 > 0) {
+    t1 *= t1;
+    const grad = SIMPLEX_GRAD_2D[Math.floor(seededHash2(i + i1, j + j1, seed) * 8)];
+    n1 = t1 * t1 * (grad[0] * x1 + grad[1] * z1);
+  }
+  let t2 = 0.5 - x2 * x2 - z2 * z2;
+  if (t2 > 0) {
+    t2 *= t2;
+    const grad = SIMPLEX_GRAD_2D[Math.floor(seededHash2(i + 1, j + 1, seed) * 8)];
+    n2 = t2 * t2 * (grad[0] * x2 + grad[1] * z2);
+  }
+
+  return 70 * (n0 + n1 + n2);
+}
+
 function sampleBiomeClimate(x, z) {
   const phaseA = noiseSeed * 0.000017;
   const phaseB = noiseSeed * 0.000023;
   // Larger temperature zones (~9x area) without changing local biome granularity.
-  const TEMPERATURE_ZONE_SCALE = 1 / 3;
+  const TEMPERATURE_ZONE_SCALE = 2 / 3;
   const sx = x * 0.00115 * TEMPERATURE_ZONE_SCALE;
   const sz = z * 0.00105 * TEMPERATURE_ZONE_SCALE;
+  const tempJitter = fastSimplex2(x * 0.00042 * TEMPERATURE_ZONE_SCALE, z * 0.00042 * TEMPERATURE_ZONE_SCALE, noiseSeed + 7);
+  const warpBaseX = x * 0.00032;
+  const warpBaseZ = z * 0.00028;
+  const warpA = Math.sin(warpBaseX + phaseA * 2.1);
+  const warpB = Math.sin(warpBaseZ - phaseB * 1.7);
+  const warpC = Math.sin((warpBaseX + warpBaseZ) * 0.85 + phaseA * 1.3);
+  const warpX = (warpA + warpC) * 120;
+  const warpZ = (warpB - warpC) * 120;
+  const mx = (x + warpX) * 0.0011;
+  const mz = (z + warpZ) * 0.00102;
+  const dx = x + warpX * 0.6;
+  const dz = z + warpZ * 0.6;
   const tempRaw =
     0.5 +
     Math.sin(sx + phaseA) * 0.22 +
     Math.sin(sz * 1.18 - phaseA * 1.4) * 0.18 +
-    Math.sin((sx + sz) * 0.72 + phaseA * 0.7) * 0.14;
+    Math.sin((sx + sz) * 0.72 + phaseA * 0.7) * 0.14 +
+    tempJitter * 0.14;
   const moistureRaw =
     0.5 +
-    Math.sin((sx * 0.84 - sz * 0.34) + phaseB) * 0.23 +
-    Math.sin((sz * 1.31 + sx * 0.22) - phaseB * 0.9) * 0.16 +
-    Math.sin((sx - sz) * 0.59 + phaseB * 0.4) * 0.11;
+    Math.sin((mx * 0.84 - mz * 0.34) + phaseB) * 0.23 +
+    Math.sin((mz * 1.31 + mx * 0.22) - phaseB * 0.9) * 0.16 +
+    Math.sin((mx - mz) * 0.59 + phaseB * 0.4) * 0.11;
+  const DETAIL_WAVELENGTH_SCALE = 0.6;
+  const detailJitter = fastSimplex2(dx * 0.0011, dz * 0.0011, noiseSeed + 19) * 1.6;
   const detailRaw =
     0.5 +
-    Math.sin(x * 0.0069 + z * 0.0042 + noiseSeed * 0.00019) * 0.22 +
-    Math.sin(x * -0.0044 + z * 0.0076 - noiseSeed * 0.00013) * 0.12;
+    Math.sin(
+      dx * 0.0069 * DETAIL_WAVELENGTH_SCALE +
+        dz * 0.0042 * DETAIL_WAVELENGTH_SCALE +
+        noiseSeed * 0.00019 +
+        detailJitter * 1.3
+    ) * 0.22 +
+    Math.sin(
+      dx * -0.0044 * DETAIL_WAVELENGTH_SCALE +
+        dz * 0.0076 * DETAIL_WAVELENGTH_SCALE -
+        noiseSeed * 0.00013 +
+        detailJitter * -1.05
+    ) * 0.12;
   return {
     temperature: clampNumber(tempRaw, 0, 1, 0.5),
     moisture: clampNumber(moistureRaw, 0, 1, 0.5),
@@ -1823,9 +1942,13 @@ function sampleBiomeClimate(x, z) {
 
 function sampleBiomeClimateFields(x, z) {
   const climate = sampleBiomeClimate(x, z);
+  const mixBias = clampNumber(0.25 + climate.detail * 0.5, 0.2, 0.75, 0.45);
+  const rawSelector = climate.moisture * (1 - mixBias) + climate.detail * mixBias;
+  const ridge = 1 - Math.abs(rawSelector * 2 - 1);
+  const shapedSelector = clampNumber(rawSelector + (ridge - 0.5) * 0.08, 0, 1, 0.5);
   return {
     ...climate,
-    selector: clampNumber(climate.moisture * 0.72 + climate.detail * 0.28, 0, 1, 0.5),
+    selector: smoothstep(0.08, 0.92, shapedSelector),
   };
 }
 
@@ -1931,6 +2054,36 @@ function normalizeBiomeBlendResult(target) {
   return target;
 }
 
+function applyWetlandHeightOverride(x, z, target) {
+  if (!target) return target;
+  if (!shouldDemoteWetlandAt(x, z)) return target;
+  const meadow = BIOME_DEFS.meadow;
+  const originalCount = target.count;
+  if (originalCount <= 0) return target;
+  const originalBiomes = target.biomes.slice(0, originalCount);
+  const originalWeights = target.weights.slice(0, originalCount);
+
+  target.count = 0;
+  for (let i = 0; i < target.biomes.length; i += 1) {
+    target.biomes[i] = null;
+    target.weights[i] = 0;
+  }
+
+  for (let i = 0; i < originalCount; i += 1) {
+    const biome = originalBiomes[i];
+    const weight = originalWeights[i];
+    if (!(weight > 0)) continue;
+    const mapped = biome?.id === "wetland" ? meadow : biome;
+    upsertBiomeBlendEntry(target, mapped, weight);
+  }
+
+  if (target.dominantBiome?.id === "wetland") {
+    target.dominantBiome = meadow;
+  }
+
+  return normalizeBiomeBlendResult(target);
+}
+
 const mountainBiomeAdditiveScratch = {
   gentleAdditiveHeight: 0,
   mountainAdditiveHeight: 0,
@@ -1941,7 +2094,7 @@ const mountainBiomeAdditiveScratch = {
 };
 
 function getMountainBiomeThresholdMeters() {
-  return Number.isFinite(heightAt?.mountainBiomeThresholdMeters) ? heightAt.mountainBiomeThresholdMeters : 50;
+  return Number.isFinite(heightAt?.mountainBiomeThresholdMeters) ? heightAt.mountainBiomeThresholdMeters : 100;
 }
 
 function fillTerrainAdditiveSampleAt(x, z, target = mountainBiomeAdditiveScratch) {
@@ -1955,6 +2108,13 @@ function fillTerrainAdditiveSampleAt(x, z, target = mountainBiomeAdditiveScratch
   target.rangeClass = 0;
   target.peakPotential = 0;
   return target;
+}
+
+function shouldDemoteWetlandAt(x, z) {
+  const center = fillTerrainAdditiveSampleAt(x, z, mountainBiomeAdditiveScratch);
+  const centerHeight = center.mountainAdditiveHeight || 0;
+  if (centerHeight <= WETLAND_MOUNTAIN_HEIGHT_MAX_METERS) return false;
+  return centerHeight < getMountainBiomeThresholdMeters();
 }
 
 function getMountainBiomeVariant(biome) {
@@ -2042,6 +2202,7 @@ function fillBiomeBlendSample(x, z, target = createBiomeBlendSampleResult()) {
 
   if (!nearTempBoundary && !nearSelectorBoundary) {
     setSingleBiomeBlendResult(target, dominantBiome);
+    applyWetlandHeightOverride(x, z, target);
     return applyMountainVariantsToBiomeBlend(x, z, target);
   }
 
@@ -2077,9 +2238,11 @@ function fillBiomeBlendSample(x, z, target = createBiomeBlendSampleResult()) {
   }
   if (target.count === 0) {
     setSingleBiomeBlendResult(target, dominantBiome);
+    applyWetlandHeightOverride(x, z, target);
     return applyMountainVariantsToBiomeBlend(x, z, target);
   }
   normalizeBiomeBlendResult(target);
+  applyWetlandHeightOverride(x, z, target);
   return applyMountainVariantsToBiomeBlend(x, z, target);
 }
 
@@ -2104,6 +2267,7 @@ const heightAt = createTerrainHeightSampler({
   sampleBiomeTerrainBlend: (x, z, target) => fillBiomeBlendSample(x, z, target),
   getBiomeTerrainProfile,
 });
+heightAt.mountainBiomeThresholdMeters = 100;
 
 function getBiomeAt(x, z) {
   const climate = sampleBiomeClimateFields(x, z);
@@ -2112,7 +2276,9 @@ function getBiomeAt(x, z) {
   else if (climate.temperature > 0.63) category = "hot";
   const variants = BIOME_VARIANTS[category];
   const index = Math.min(2, Math.floor(climate.selector * 3));
-  return getBiomeWithMountainVariantAt(x, z, BIOME_DEFS[variants[index]]);
+  const baseBiome = BIOME_DEFS[variants[index]];
+  const adjustedBiome = baseBiome?.id === "wetland" && shouldDemoteWetlandAt(x, z) ? BIOME_DEFS.meadow : baseBiome;
+  return getBiomeWithMountainVariantAt(x, z, adjustedBiome);
 }
 
 function getGroundPointInfo(x, z) {
@@ -2856,6 +3022,7 @@ function buildChunk(cx, cz) {
   const detailBiomes = new Float32Array(vertices.count);
   const detailBiomeFades = new Float32Array(vertices.count);
   const heightGrid = new Float32Array(CHUNK_GRID_STRIDE * CHUNK_GRID_STRIDE);
+  const colorGrid = new Float32Array(CHUNK_GRID_STRIDE * CHUNK_GRID_STRIDE * 3);
   const chunkBiomeBlendScratch = createBiomeBlendSampleResult();
   for (let i = 0; i < vertices.count; i += 1) {
     const localX = vertices.getX(i);
@@ -2878,6 +3045,10 @@ function buildChunk(cx, cz) {
     colors[i * 3] = color.r * brighten;
     colors[i * 3 + 1] = color.g * brighten;
     colors[i * 3 + 2] = color.b * brighten;
+    const gridIndex = (gz * CHUNK_GRID_STRIDE + gx) * 3;
+    colorGrid[gridIndex] = colors[i * 3];
+    colorGrid[gridIndex + 1] = colors[i * 3 + 1];
+    colorGrid[gridIndex + 2] = colors[i * 3 + 2];
     detailBiomes[i] = getTerrainDetailBiomeId(biome);
     detailBiomeFades[i] = getTerrainDetailBiomeFadeFromBlend(blend);
   }
@@ -2892,6 +3063,10 @@ function buildChunk(cx, cz) {
   mesh.castShadow = false;
   mesh.renderOrder = 1;
   mesh.userData.heightGrid = heightGrid;
+  mesh.userData.colorGrid = colorGrid;
+  mesh.userData.gridStride = CHUNK_GRID_STRIDE;
+  mesh.userData.tileSize = CHUNK_SIZE;
+  mesh.userData.tileRes = CHUNK_RES;
   mesh.userData.chunkCoordX = cx;
   mesh.userData.chunkCoordZ = cz;
   return mesh;
@@ -2904,10 +3079,15 @@ function buildFarTile(cx, cz) {
   const colors = new Float32Array(vertices.count * 3);
   const detailBiomes = new Float32Array(vertices.count);
   const detailBiomeFades = new Float32Array(vertices.count);
+  const tileStride = FAR_TILE_RES + 1;
+  const cellSize = FAR_TILE_SIZE / FAR_TILE_RES;
+  const colorGrid = new Float32Array(tileStride * tileStride * 3);
   const tileBiomeBlendScratch = createBiomeBlendSampleResult();
   for (let i = 0; i < vertices.count; i += 1) {
     const localX = vertices.getX(i);
     const localZ = vertices.getZ(i);
+    const gx = clampNumber(Math.round((localX + FAR_TILE_SIZE * 0.5) / cellSize), 0, FAR_TILE_RES, 0);
+    const gz = clampNumber(Math.round((localZ + FAR_TILE_SIZE * 0.5) / cellSize), 0, FAR_TILE_RES, 0);
     const x = localX + cx * FAR_TILE_SIZE;
     const z = localZ + cz * FAR_TILE_SIZE;
     const blend = fillBiomeBlendSample(x, z, tileBiomeBlendScratch);
@@ -2923,6 +3103,10 @@ function buildFarTile(cx, cz) {
     colors[i * 3] = color.r * brighten;
     colors[i * 3 + 1] = color.g * brighten;
     colors[i * 3 + 2] = color.b * brighten;
+    const gridIndex = (gz * tileStride + gx) * 3;
+    colorGrid[gridIndex] = colors[i * 3];
+    colorGrid[gridIndex + 1] = colors[i * 3 + 1];
+    colorGrid[gridIndex + 2] = colors[i * 3 + 2];
     detailBiomes[i] = getTerrainDetailBiomeId(biome);
     detailBiomeFades[i] = getTerrainDetailBiomeFadeFromBlend(blend);
   }
@@ -2938,6 +3122,10 @@ function buildFarTile(cx, cz) {
   mesh.matrixAutoUpdate = false;
   mesh.updateMatrix();
   mesh.renderOrder = 0;
+  mesh.userData.colorGrid = colorGrid;
+  mesh.userData.gridStride = tileStride;
+  mesh.userData.tileSize = FAR_TILE_SIZE;
+  mesh.userData.tileRes = FAR_TILE_RES;
   return mesh;
 }
 
@@ -2948,10 +3136,15 @@ function buildMidTile(cx, cz) {
   const colors = new Float32Array(vertices.count * 3);
   const detailBiomes = new Float32Array(vertices.count);
   const detailBiomeFades = new Float32Array(vertices.count);
+  const tileStride = MID_TILE_RES + 1;
+  const cellSize = MID_TILE_SIZE / MID_TILE_RES;
+  const colorGrid = new Float32Array(tileStride * tileStride * 3);
   const tileBiomeBlendScratch = createBiomeBlendSampleResult();
   for (let i = 0; i < vertices.count; i += 1) {
     const localX = vertices.getX(i);
     const localZ = vertices.getZ(i);
+    const gx = clampNumber(Math.round((localX + MID_TILE_SIZE * 0.5) / cellSize), 0, MID_TILE_RES, 0);
+    const gz = clampNumber(Math.round((localZ + MID_TILE_SIZE * 0.5) / cellSize), 0, MID_TILE_RES, 0);
     const x = localX + cx * MID_TILE_SIZE;
     const z = localZ + cz * MID_TILE_SIZE;
     const blend = fillBiomeBlendSample(x, z, tileBiomeBlendScratch);
@@ -2967,6 +3160,10 @@ function buildMidTile(cx, cz) {
     colors[i * 3] = color.r * brighten;
     colors[i * 3 + 1] = color.g * brighten;
     colors[i * 3 + 2] = color.b * brighten;
+    const gridIndex = (gz * tileStride + gx) * 3;
+    colorGrid[gridIndex] = colors[i * 3];
+    colorGrid[gridIndex + 1] = colors[i * 3 + 1];
+    colorGrid[gridIndex + 2] = colors[i * 3 + 2];
     detailBiomes[i] = getTerrainDetailBiomeId(biome);
     detailBiomeFades[i] = getTerrainDetailBiomeFadeFromBlend(blend);
   }
@@ -2982,6 +3179,10 @@ function buildMidTile(cx, cz) {
   mesh.matrixAutoUpdate = false;
   mesh.updateMatrix();
   mesh.renderOrder = 0.5;
+  mesh.userData.colorGrid = colorGrid;
+  mesh.userData.gridStride = tileStride;
+  mesh.userData.tileSize = MID_TILE_SIZE;
+  mesh.userData.tileRes = MID_TILE_RES;
   return mesh;
 }
 
@@ -3023,6 +3224,158 @@ function sampleChunkHeightGridAt(x, z) {
 function sampleGroundHeightForCollision(x, z) {
   const fast = sampleChunkHeightGridAt(x, z);
   return Number.isFinite(fast) ? fast : heightAt(x, z);
+}
+
+const minimapColorScratch = { r: 0, g: 0, b: 0 };
+
+function syncMinimapCanvasSize() {
+  if (!minimapCanvas || !minimapCtx) return;
+  const rect = minimapCanvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.round(rect.width * dpr));
+  const height = Math.max(1, Math.round(rect.height * dpr));
+  if (width === minimapPixelWidth && height === minimapPixelHeight) return;
+  minimapPixelWidth = width;
+  minimapPixelHeight = height;
+  minimapCanvas.width = width;
+  minimapCanvas.height = height;
+  minimapCtx.imageSmoothingEnabled = false;
+  minimapImageData = minimapCtx.createImageData(width, height);
+  minimapPixelData = minimapImageData.data;
+}
+
+function normalizeYawDelta(delta) {
+  const twoPi = Math.PI * 2;
+  let next = delta % twoPi;
+  if (next > Math.PI) next -= twoPi;
+  if (next < -Math.PI) next += twoPi;
+  return next;
+}
+
+function sampleColorFromMeshGrid(mesh, x, z, size, res, out) {
+  if (!mesh) return false;
+  const grid = mesh.userData?.colorGrid;
+  if (!(grid instanceof Float32Array)) return false;
+  const stride = Number.isFinite(mesh.userData?.gridStride) ? mesh.userData.gridStride : res + 1;
+  const half = size * 0.5;
+  const localX = x - mesh.position.x;
+  const localZ = z - mesh.position.z;
+  if (localX < -half || localX > half || localZ < -half || localZ > half) return false;
+  const cellSize = size / res;
+  const gridX = clampNumber((localX + half) / cellSize, 0, res, 0);
+  const gridZ = clampNumber((localZ + half) / cellSize, 0, res, 0);
+  const x0 = Math.floor(gridX);
+  const z0 = Math.floor(gridZ);
+  const x1 = Math.min(res, x0 + 1);
+  const z1 = Math.min(res, z0 + 1);
+  const tx = gridX - x0;
+  const tz = gridZ - z0;
+  const i00 = (z0 * stride + x0) * 3;
+  const i10 = (z0 * stride + x1) * 3;
+  const i01 = (z1 * stride + x0) * 3;
+  const i11 = (z1 * stride + x1) * 3;
+  const r0 = grid[i00] + (grid[i10] - grid[i00]) * tx;
+  const r1 = grid[i01] + (grid[i11] - grid[i01]) * tx;
+  const g0 = grid[i00 + 1] + (grid[i10 + 1] - grid[i00 + 1]) * tx;
+  const g1 = grid[i01 + 1] + (grid[i11 + 1] - grid[i01 + 1]) * tx;
+  const b0 = grid[i00 + 2] + (grid[i10 + 2] - grid[i00 + 2]) * tx;
+  const b1 = grid[i01 + 2] + (grid[i11 + 2] - grid[i01 + 2]) * tx;
+  out.r = r0 + (r1 - r0) * tz;
+  out.g = g0 + (g1 - g0) * tz;
+  out.b = b0 + (b1 - b0) * tz;
+  return true;
+}
+
+function sampleColorFromTileMap(tileMap, size, res, x, z, out) {
+  if (!tileMap || tileMap.size === 0) return false;
+  const cx = Math.floor((x + size * 0.5) / size);
+  const cz = Math.floor((z + size * 0.5) / size);
+  const mesh = tileMap.get(`${cx},${cz}`);
+  if (!mesh) return false;
+  return sampleColorFromMeshGrid(mesh, x, z, size, res, out);
+}
+
+function sampleLoadedBiomeColorAt(x, z, out) {
+  if (sampleColorFromTileMap(chunks, CHUNK_SIZE, CHUNK_RES, x, z, out)) return out;
+  if (sampleColorFromTileMap(midTiles, MID_TILE_SIZE, MID_TILE_RES, x, z, out)) return out;
+  if (sampleColorFromTileMap(farTiles, FAR_TILE_SIZE, FAR_TILE_RES, x, z, out)) return out;
+  return null;
+}
+
+function renderMinimap() {
+  if (!minimapCtx || !minimapCanvas) return;
+  syncMinimapCanvasSize();
+  const width = minimapPixelWidth;
+  const height = minimapPixelHeight;
+  if (!width || !height) return;
+  const span = MINIMAP_WORLD_RADIUS * 2;
+  const startX = player.position.x - MINIMAP_WORLD_RADIUS;
+  const startZ = player.position.z - MINIMAP_WORLD_RADIUS;
+  const stepX = span / width;
+  const stepZ = span / height;
+  if (!minimapPixelData || minimapPixelData.length !== width * height * 4) {
+    minimapImageData = minimapCtx.createImageData(width, height);
+    minimapPixelData = minimapImageData.data;
+  }
+  const data = minimapPixelData;
+  let offset = 0;
+  for (let py = 0; py < height; py += 1) {
+    const worldZ = startZ + py * stepZ;
+    for (let px = 0; px < width; px += 1) {
+      const worldX = startX + px * stepX;
+      const color = sampleLoadedBiomeColorAt(worldX, worldZ, minimapColorScratch);
+      const r = clampNumber(color ? color.r : MINIMAP_FALLBACK_COLOR.r, 0, 1, 0) * 255;
+      const g = clampNumber(color ? color.g : MINIMAP_FALLBACK_COLOR.g, 0, 1, 0) * 255;
+      const b = clampNumber(color ? color.b : MINIMAP_FALLBACK_COLOR.b, 0, 1, 0) * 255;
+      data[offset] = Math.round(r);
+      data[offset + 1] = Math.round(g);
+      data[offset + 2] = Math.round(b);
+      data[offset + 3] = 255;
+      offset += 4;
+    }
+  }
+  minimapCtx.putImageData(minimapImageData, 0, 0);
+
+  const pointerSize = Math.max(6, Math.min(width, height) * 0.07);
+  minimapCtx.save();
+  minimapCtx.translate(width * 0.5, height * 0.5);
+  minimapCtx.rotate(player.yaw);
+  minimapCtx.beginPath();
+  minimapCtx.moveTo(0, -pointerSize);
+  minimapCtx.lineTo(pointerSize * 0.6, pointerSize * 0.7);
+  minimapCtx.lineTo(0, pointerSize * 0.4);
+  minimapCtx.lineTo(-pointerSize * 0.6, pointerSize * 0.7);
+  minimapCtx.closePath();
+  minimapCtx.fillStyle = "#e53935";
+  minimapCtx.strokeStyle = "rgba(0, 0, 0, 0.6)";
+  minimapCtx.lineWidth = Math.max(1, pointerSize * 0.15);
+  minimapCtx.fill();
+  minimapCtx.stroke();
+  minimapCtx.restore();
+}
+
+function updateMinimap() {
+  if (!minimapCtx) return;
+  const now = performance.now();
+  const interval = now - lastMinimapUpdateAt;
+  if (interval < MINIMAP_MIN_UPDATE_INTERVAL_MS) return;
+  const dx = player.position.x - lastMinimapSampleX;
+  const dz = player.position.z - lastMinimapSampleZ;
+  const moved =
+    !Number.isFinite(lastMinimapSampleX) ||
+    !Number.isFinite(lastMinimapSampleZ) ||
+    dx * dx + dz * dz >= MINIMAP_MOVE_THRESHOLD_SQ;
+  const yawDelta = Number.isFinite(lastMinimapSampleYaw)
+    ? Math.abs(normalizeYawDelta(player.yaw - lastMinimapSampleYaw))
+    : Infinity;
+  const turned = yawDelta >= MINIMAP_YAW_THRESHOLD;
+  const stale = interval >= MINIMAP_STALE_UPDATE_MS;
+  if (!moved && !turned && !stale) return;
+  renderMinimap();
+  lastMinimapUpdateAt = now;
+  lastMinimapSampleX = player.position.x;
+  lastMinimapSampleZ = player.position.z;
+  lastMinimapSampleYaw = player.yaw;
 }
 
 const player = {
@@ -3173,6 +3526,7 @@ window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  syncMinimapCanvasSize();
 });
 
 window.addEventListener("keydown", (event) => {
@@ -3346,6 +3700,7 @@ function animate() {
   updateMidTerrainFromPlayer();
   updateFarTerrainFromPlayer();
   updateBiomeHud();
+  updateMinimap();
   updateDayNightCycle(dt);
   updateStatusClock();
   updateStatusFps(dt);
