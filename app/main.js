@@ -8,6 +8,7 @@ import { createTerrainHeightSampler } from "./world/terrainNoise.js";
 import { createRuntimeActionExecutor } from "./actions/runtimeActions.js";
 import { createTraceLogger } from "./trace/traceLog.js";
 import { configureTerrainMaterial } from "./world/terrainShader.js";
+import { mapMinimapClickToWorld } from "./minimap/clickTeleport.js";
 import { PROTOCOL_VERSION } from "../shared/protocol.js";
 
 const canvas = document.getElementById("scene");
@@ -3370,6 +3371,22 @@ function sampleGroundHeightForCollision(x, z) {
   return Number.isFinite(fast) ? fast : heightAt(x, z);
 }
 
+function teleportPlayerToWorldCoordinates(x, z) {
+  if (!Number.isFinite(x) || !Number.isFinite(z)) return false;
+  const groundY = sampleGroundHeightForCollision(x, z);
+  if (!Number.isFinite(groundY)) return false;
+  player.position.set(x, groundY, z);
+  player.velocity.set(0, 0, 0);
+  player.grounded = false;
+  const cx = Math.floor(player.position.x / CHUNK_SIZE);
+  const cz = Math.floor(player.position.z / CHUNK_SIZE);
+  ensureChunks(cx, cz);
+  minimapNeedsRender = true;
+  updateBiomeHud();
+  saveState();
+  return true;
+}
+
 const minimapColorScratch = { r: 0, g: 0, b: 0 };
 const minimapWaterBaseScratch = new THREE.Color();
 const minimapWaterShallowScratch = new THREE.Color();
@@ -3891,6 +3908,25 @@ minimapZoomInBtn?.addEventListener("click", (event) => {
 minimapZoomOutBtn?.addEventListener("click", (event) => {
   event.preventDefault();
   setMinimapZoomIndex(minimapZoomIndex + 1);
+});
+
+minimapCanvas?.addEventListener("click", (event) => {
+  if (event.button !== 0) return;
+  const worldPoint = mapMinimapClickToWorld(
+    event,
+    minimapCanvas,
+    player.position.x,
+    player.position.z,
+    minimapWorldRadius
+  );
+  if (!worldPoint) return;
+  event.preventDefault();
+  if (!teleportPlayerToWorldCoordinates(worldPoint.x, worldPoint.z)) return;
+  addChatEntry({
+    role: "codex_output",
+    content: `Teleported to ${Math.round(worldPoint.x)}, ${Math.round(worldPoint.z)} from minimap click.`,
+    ts: Date.now(),
+  });
 });
 
 window.addEventListener("mousemove", (event) => {

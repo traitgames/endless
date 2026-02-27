@@ -306,7 +306,8 @@ canvas {
   display: block;
   image-rendering: pixelated;
   background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.06), rgba(5, 8, 10, 0.9));
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: crosshair;
 }
 
 #minimap-controls {
