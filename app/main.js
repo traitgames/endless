@@ -3681,7 +3681,9 @@ const player = {
   pitch: state.player.pitch,
   grounded: false,
 };
-maybeRetargetInitialSpawnToLand();
+if (!state.__loadedFromStorage) {
+  maybeRetargetInitialSpawnToLand();
+}
 player.position.set(state.player.position.x, state.player.position.y, state.player.position.z);
 syncAtmosphereFromState();
 syncWaterColorFromState();
@@ -3877,7 +3879,13 @@ window.addEventListener("keydown", (event) => {
 
   keys.add(event.code);
 
-  if (event.code === "KeyR") {
+  if (
+    event.code === "KeyR" &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.metaKey &&
+    !event.shiftKey
+  ) {
     resetPlayerToLandSpawnNearOrigin();
   }
 }, true);
