@@ -1008,6 +1008,9 @@ const MINIMAP_STALE_UPDATE_MS = 1000;
 const MINIMAP_MOVE_THRESHOLD_SQ = 9;
 const MINIMAP_YAW_THRESHOLD = 0.05;
 const MINIMAP_FALLBACK_COLOR = { r: 0.06, g: 0.08, b: 0.1 };
+const MINIMAP_WATER_SHALLOW_TINT = new THREE.Color("#3f86a5");
+const MINIMAP_WATER_DEEP_TINT = new THREE.Color("#0b2433");
+const MINIMAP_WATER_DEPTH_MAX = 14;
 
 function findClosestMinimapZoomIndex(targetMeters) {
   let bestIndex = 0;
@@ -2540,7 +2543,6 @@ function buildChunkCoordinateQueue(cx, cz, radius = CHUNK_RADIUS) {
 function buildMidTileCoordinateQueue(cx, cz, radius = MID_TILE_RADIUS) {
   const coords = [];
   const outerRadiusSq = MID_TILE_CULL_RADIUS * MID_TILE_CULL_RADIUS;
-  const innerRadiusSq = MID_TILE_INNER_CULL_RADIUS * MID_TILE_INNER_CULL_RADIUS;
   const playerX = player.position.x;
   const playerZ = player.position.z;
   for (let dz = -radius; dz <= radius; dz += 1) {
@@ -2551,7 +2553,6 @@ function buildMidTileCoordinateQueue(cx, cz, radius = MID_TILE_RADIUS) {
       const centerZ = tileZ * MID_TILE_SIZE - playerZ;
       const d2 = centerX * centerX + centerZ * centerZ;
       if (d2 > outerRadiusSq) continue;
-      if (innerRadiusSq > 0 && d2 <= innerRadiusSq) continue;
       coords.push({ x: tileX, z: tileZ, d2 });
     }
   }
@@ -2562,7 +2563,6 @@ function buildMidTileCoordinateQueue(cx, cz, radius = MID_TILE_RADIUS) {
 function buildFarTileCoordinateQueue(cx, cz, radius = FAR_TILE_RADIUS) {
   const coords = [];
   const outerRadiusSq = FAR_TILE_CULL_RADIUS * FAR_TILE_CULL_RADIUS;
-  const innerRadiusSq = FAR_TILE_INNER_CULL_RADIUS * FAR_TILE_INNER_CULL_RADIUS;
   const playerX = player.position.x;
   const playerZ = player.position.z;
   for (let dz = -radius; dz <= radius; dz += 1) {
@@ -2573,7 +2573,6 @@ function buildFarTileCoordinateQueue(cx, cz, radius = FAR_TILE_RADIUS) {
       const centerZ = tileZ * FAR_TILE_SIZE - playerZ;
       const d2 = centerX * centerX + centerZ * centerZ;
       if (d2 > outerRadiusSq) continue;
-      if (innerRadiusSq > 0 && d2 <= innerRadiusSq) continue;
       coords.push({ x: tileX, z: tileZ, d2 });
     }
   }
@@ -2656,6 +2655,11 @@ function ensureMidTerrainIncremental(cx, cz, options = {}) {
       const key = `${x},${z}`;
       if (!midTiles.has(key)) {
         const mesh = buildMidTile(x, z);
+        if (MID_TILE_INNER_CULL_RADIUS > 0) {
+          const dx = x * MID_TILE_SIZE - player.position.x;
+          const dz = z * MID_TILE_SIZE - player.position.z;
+          mesh.visible = dx * dx + dz * dz > MID_TILE_INNER_CULL_RADIUS * MID_TILE_INNER_CULL_RADIUS;
+        }
         scene.add(mesh);
         midTiles.set(key, mesh);
       }
@@ -2679,10 +2683,14 @@ function ensureMidTerrainIncremental(cx, cz, options = {}) {
       const centerX = x * MID_TILE_SIZE - playerX;
       const centerZ = z * MID_TILE_SIZE - playerZ;
       const d2 = centerX * centerX + centerZ * centerZ;
-      if (d2 > outerKeepRadiusSq || (innerRadiusSq > 0 && d2 <= innerRadiusSq)) {
+      if (d2 > outerKeepRadiusSq) {
         scene.remove(mesh);
         mesh.geometry.dispose();
         midTiles.delete(key);
+        continue;
+      }
+      if (innerRadiusSq > 0) {
+        mesh.visible = d2 > innerRadiusSq;
       }
     }
 
@@ -2710,6 +2718,11 @@ function ensureFarTerrainIncremental(cx, cz, options = {}) {
       const key = `${x},${z}`;
       if (!farTiles.has(key)) {
         const mesh = buildFarTile(x, z);
+        if (FAR_TILE_INNER_CULL_RADIUS > 0) {
+          const dx = x * FAR_TILE_SIZE - player.position.x;
+          const dz = z * FAR_TILE_SIZE - player.position.z;
+          mesh.visible = dx * dx + dz * dz > FAR_TILE_INNER_CULL_RADIUS * FAR_TILE_INNER_CULL_RADIUS;
+        }
         scene.add(mesh);
         farTiles.set(key, mesh);
       }
@@ -2733,10 +2746,14 @@ function ensureFarTerrainIncremental(cx, cz, options = {}) {
       const centerX = x * FAR_TILE_SIZE - playerX;
       const centerZ = z * FAR_TILE_SIZE - playerZ;
       const d2 = centerX * centerX + centerZ * centerZ;
-      if (d2 > outerKeepRadiusSq || (innerRadiusSq > 0 && d2 <= innerRadiusSq)) {
+      if (d2 > outerKeepRadiusSq) {
         scene.remove(mesh);
         mesh.geometry.dispose();
         farTiles.delete(key);
+        continue;
+      }
+      if (innerRadiusSq > 0) {
+        mesh.visible = d2 > innerRadiusSq;
       }
     }
 
@@ -3153,6 +3170,7 @@ function buildFarTile(cx, cz) {
   const tileStride = FAR_TILE_RES + 1;
   const cellSize = FAR_TILE_SIZE / FAR_TILE_RES;
   const colorGrid = new Float32Array(tileStride * tileStride * 3);
+  const heightGrid = new Float32Array(tileStride * tileStride);
   const tileBiomeBlendScratch = createBiomeBlendSampleResult();
   for (let i = 0; i < vertices.count; i += 1) {
     const localX = vertices.getX(i);
@@ -3167,6 +3185,7 @@ function buildFarTile(cx, cz) {
         ? heightAt.sampleWithBiomeBlend(x, z, blend)
         : heightAt(x, z);
     vertices.setY(i, y);
+    heightGrid[gz * tileStride + gx] = y;
     const biome = blend.dominantBiome || getBiomeAt(x, z);
     const color = fillTerrainColorFromBiomeBlend(blend);
     const n = hash2(Math.floor(x * 0.5), Math.floor(z * 0.5));
@@ -3194,6 +3213,7 @@ function buildFarTile(cx, cz) {
   mesh.updateMatrix();
   mesh.renderOrder = 0;
   mesh.userData.colorGrid = colorGrid;
+  mesh.userData.heightGrid = heightGrid;
   mesh.userData.gridStride = tileStride;
   mesh.userData.tileSize = FAR_TILE_SIZE;
   mesh.userData.tileRes = FAR_TILE_RES;
@@ -3210,6 +3230,7 @@ function buildMidTile(cx, cz) {
   const tileStride = MID_TILE_RES + 1;
   const cellSize = MID_TILE_SIZE / MID_TILE_RES;
   const colorGrid = new Float32Array(tileStride * tileStride * 3);
+  const heightGrid = new Float32Array(tileStride * tileStride);
   const tileBiomeBlendScratch = createBiomeBlendSampleResult();
   for (let i = 0; i < vertices.count; i += 1) {
     const localX = vertices.getX(i);
@@ -3224,6 +3245,7 @@ function buildMidTile(cx, cz) {
         ? heightAt.sampleWithBiomeBlend(x, z, blend)
         : heightAt(x, z);
     vertices.setY(i, y);
+    heightGrid[gz * tileStride + gx] = y;
     const biome = blend.dominantBiome || getBiomeAt(x, z);
     const color = fillTerrainColorFromBiomeBlend(blend);
     const n = hash2(Math.floor(x * 0.5), Math.floor(z * 0.5));
@@ -3251,6 +3273,7 @@ function buildMidTile(cx, cz) {
   mesh.updateMatrix();
   mesh.renderOrder = 0.5;
   mesh.userData.colorGrid = colorGrid;
+  mesh.userData.heightGrid = heightGrid;
   mesh.userData.gridStride = tileStride;
   mesh.userData.tileSize = MID_TILE_SIZE;
   mesh.userData.tileRes = MID_TILE_RES;
@@ -3298,6 +3321,9 @@ function sampleGroundHeightForCollision(x, z) {
 }
 
 const minimapColorScratch = { r: 0, g: 0, b: 0 };
+const minimapWaterBaseScratch = new THREE.Color();
+const minimapWaterShallowScratch = new THREE.Color();
+const minimapWaterDeepScratch = new THREE.Color();
 
 function syncMinimapCanvasSize() {
   if (!minimapCanvas || !minimapCtx) return;
@@ -3358,6 +3384,36 @@ function sampleColorFromMeshGrid(mesh, x, z, size, res, out) {
   return true;
 }
 
+function sampleHeightFromMeshGrid(mesh, x, z, size, res) {
+  if (!mesh) return null;
+  const grid = mesh.userData?.heightGrid;
+  if (!(grid instanceof Float32Array)) return null;
+  const stride = Number.isFinite(mesh.userData?.gridStride) ? mesh.userData.gridStride : res + 1;
+  const half = size * 0.5;
+  const localX = x - mesh.position.x;
+  const localZ = z - mesh.position.z;
+  if (localX < -half || localX > half || localZ < -half || localZ > half) return null;
+  const cellSize = size / res;
+  const gridX = clampNumber((localX + half) / cellSize, 0, res, 0);
+  const gridZ = clampNumber((localZ + half) / cellSize, 0, res, 0);
+  const x0 = Math.floor(gridX);
+  const z0 = Math.floor(gridZ);
+  const x1 = Math.min(res, x0 + 1);
+  const z1 = Math.min(res, z0 + 1);
+  const tx = gridX - x0;
+  const tz = gridZ - z0;
+  const h00 = grid[z0 * stride + x0];
+  const h10 = grid[z0 * stride + x1];
+  const h01 = grid[z1 * stride + x0];
+  const h11 = grid[z1 * stride + x1];
+  if (tx + tz <= 1) {
+    return h00 + (h10 - h00) * tx + (h01 - h00) * tz;
+  }
+  const ux = 1 - tx;
+  const uz = 1 - tz;
+  return h11 + (h01 - h11) * ux + (h10 - h11) * uz;
+}
+
 function sampleColorFromTileMap(tileMap, size, res, x, z, out) {
   if (!tileMap || tileMap.size === 0) return false;
   const cx = Math.floor((x + size * 0.5) / size);
@@ -3367,13 +3423,40 @@ function sampleColorFromTileMap(tileMap, size, res, x, z, out) {
   return sampleColorFromMeshGrid(mesh, x, z, size, res, out);
 }
 
-function sampleLoadedBiomeColorAt(x, z, out, useNearOnly = false) {
-  if (useNearOnly) {
-    if (sampleColorFromTileMap(chunks, CHUNK_SIZE, CHUNK_RES, x, z, out)) return out;
-    return null;
+function sampleHeightFromTileMap(tileMap, size, res, x, z) {
+  if (!tileMap || tileMap.size === 0) return null;
+  const cx = Math.floor((x + size * 0.5) / size);
+  const cz = Math.floor((z + size * 0.5) / size);
+  const mesh = tileMap.get(`${cx},${cz}`);
+  if (!mesh) return null;
+  return sampleHeightFromMeshGrid(mesh, x, z, size, res);
+}
+
+function sampleLoadedBiomeColorAt(x, z, out, mode = "far") {
+  switch (mode) {
+    case "near":
+      if (sampleColorFromTileMap(chunks, CHUNK_SIZE, CHUNK_RES, x, z, out)) return out;
+      return null;
+    case "mid":
+      if (sampleColorFromTileMap(midTiles, MID_TILE_SIZE, MID_TILE_RES, x, z, out)) return out;
+      return null;
+    case "far":
+    default:
+      if (sampleColorFromTileMap(farTiles, FAR_TILE_SIZE, FAR_TILE_RES, x, z, out)) return out;
+      return null;
   }
-  if (sampleColorFromTileMap(farTiles, FAR_TILE_SIZE, FAR_TILE_RES, x, z, out)) return out;
-  return null;
+}
+
+function sampleLoadedHeightAt(x, z, mode = "far") {
+  switch (mode) {
+    case "near":
+      return sampleChunkHeightGridAt(x, z);
+    case "mid":
+      return sampleHeightFromTileMap(midTiles, MID_TILE_SIZE, MID_TILE_RES, x, z);
+    case "far":
+    default:
+      return sampleHeightFromTileMap(farTiles, FAR_TILE_SIZE, FAR_TILE_RES, x, z);
+  }
 }
 
 function renderMinimap() {
@@ -3383,7 +3466,15 @@ function renderMinimap() {
   const height = minimapPixelHeight;
   if (!width || !height) return;
   const nearSafeRadius = NEAR_FADE_END_METERS - CHUNK_SIZE * 0.5;
-  const useNearOnly = minimapWorldRadius * Math.SQRT2 <= nearSafeRadius;
+  const midSafeRadius = MID_TILE_CULL_RADIUS - MID_TILE_HALF_DIAGONAL;
+  const maxSquareRadius = minimapWorldRadius * Math.SQRT2;
+  const useNearOnly = minimapZoomIndex <= 1 && maxSquareRadius <= nearSafeRadius;
+  const useMidOnly = !useNearOnly && maxSquareRadius <= midSafeRadius;
+  const sampleMode = useNearOnly ? "near" : useMidOnly ? "mid" : "far";
+  const waterLevel = state.world.water.level;
+  minimapWaterBaseScratch.set(state.world.water.colorHex);
+  minimapWaterShallowScratch.copy(minimapWaterBaseScratch).lerp(MINIMAP_WATER_SHALLOW_TINT, 0.45);
+  minimapWaterDeepScratch.copy(minimapWaterBaseScratch).lerp(MINIMAP_WATER_DEEP_TINT, 0.7);
   const span = minimapWorldRadius * 2;
   const startX = player.position.x - minimapWorldRadius;
   const startZ = player.position.z - minimapWorldRadius;
@@ -3399,13 +3490,25 @@ function renderMinimap() {
     const worldZ = startZ + py * stepZ;
     for (let px = 0; px < width; px += 1) {
       const worldX = startX + px * stepX;
-      const color = sampleLoadedBiomeColorAt(worldX, worldZ, minimapColorScratch, useNearOnly);
-      const r = clampNumber(color ? color.r : MINIMAP_FALLBACK_COLOR.r, 0, 1, 0) * 255;
-      const g = clampNumber(color ? color.g : MINIMAP_FALLBACK_COLOR.g, 0, 1, 0) * 255;
-      const b = clampNumber(color ? color.b : MINIMAP_FALLBACK_COLOR.b, 0, 1, 0) * 255;
-      data[offset] = Math.round(r);
-      data[offset + 1] = Math.round(g);
-      data[offset + 2] = Math.round(b);
+      const heightSample = sampleLoadedHeightAt(worldX, worldZ, sampleMode);
+      let r = MINIMAP_FALLBACK_COLOR.r;
+      let g = MINIMAP_FALLBACK_COLOR.g;
+      let b = MINIMAP_FALLBACK_COLOR.b;
+      if (Number.isFinite(heightSample) && heightSample < waterLevel) {
+        const depth = waterLevel - heightSample;
+        const t = clampNumber(depth / MINIMAP_WATER_DEPTH_MAX, 0, 1, 0);
+        r = minimapWaterShallowScratch.r + (minimapWaterDeepScratch.r - minimapWaterShallowScratch.r) * t;
+        g = minimapWaterShallowScratch.g + (minimapWaterDeepScratch.g - minimapWaterShallowScratch.g) * t;
+        b = minimapWaterShallowScratch.b + (minimapWaterDeepScratch.b - minimapWaterShallowScratch.b) * t;
+      } else {
+        const color = sampleLoadedBiomeColorAt(worldX, worldZ, minimapColorScratch, sampleMode);
+        r = clampNumber(color ? color.r : MINIMAP_FALLBACK_COLOR.r, 0, 1, 0);
+        g = clampNumber(color ? color.g : MINIMAP_FALLBACK_COLOR.g, 0, 1, 0);
+        b = clampNumber(color ? color.b : MINIMAP_FALLBACK_COLOR.b, 0, 1, 0);
+      }
+      data[offset] = Math.round(r * 255);
+      data[offset + 1] = Math.round(g * 255);
+      data[offset + 2] = Math.round(b * 255);
       data[offset + 3] = 255;
       offset += 4;
     }
