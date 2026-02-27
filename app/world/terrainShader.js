@@ -144,9 +144,10 @@ ${terrainFogUniformChunk}
       vec3 snow = vec3(0.85, 0.88, 0.9);
       vec3 baseColor = mix(grass, denseGrass, smoothstep(0.0, 1.0, n));
       baseColor = mix(baseColor, rock, smoothstep(0.26, 0.72, slope));
-      baseColor = mix(sand, baseColor, smoothstep(uWaterLevel - 0.4, uWaterLevel + 2.4, h));
+      // Keep shoreline tint tightly coupled to the actual water plane.
+      baseColor = mix(sand, baseColor, smoothstep(uWaterLevel - 0.15, uWaterLevel + 0.85, h));
       #ifdef USE_COLOR
-      float biomeColorBlend = smoothstep(uWaterLevel + 0.2, uWaterLevel + 7.5, h);
+      float biomeColorBlend = smoothstep(uWaterLevel + 0.15, uWaterLevel + 2.6, h);
       baseColor = mix(baseColor, vColor.rgb, 0.58 * biomeColorBlend);
       #endif
       baseColor = mix(baseColor, snow, smoothstep(38.0, 56.0, h));

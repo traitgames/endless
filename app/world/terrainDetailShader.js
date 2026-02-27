@@ -39,7 +39,8 @@ export function buildTerrainDetailFragmentChunk() {
 
         float biomeId = floor(biomeType + 0.5);
         vec2 p = worldPos.xz;
-        float moistureMask = smoothstep(waterLevel + 0.25, waterLevel + 3.2, worldPos.y);
+        // Limit damp/dry transition so it aligns with the actual water plane.
+        float moistureMask = smoothstep(waterLevel + 0.1, waterLevel + 1.4, worldPos.y);
         float boundaryFade = smoothstep(0.08, 0.95, clamp(vDetailBiomeFade, 0.0, 1.0));
         float mask = clamp(fade * moistureMask * boundaryFade, 0.0, 1.0);
         if (mask <= 0.001) return color;

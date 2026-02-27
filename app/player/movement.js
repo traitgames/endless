@@ -1,13 +1,19 @@
+export const MOVEMENT_VERSION = "2026-02-27-1";
+
 export function updatePlayerRuntime({
   dt,
   keys,
   player,
   playerHeight,
+  waterLevel,
   heightAt,
   sampleGroundHeight,
   ensureChunks,
   chunkSize,
   xyzEl,
+  feetYEl,
+  eyeYEl,
+  waterYEl,
   chunkEl,
   camera,
   Vector3,
@@ -45,18 +51,31 @@ export function updatePlayerRuntime({
       ? sampleGroundHeight(player.position.x, player.position.z)
       : heightAt(player.position.x, player.position.z);
   const ground = groundHeight;
-  if (player.position.y <= ground) {
+  player._lastGroundHeight = groundHeight;
+  const groundEpsilon = 0.02;
+  if (player.position.y <= ground + groundEpsilon) {
     player.position.y = ground;
-    player.velocity.y = 0;
+    if (player.velocity.y < 0) player.velocity.y = 0;
     player.grounded = true;
+  } else {
+    player.grounded = false;
   }
 
+  const formatCoord = (value) => {
+    const rounded = Math.round(value * 10) / 10;
+    return Object.is(rounded, -0) ? "0.0" : rounded.toFixed(1);
+  };
   if (xyzEl) {
-    const formatCoord = (value) => {
-      const rounded = Math.round(value * 10) / 10;
-      return Object.is(rounded, -0) ? "0.0" : rounded.toFixed(1);
-    };
     xyzEl.textContent = `${formatCoord(player.position.x)}, ${formatCoord(groundHeight)}, ${formatCoord(player.position.z)}`;
+  }
+  if (feetYEl) {
+    feetYEl.textContent = formatCoord(groundHeight);
+  }
+  if (eyeYEl) {
+    eyeYEl.textContent = formatCoord(player.position.y + playerHeight);
+  }
+  if (waterYEl) {
+    waterYEl.textContent = formatCoord(waterLevel);
   }
 
   const cx = Math.floor(player.position.x / chunkSize);

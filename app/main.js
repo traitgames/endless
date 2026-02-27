@@ -2,7 +2,7 @@ import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
 import { createBridgeClient } from "./bridgeClient.js";
 import { createUpdateEngine } from "./updateEngine.js";
 import { createChatStore } from "./chat/chatStore.js";
-import { updatePlayerRuntime } from "./player/movement.js";
+import { updatePlayerRuntime, MOVEMENT_VERSION } from "./player/movement.js?v=20260227";
 import { loadPersistedState, savePersistedState, clampNumber, toColorHex } from "./state/persistence.js";
 import { createTerrainHeightSampler } from "./world/terrainNoise.js";
 import { createRuntimeActionExecutor } from "./actions/runtimeActions.js";
@@ -13,6 +13,14 @@ import { PROTOCOL_VERSION } from "../shared/protocol.js";
 const canvas = document.getElementById("scene");
 const seedEl = document.getElementById("seed");
 const xyzEl = document.getElementById("xyz");
+const feetYEl = document.getElementById("feet-y");
+const eyeYEl = document.getElementById("eye-y");
+const waterYEl = document.getElementById("water-y");
+const playerYEl = document.getElementById("player-y");
+const cameraYEl = document.getElementById("camera-y");
+const velYEl = document.getElementById("vel-y");
+const groundedEl = document.getElementById("grounded");
+const moveVersionEl = document.getElementById("move-version");
 const chunkEl = document.getElementById("chunk");
 
 const biomeEl = document.getElementById("biome");
@@ -3927,17 +3935,52 @@ document.addEventListener("pointerlockchange", () => {
 
 const clock = new THREE.Clock();
 
+function formatHudCoord(value) {
+  const rounded = Math.round(value * 10) / 10;
+  return Object.is(rounded, -0) ? "0.0" : rounded.toFixed(1);
+}
+
+function updateHudYReadout() {
+  if (
+    !feetYEl &&
+    !eyeYEl &&
+    !waterYEl &&
+    !playerYEl &&
+    !cameraYEl &&
+    !velYEl &&
+    !groundedEl &&
+    !moveVersionEl
+  ) {
+    return;
+  }
+  const groundY =
+    Number.isFinite(player._lastGroundHeight) ? player._lastGroundHeight : sampleGroundHeightForCollision(player.position.x, player.position.z);
+  const feetY = Number.isFinite(groundY) ? groundY : player.position.y;
+  if (feetYEl) feetYEl.textContent = formatHudCoord(feetY);
+  if (eyeYEl) eyeYEl.textContent = formatHudCoord(player.position.y + PLAYER_HEIGHT);
+  if (waterYEl) waterYEl.textContent = formatHudCoord(state.world.water.level);
+  if (playerYEl) playerYEl.textContent = formatHudCoord(player.position.y);
+  if (cameraYEl) cameraYEl.textContent = formatHudCoord(camera.position.y);
+  if (velYEl) velYEl.textContent = formatHudCoord(player.velocity.y);
+  if (groundedEl) groundedEl.textContent = player.grounded ? "true" : "false";
+  if (moveVersionEl) moveVersionEl.textContent = MOVEMENT_VERSION;
+}
+
 function updatePlayer(dt) {
   updatePlayerRuntime({
     dt,
     keys,
     player,
     playerHeight: PLAYER_HEIGHT,
+    waterLevel: state.world.water.level,
     heightAt,
     sampleGroundHeight: sampleGroundHeightForCollision,
     ensureChunks: ensureChunksRuntimeIncremental,
     chunkSize: CHUNK_SIZE,
     xyzEl,
+    feetYEl,
+    eyeYEl,
+    waterYEl,
     chunkEl,
     camera,
     Vector3: THREE.Vector3,
@@ -3986,6 +4029,7 @@ function animate() {
   applyQueuedLookInput(dt);
   if (!chunkBuildInProgress || chunkBuildContext === "startup") {
     updatePlayer(dt);
+    updateHudYReadout();
   } else {
     camera.rotation.set(player.pitch, player.yaw, 0, "YXZ");
   }
