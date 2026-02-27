@@ -2,6 +2,7 @@ export function updatePlayerRuntime({
   dt,
   keys,
   player,
+  playerHeight,
   heightAt,
   sampleGroundHeight,
   ensureChunks,
@@ -43,7 +44,7 @@ export function updatePlayerRuntime({
     typeof sampleGroundHeight === "function"
       ? sampleGroundHeight(player.position.x, player.position.z)
       : heightAt(player.position.x, player.position.z);
-  const ground = groundHeight + 2.2;
+  const ground = groundHeight;
   if (player.position.y <= ground) {
     player.position.y = ground;
     player.velocity.y = 0;
@@ -55,7 +56,7 @@ export function updatePlayerRuntime({
       const rounded = Math.round(value * 10) / 10;
       return Object.is(rounded, -0) ? "0.0" : rounded.toFixed(1);
     };
-    xyzEl.textContent = `${formatCoord(player.position.x)}, ${formatCoord(player.position.y)}, ${formatCoord(player.position.z)}`;
+    xyzEl.textContent = `${formatCoord(player.position.x)}, ${formatCoord(groundHeight)}, ${formatCoord(player.position.z)}`;
   }
 
   const cx = Math.floor(player.position.x / chunkSize);
@@ -67,6 +68,6 @@ export function updatePlayerRuntime({
     chunkEl.textContent = `${cx},${cz}`;
   }
 
-  camera.position.copy(player.position);
+  camera.position.set(player.position.x, player.position.y + playerHeight, player.position.z);
   camera.rotation.set(player.pitch, player.yaw, 0, "YXZ");
 }

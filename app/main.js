@@ -569,7 +569,7 @@ const DEFAULT_STATE = {
 };
 
 const LAND_TARGET_CLEARANCE_Y = 0.4;
-const PLAYER_TARGET_HEIGHT_OFFSET = 3;
+const PLAYER_HEIGHT = 1.7;
 const BIOME_TP_MAX_ATTEMPTS = 5000;
 const BIOME_TP_EXTRA_RINGS_AFTER_FIRST_MATCH = 6;
 const BIOME_CENTER_TARGET_SCORE = 12;
@@ -861,6 +861,7 @@ const atmosphereTemp = {
   sunPos: new THREE.Vector3(),
   moonPos: new THREE.Vector3(),
   fillPos: new THREE.Vector3(),
+  playerEyePos: new THREE.Vector3(),
   skyTop: new THREE.Color(),
   skyHorizon: new THREE.Color(),
   skyGround: new THREE.Color(),
@@ -1679,6 +1680,8 @@ function updateDayNightCycle(dt) {
   state.timeOfDay = cycle;
   const sunAngle = cycle * Math.PI * 2 - Math.PI / 2;
   const moonAngle = sunAngle + Math.PI;
+  const playerEyeY = player.position.y + PLAYER_HEIGHT;
+  const playerEyePos = atmosphereTemp.playerEyePos.set(player.position.x, playerEyeY, player.position.z);
 
   const sunVector = atmosphereTemp.sunVector.set(
     Math.cos(sunAngle),
@@ -1697,12 +1700,12 @@ function updateDayNightCycle(dt) {
   const twilightBand = 1 - clampNumber(Math.abs(sunVector.y) / 0.28, 0, 1, 1);
   const twilight = twilightBand * (0.35 + 0.65 * nightAmount);
 
-  const sunPos = atmosphereTemp.sunPos.copy(sunVector).multiplyScalar(DAY_NIGHT.sunDistance).add(player.position);
-  const moonPos = atmosphereTemp.moonPos.copy(moonVector).multiplyScalar(DAY_NIGHT.moonDistance).add(player.position);
+  const sunPos = atmosphereTemp.sunPos.copy(sunVector).multiplyScalar(DAY_NIGHT.sunDistance).add(playerEyePos);
+  const moonPos = atmosphereTemp.moonPos.copy(moonVector).multiplyScalar(DAY_NIGHT.moonDistance).add(playerEyePos);
   const fillVector = atmosphereTemp.fillVector
     .set(-sunVector.x * 0.85, Math.max(0.2, 0.28 + nightAmount * 0.52), -sunVector.z * 0.85)
     .normalize();
-  const fillPos = atmosphereTemp.fillPos.copy(fillVector).multiplyScalar(DAY_NIGHT.sunDistance * 0.78).add(player.position);
+  const fillPos = atmosphereTemp.fillPos.copy(fillVector).multiplyScalar(DAY_NIGHT.sunDistance * 0.78).add(playerEyePos);
   sunLight.position.copy(sunPos);
   moonLight.position.copy(moonPos);
   shadowFillLight.position.copy(fillPos);
@@ -1766,11 +1769,11 @@ function updateDayNightCycle(dt) {
   ambientLight.intensity = 0.045 + dayAmount * 0.17 + twilight * 0.05;
   ambientLight.color.copy(dynamicLightColors.nightAmbient).lerp(dynamicLightColors.dayAmbient, dayAmount);
   const nightGlow = smoothstep(0.2, 1, nightAmount);
-  playerGlowLight.position.set(player.position.x, player.position.y + 1.4, player.position.z);
+  playerGlowLight.position.set(player.position.x, playerEyeY + 1.4, player.position.z);
   playerGlowLight.intensity = 0.06 + twilight * 0.08 + nightGlow * 1.15;
   playerGroundFill.color.copy(dynamicLightColors.nightShadowFill).lerp(dynamicLightColors.dayShadowFill, dayAmount * 0.45);
-  playerGroundFill.position.set(player.position.x, player.position.y + 8.8, player.position.z);
-  playerGroundFill.target.position.set(player.position.x, player.position.y - 1.6, player.position.z);
+  playerGroundFill.position.set(player.position.x, playerEyeY + 8.8, player.position.z);
+  playerGroundFill.target.position.set(player.position.x, playerEyeY - 1.6, player.position.z);
   playerGroundFill.intensity = 0.08 + twilight * 0.11 + nightGlow * 1.05;
 
   moon.material.opacity = clampNumber(0.08 + nightAmount * 0.9, 0.08, 0.95, 0.4);
@@ -2396,7 +2399,7 @@ function toPlayerPlacementTarget(x, z, groundY) {
   return {
     x,
     z,
-    y: Math.max(groundY + PLAYER_TARGET_HEIGHT_OFFSET, state.world.water.level + PLAYER_TARGET_HEIGHT_OFFSET),
+    y: groundY,
   };
 }
 
@@ -2505,7 +2508,7 @@ function resetPlayerToLandSpawnNearOrigin() {
   if (target) {
     player.position.set(target.x, target.y, target.z);
   } else {
-    player.position.set(0, 12, 0);
+    player.position.set(0, heightAt(0, 0), 0);
   }
   player.velocity.set(0, 0, 0);
   player.grounded = false;
@@ -3929,6 +3932,7 @@ function updatePlayer(dt) {
     dt,
     keys,
     player,
+    playerHeight: PLAYER_HEIGHT,
     heightAt,
     sampleGroundHeight: sampleGroundHeightForCollision,
     ensureChunks: ensureChunksRuntimeIncremental,
