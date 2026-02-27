@@ -603,7 +603,9 @@ const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(state.world.fog.colorHex, state.world.fog.density);
 scene.background = new THREE.Color("#8fc4ff");
 
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
+const CAMERA_NEAR_METERS = 0.1;
+const CAMERA_FAR_BASE_METERS = 10000;
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, CAMERA_NEAR_METERS, CAMERA_FAR_BASE_METERS);
 
 const hemiLight = new THREE.HemisphereLight(0xc6e0ff, 0x7f9974, 0.62);
 scene.add(hemiLight);
@@ -992,6 +994,9 @@ const FAR_TILE_RES = 8;
 const FAR_TILE_RADIUS = Math.ceil(FAR_RADIUS_METERS / FAR_TILE_SIZE);
 const FAR_BLEND_START_METERS = 2000;
 const FAR_BLEND_END_METERS = 3000;
+const FAR_EDGE_FADE_RANGE_METERS = 1200;
+const FAR_EDGE_FADE_END_METERS = FAR_RADIUS_METERS;
+const FAR_EDGE_FADE_START_METERS = Math.max(0, FAR_EDGE_FADE_END_METERS - FAR_EDGE_FADE_RANGE_METERS);
 const FAR_NIGHT_DARKEN_STRENGTH = 1;
 const FAR_NIGHT_FOG_STRENGTH = 1;
 const FAR_NIGHT_DARKEN_START = FAR_BLEND_START_METERS;
@@ -1001,6 +1006,10 @@ const FAR_TILE_HALF_DIAGONAL = FAR_TILE_SIZE * Math.SQRT2 * 0.5;
 const FAR_TILE_CULL_RADIUS = FAR_RADIUS_METERS + FAR_TILE_HALF_DIAGONAL;
 const FAR_TILE_KEEP_RADIUS = FAR_TILE_CULL_RADIUS + FAR_TILE_SIZE;
 const FAR_TILE_INNER_CULL_RADIUS = Math.max(0, FAR_BLEND_START_METERS - FAR_TILE_HALF_DIAGONAL);
+const CAMERA_FAR_EXTRA_METERS = 400;
+const CAMERA_FAR_METERS = Math.max(CAMERA_FAR_BASE_METERS, FAR_EDGE_FADE_END_METERS + CAMERA_FAR_EXTRA_METERS);
+camera.far = CAMERA_FAR_METERS;
+camera.updateProjectionMatrix();
 const MINIMAP_ZOOM_PRESETS_METERS = [
   100, 150, 250, 350, 550, 850, 1300, 1950, 2950, 4450, 6650, 10000, 15000, 22500, 25000,
 ];
@@ -1083,6 +1092,12 @@ const farTerrainShaderState = configureTerrainMaterial({
     start: FAR_BLEND_START_METERS,
     end: FAR_BLEND_END_METERS,
     opacity: 1,
+  },
+  fadeSecondary: {
+    start: FAR_EDGE_FADE_START_METERS,
+    end: FAR_EDGE_FADE_END_METERS,
+    opacity: 1,
+    invert: true,
   },
   night: {
     amount: () => currentNightAmount,
@@ -1574,6 +1589,18 @@ function syncTerrainShaderUniforms() {
     }
     if (farTerrainShaderState.shader.uniforms.uFadeOpacity) {
       farTerrainShaderState.shader.uniforms.uFadeOpacity.value = 1;
+    }
+    if (farTerrainShaderState.shader.uniforms.uFadeStart2) {
+      farTerrainShaderState.shader.uniforms.uFadeStart2.value = FAR_EDGE_FADE_START_METERS;
+    }
+    if (farTerrainShaderState.shader.uniforms.uFadeEnd2) {
+      farTerrainShaderState.shader.uniforms.uFadeEnd2.value = FAR_EDGE_FADE_END_METERS;
+    }
+    if (farTerrainShaderState.shader.uniforms.uFadeOpacity2) {
+      farTerrainShaderState.shader.uniforms.uFadeOpacity2.value = 1;
+    }
+    if (farTerrainShaderState.shader.uniforms.uFadeInvert2) {
+      farTerrainShaderState.shader.uniforms.uFadeInvert2.value = 1;
     }
     if (farTerrainShaderState.shader.uniforms.uNightAmount) {
       farTerrainShaderState.shader.uniforms.uNightAmount.value = currentNightAmount;
