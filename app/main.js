@@ -1011,6 +1011,12 @@ const MINIMAP_FALLBACK_COLOR = { r: 0.06, g: 0.08, b: 0.1 };
 const MINIMAP_WATER_SHALLOW_TINT = new THREE.Color("#3f86a5");
 const MINIMAP_WATER_DEEP_TINT = new THREE.Color("#0b2433");
 const MINIMAP_WATER_DEPTH_MAX = 14;
+const MINIMAP_SLOPE_MIN_RADIANS = Math.PI * (5 / 180);
+const MINIMAP_SLOPE_MAX_RADIANS = Math.PI * 0.25;
+const MINIMAP_SLOPE_BLEND_MAX = 0.9;
+const MINIMAP_SLOPE_LIGHT_BLEND_MAX = 0.4;
+const MINIMAP_SLOPE_DIR_X = -Math.SQRT1_2;
+const MINIMAP_SLOPE_DIR_Z = -Math.SQRT1_2;
 
 function findClosestMinimapZoomIndex(targetMeters) {
   let bestIndex = 0;
@@ -3505,6 +3511,48 @@ function renderMinimap() {
         r = clampNumber(color ? color.r : MINIMAP_FALLBACK_COLOR.r, 0, 1, 0);
         g = clampNumber(color ? color.g : MINIMAP_FALLBACK_COLOR.g, 0, 1, 0);
         b = clampNumber(color ? color.b : MINIMAP_FALLBACK_COLOR.b, 0, 1, 0);
+      }
+      if (Number.isFinite(heightSample) && stepX > 0 && stepZ > 0) {
+        const hx0 = sampleLoadedHeightAt(worldX - stepX, worldZ, sampleMode);
+        const hx1 = sampleLoadedHeightAt(worldX + stepX, worldZ, sampleMode);
+        const hz0 = sampleLoadedHeightAt(worldX, worldZ - stepZ, sampleMode);
+        const hz1 = sampleLoadedHeightAt(worldX, worldZ + stepZ, sampleMode);
+        if (Number.isFinite(hx0) && Number.isFinite(hx1) && Number.isFinite(hz0) && Number.isFinite(hz1)) {
+          const dhx = (hx1 - hx0) / (2 * stepX);
+          const dhz = (hz1 - hz0) / (2 * stepZ);
+          const grad = Math.hypot(dhx, dhz);
+          if (grad > 0) {
+            const slopeAngle = Math.atan(grad);
+            if (slopeAngle > MINIMAP_SLOPE_MIN_RADIANS) {
+              const t = clampNumber(
+                (slopeAngle - MINIMAP_SLOPE_MIN_RADIANS) / (MINIMAP_SLOPE_MAX_RADIANS - MINIMAP_SLOPE_MIN_RADIANS),
+                0,
+                1,
+                0
+              );
+              const slopeT = t * t * (3 - 2 * t);
+              const invGrad = 1 / grad;
+              const downhillX = -dhx * invGrad;
+              const downhillZ = -dhz * invGrad;
+              const dirDot = downhillX * MINIMAP_SLOPE_DIR_X + downhillZ * MINIMAP_SLOPE_DIR_Z;
+              const dirAmount = Math.abs(dirDot);
+              if (dirAmount > 0) {
+              if (dirDot > 0) {
+                const lightBlend = slopeT * dirAmount * MINIMAP_SLOPE_LIGHT_BLEND_MAX;
+                const additive = lightBlend * 0.5;
+                r = Math.min(1, r + additive);
+                g = Math.min(1, g + additive);
+                b = Math.min(1, b + additive);
+              } else {
+                const darkBlend = slopeT * dirAmount * MINIMAP_SLOPE_BLEND_MAX;
+                r *= 1 - darkBlend;
+                g *= 1 - darkBlend;
+                b *= 1 - darkBlend;
+              }
+            }
+          }
+        }
+        }
       }
       data[offset] = Math.round(r * 255);
       data[offset + 1] = Math.round(g * 255);
