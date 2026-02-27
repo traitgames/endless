@@ -42,11 +42,12 @@
       "id": "tp",
       "category": "frontend",
       "lookup": ["/tp", "tp"],
-      "summaryLines": ["/tp <biome-name>", "tp <biome-name>"],
+      "summaryLines": ["/tp <biome-name>", "tp <biome-name>", "/tp <x> <z>", "tp <x> <z>"],
       "detailLines": [
         "Teleport the player to a matching biome in the current world.",
+        "Specify coordinates instead of a biome to teleport directly.",
         "The slash form and bare alias both work.",
-        "Example: /tp forest"
+        "Example: /tp forest or /tp 1234 -567"
       ]
     },
     {

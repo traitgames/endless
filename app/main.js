@@ -2,7 +2,7 @@ import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
 import { createBridgeClient } from "./bridgeClient.js";
 import { createUpdateEngine } from "./updateEngine.js";
 import { createChatStore } from "./chat/chatStore.js";
-import { updatePlayerRuntime, MOVEMENT_VERSION } from "./player/movement.js?v=20260227";
+import { updatePlayerRuntime, MOVEMENT_VERSION, getFeetY, getEyeY, getGroundYAt } from "./player/movement.js?v=20260301";
 import { loadPersistedState, savePersistedState, clampNumber, toColorHex } from "./state/persistence.js";
 import { createTerrainHeightSampler } from "./world/terrainNoise.js";
 import { createRuntimeActionExecutor } from "./actions/runtimeActions.js";
@@ -60,6 +60,8 @@ const FALLBACK_FRONTEND_COMMAND_HELP_LINES = [
   "/commit <message hint>",
   "/tp <biome-name>",
   "tp <biome-name>",
+  "/tp <x> <z>",
+  "tp <x> <z>",
 ];
 const FALLBACK_WORLD_COMMAND_HELP_LINES = [
   "/world help",
@@ -611,6 +613,15 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(state.world.fog.colorHex, state.world.fog.density);
 scene.background = new THREE.Color("#8fc4ff");
+const originOffset = new THREE.Vector3();
+const worldGroup = new THREE.Group();
+scene.add(worldGroup);
+const ORIGIN_RECENTER_GRID_METERS = 4096;
+const ORIGIN_RECENTER_THRESHOLD_METERS = Math.floor(ORIGIN_RECENTER_GRID_METERS * 0.75);
+const renderPlayerPosition = new THREE.Vector3();
+const renderCameraPosition = new THREE.Vector3();
+const renderTargetPosition = new THREE.Vector3();
+worldGroup.position.set(-originOffset.x, -originOffset.y, -originOffset.z);
 
 const CAMERA_NEAR_METERS = 0.1;
 const CAMERA_FAR_BASE_METERS = 10000;
@@ -757,7 +768,7 @@ if (cloudTexture) {
     sprite.scale.set(size * 1.7, size, 1);
     cloudGroup.add(sprite);
   }
-  scene.add(cloudGroup);
+  worldGroup.add(cloudGroup);
 }
 
 const NIGHT_TINT_COLOR = new THREE.Color("#000000");
@@ -836,7 +847,7 @@ water.rotation.x = -Math.PI / 2;
 water.position.y = state.world.water.level;
 water.receiveShadow = true;
 water.renderOrder = 2;
-scene.add(water);
+worldGroup.add(water);
 
 const atmosphereBase = {
   fogColor: new THREE.Color(state.world.fog.colorHex),
@@ -1138,7 +1149,7 @@ let runtimeMidBuildRunning = false;
 let runtimeMidBuildQueuedTarget = null;
 let runtimeMidBuildAppliedTarget = null;
 const landmarkGroup = new THREE.Group();
-scene.add(landmarkGroup);
+worldGroup.add(landmarkGroup);
 const treeTrunkGeometry = new THREE.CylinderGeometry(0.18, 0.28, 5.2, 8);
 const treeCanopyConeGeometry = new THREE.ConeGeometry(1.05, 5.2, 10);
 const treeCanopySphereGeometry = new THREE.SphereGeometry(1.45, 10, 8);
@@ -1721,9 +1732,6 @@ function updateDayNightCycle(dt) {
   moon.position.copy(moonPos);
   // Hide the moon mesh once it drops below the horizon instead of clamping it above the ground.
   moon.visible = moonVector.y > 0;
-  sunLight.target.position.set(player.position.x, 0, player.position.z);
-  moonLight.target.position.set(player.position.x, 0, player.position.z);
-  shadowFillLight.target.position.set(player.position.x, 0, player.position.z);
   skyUniforms.sunDirection.value.copy(sunVector);
 
   const skyTop = atmosphereTemp.skyTop
@@ -1778,11 +1786,8 @@ function updateDayNightCycle(dt) {
   ambientLight.intensity = 0.045 + dayAmount * 0.17 + twilight * 0.05;
   ambientLight.color.copy(dynamicLightColors.nightAmbient).lerp(dynamicLightColors.dayAmbient, dayAmount);
   const nightGlow = smoothstep(0.2, 1, nightAmount);
-  playerGlowLight.position.set(player.position.x, playerEyeY + 1.4, player.position.z);
   playerGlowLight.intensity = 0.06 + twilight * 0.08 + nightGlow * 1.15;
   playerGroundFill.color.copy(dynamicLightColors.nightShadowFill).lerp(dynamicLightColors.dayShadowFill, dayAmount * 0.45);
-  playerGroundFill.position.set(player.position.x, playerEyeY + 8.8, player.position.z);
-  playerGroundFill.target.position.set(player.position.x, playerEyeY - 1.6, player.position.z);
   playerGroundFill.intensity = 0.08 + twilight * 0.11 + nightGlow * 1.05;
 
   moon.material.opacity = clampNumber(0.08 + nightAmount * 0.9, 0.08, 0.95, 0.4);
@@ -2545,7 +2550,7 @@ function ensureChunks(cx, cz) {
       const key = `${cx + dx},${cz + dz}`;
       if (!chunks.has(key)) {
         const mesh = buildChunk(cx + dx, cz + dz);
-        scene.add(mesh);
+        worldGroup.add(mesh);
         chunks.set(key, mesh);
       }
       ensureTreeChunk(cx + dx, cz + dz, key);
@@ -2558,11 +2563,11 @@ function ensureChunks(cx, cz) {
     const dx = x - cx;
     const dz = z - cz;
     if (dx * dx + dz * dz > chunkKeepRadiusSq) {
-      scene.remove(mesh);
+      worldGroup.remove(mesh);
       mesh.geometry.dispose();
       const treeGroup = treeChunks.get(key);
       if (treeGroup) {
-        scene.remove(treeGroup);
+        worldGroup.remove(treeGroup);
       }
       treeChunks.delete(key);
       chunks.delete(key);
@@ -2646,7 +2651,7 @@ function ensureChunksIncremental(cx, cz, options = {}) {
       const key = `${x},${z}`;
       if (!chunks.has(key)) {
         const mesh = buildChunk(x, z);
-        scene.add(mesh);
+        worldGroup.add(mesh);
         chunks.set(key, mesh);
       }
       ensureTreeChunk(x, z, key);
@@ -2671,11 +2676,11 @@ function ensureChunksIncremental(cx, cz, options = {}) {
       const centerZ = z * CHUNK_SIZE - playerZ;
       const d2 = centerX * centerX + centerZ * centerZ;
       if (d2 > chunkKeepRadiusSq) {
-        scene.remove(mesh);
+        worldGroup.remove(mesh);
         mesh.geometry.dispose();
         const treeGroup = treeChunks.get(key);
         if (treeGroup) {
-          scene.remove(treeGroup);
+          worldGroup.remove(treeGroup);
         }
         treeChunks.delete(key);
         chunks.delete(key);
@@ -2711,7 +2716,7 @@ function ensureMidTerrainIncremental(cx, cz, options = {}) {
           const dz = z * MID_TILE_SIZE - player.position.z;
           mesh.visible = dx * dx + dz * dz > MID_TILE_INNER_CULL_RADIUS * MID_TILE_INNER_CULL_RADIUS;
         }
-        scene.add(mesh);
+        worldGroup.add(mesh);
         midTiles.set(key, mesh);
       }
     }
@@ -2735,7 +2740,7 @@ function ensureMidTerrainIncremental(cx, cz, options = {}) {
       const centerZ = z * MID_TILE_SIZE - playerZ;
       const d2 = centerX * centerX + centerZ * centerZ;
       if (d2 > outerKeepRadiusSq) {
-        scene.remove(mesh);
+        worldGroup.remove(mesh);
         mesh.geometry.dispose();
         midTiles.delete(key);
         continue;
@@ -2774,7 +2779,7 @@ function ensureFarTerrainIncremental(cx, cz, options = {}) {
           const dz = z * FAR_TILE_SIZE - player.position.z;
           mesh.visible = dx * dx + dz * dz > FAR_TILE_INNER_CULL_RADIUS * FAR_TILE_INNER_CULL_RADIUS;
         }
-        scene.add(mesh);
+        worldGroup.add(mesh);
         farTiles.set(key, mesh);
       }
     }
@@ -2798,7 +2803,7 @@ function ensureFarTerrainIncremental(cx, cz, options = {}) {
       const centerZ = z * FAR_TILE_SIZE - playerZ;
       const d2 = centerX * centerX + centerZ * centerZ;
       if (d2 > outerKeepRadiusSq) {
-        scene.remove(mesh);
+        worldGroup.remove(mesh);
         mesh.geometry.dispose();
         farTiles.delete(key);
         continue;
@@ -2915,19 +2920,19 @@ function ensureFarTerrainRuntimeIncremental(cx, cz) {
 
 function clearChunks() {
   chunks.forEach((mesh) => {
-    scene.remove(mesh);
+    worldGroup.remove(mesh);
     mesh.geometry.dispose();
   });
   chunks.clear();
   treeChunks.forEach((treeGroup) => {
-    scene.remove(treeGroup);
+          worldGroup.remove(treeGroup);
   });
   treeChunks.clear();
 }
 
 function clearFarTerrain() {
   farTiles.forEach((mesh) => {
-    scene.remove(mesh);
+    worldGroup.remove(mesh);
     mesh.geometry.dispose();
   });
   farTiles.clear();
@@ -2940,7 +2945,7 @@ function clearFarTerrain() {
 
 function clearMidTerrain() {
   midTiles.forEach((mesh) => {
-    scene.remove(mesh);
+    worldGroup.remove(mesh);
     mesh.geometry.dispose();
   });
   midTiles.clear();
@@ -2985,14 +2990,14 @@ function ensureTreeChunk(cx, cz, key = `${cx},${cz}`) {
   const density = state.world.trees.density;
   if (density <= 0) {
     const existing = treeChunks.get(key);
-    if (existing) scene.remove(existing);
+    if (existing) worldGroup.remove(existing);
     treeChunks.delete(key);
     return;
   }
   if (treeChunks.has(key)) return;
   const group = buildTreeChunk(cx, cz);
   if (!group) return;
-  scene.add(group);
+  worldGroup.add(group);
   treeChunks.set(key, group);
 }
 
@@ -3989,11 +3994,12 @@ function updateHudYReadout() {
   ) {
     return;
   }
-  const groundY =
-    Number.isFinite(player._lastGroundHeight) ? player._lastGroundHeight : sampleGroundHeightForCollision(player.position.x, player.position.z);
-  const feetY = Number.isFinite(groundY) ? groundY : player.position.y;
+  const groundY = Number.isFinite(player._lastGroundHeight)
+    ? player._lastGroundHeight
+    : getGroundYAt(player.position.x, player.position.z, sampleGroundHeightForCollision, heightAt);
+  const feetY = Number.isFinite(groundY) ? groundY : getFeetY(player);
   if (feetYEl) feetYEl.textContent = formatHudCoord(feetY);
-  if (eyeYEl) eyeYEl.textContent = formatHudCoord(player.position.y + PLAYER_HEIGHT);
+  if (eyeYEl) eyeYEl.textContent = formatHudCoord(getEyeY(player, PLAYER_HEIGHT));
   if (waterYEl) waterYEl.textContent = formatHudCoord(state.world.water.level);
   if (playerYEl) playerYEl.textContent = formatHudCoord(player.position.y);
   if (cameraYEl) cameraYEl.textContent = formatHudCoord(camera.position.y);
@@ -4002,25 +4008,55 @@ function updateHudYReadout() {
   if (moveVersionEl) moveVersionEl.textContent = MOVEMENT_VERSION;
 }
 
+function updateWorldGroupTransform() {
+  worldGroup.position.set(-originOffset.x, -originOffset.y, -originOffset.z);
+}
+
+function maybeRecenterWorldOrigin() {
+  const dx = player.position.x - originOffset.x;
+  const dz = player.position.z - originOffset.z;
+  if (Math.abs(dx) <= ORIGIN_RECENTER_THRESHOLD_METERS && Math.abs(dz) <= ORIGIN_RECENTER_THRESHOLD_METERS) {
+    return;
+  }
+  const targetX = Math.round(player.position.x / ORIGIN_RECENTER_GRID_METERS) * ORIGIN_RECENTER_GRID_METERS;
+  const targetZ = Math.round(player.position.z / ORIGIN_RECENTER_GRID_METERS) * ORIGIN_RECENTER_GRID_METERS;
+  originOffset.set(targetX, 0, targetZ);
+  updateWorldGroupTransform();
+  minimapNeedsRender = true;
+}
+
+function updateRenderTransforms() {
+  renderPlayerPosition.copy(player.position).sub(originOffset);
+  renderCameraPosition.copy(renderPlayerPosition);
+  renderCameraPosition.y += PLAYER_HEIGHT;
+  camera.position.copy(renderCameraPosition);
+  camera.rotation.set(player.pitch, player.yaw, 0, "YXZ");
+  sky.position.copy(renderPlayerPosition);
+  renderTargetPosition.copy(renderPlayerPosition);
+  renderTargetPosition.y = 0;
+  sunLight.target.position.copy(renderTargetPosition);
+  moonLight.target.position.copy(renderTargetPosition);
+  shadowFillLight.target.position.copy(renderTargetPosition);
+  playerGlowLight.position.set(renderPlayerPosition.x, renderPlayerPosition.y + PLAYER_HEIGHT + 1.4, renderPlayerPosition.z);
+  playerGroundFill.position.set(renderPlayerPosition.x, renderPlayerPosition.y + PLAYER_HEIGHT + 8.8, renderPlayerPosition.z);
+  playerGroundFill.target.position.set(renderPlayerPosition.x, renderPlayerPosition.y + PLAYER_HEIGHT - 1.6, renderPlayerPosition.z);
+}
+
 function updatePlayer(dt) {
   updatePlayerRuntime({
     dt,
     keys,
     player,
     playerHeight: PLAYER_HEIGHT,
-    waterLevel: state.world.water.level,
     heightAt,
     sampleGroundHeight: sampleGroundHeightForCollision,
     ensureChunks: ensureChunksRuntimeIncremental,
     chunkSize: CHUNK_SIZE,
     xyzEl,
-    feetYEl,
-    eyeYEl,
-    waterYEl,
     chunkEl,
-    camera,
     Vector3: THREE.Vector3,
   });
+  maybeRecenterWorldOrigin();
 }
 
 function updateFarTerrainFromPlayer() {
@@ -4066,8 +4102,6 @@ function animate() {
   if (!chunkBuildInProgress || chunkBuildContext === "startup") {
     updatePlayer(dt);
     updateHudYReadout();
-  } else {
-    camera.rotation.set(player.pitch, player.yaw, 0, "YXZ");
   }
   updateMidTerrainFromPlayer();
   updateFarTerrainFromPlayer();
@@ -4076,7 +4110,6 @@ function animate() {
   updateDayNightCycle(dt);
   updateStatusClock();
   updateStatusFps(dt);
-  sky.position.set(player.position.x, 0, player.position.z);
   if (cloudGroup.parent) {
     cloudGroup.position.set(
       player.position.x * 0.34 + Math.sin(clock.elapsedTime * 0.03) * 90,
@@ -4096,6 +4129,7 @@ function animate() {
   if (water.material instanceof THREE.MeshPhysicalMaterial) {
     water.material.roughness = clampNumber(0.2 + Math.sin(clock.elapsedTime * 0.35) * 0.04, 0.12, 0.3, 0.2);
   }
+  updateRenderTransforms();
   renderer.render(scene, camera);
   if (pendingInitialNightSync) {
     pendingInitialNightSync = false;
@@ -4389,7 +4423,12 @@ function tryHandleLocalChatCommand(message) {
   if (handleTimeCommand(trimmed)) return true;
   const tpAliasMatch = trimmed.match(/^\/?tp\s+(.+)$/i);
   if (tpAliasMatch) {
-    teleportPlayerToBiome(tpAliasMatch[1]);
+    const coords = tryParseTeleportCoordinates(tpAliasMatch[1]);
+    if (coords) {
+      teleportPlayerToCoordinates(coords.x, coords.z);
+    } else {
+      teleportPlayerToBiome(tpAliasMatch[1]);
+    }
     return true;
   }
   if (!/^\/world(?:\s|$)/i.test(trimmed)) return false;
@@ -5059,6 +5098,46 @@ function teleportPlayerToBiome(rawBiomeName, options = {}) {
   });
 }
 
+function teleportPlayerToCoordinates(x, z) {
+  if (!Number.isFinite(x) || !Number.isFinite(z)) {
+    addChatEntry({
+      role: "codex_output",
+      content: `Invalid coordinates "${String(x)}, ${String(z)}".`,
+      ts: Date.now(),
+    });
+    return;
+  }
+
+  const success = teleportPlayerToWorldCoordinates(x, z);
+  if (!success) {
+    addChatEntry({
+      role: "codex_output",
+      content: `Failed to teleport to ${Math.round(x)}, ${Math.round(z)}. Try another location.`,
+      ts: Date.now(),
+    });
+    return;
+  }
+
+  addChatEntry({
+    role: "codex_output",
+    content: `Teleported to ${Math.round(x)}, ${Math.round(z)}.`,
+    ts: Date.now(),
+  });
+}
+
+function tryParseTeleportCoordinates(rawArg) {
+  if (!rawArg) return null;
+  const tokens = rawArg
+    .trim()
+    .split(/[\s,]+/)
+    .filter(Boolean);
+  if (tokens.length < 2) return null;
+  const x = Number.parseFloat(tokens[0]);
+  const z = Number.parseFloat(tokens[1]);
+  if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
+  return { x, z };
+}
+
 function resolveBiomeName(name) {
   const normalized = String(name || "")
     .trim()
@@ -5483,7 +5562,7 @@ function restoreRuntimeState(snapshot) {
   syncTerrainShaderUniforms();
   syncTreeMaterials();
   treeChunks.forEach((treeGroup) => {
-    scene.remove(treeGroup);
+    worldGroup.remove(treeGroup);
   });
   treeChunks.clear();
   rebuildTerrain();
