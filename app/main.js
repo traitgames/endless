@@ -253,6 +253,8 @@ const BIOME_BLEND_TRANSITION_WIDTH_METERS = 30;
 const BIOME_BLEND_HALF_WIDTH_METERS = BIOME_BLEND_TRANSITION_WIDTH_METERS * 0.5;
 const BIOME_BLEND_GRADIENT_STEP_METERS = 2;
 const BIOME_BLEND_PRECHECK_MARGIN = 0.05;
+const DETAIL_BIOME_FADE_OUT_METERS = 2;
+const DETAIL_BIOME_EDGE_DISTANCE_FACTOR = (4 * BIOME_BLEND_HALF_WIDTH_METERS) / 3;
 const MOUNTAIN_BIOME_BORDER_BLEND_HEIGHT_METERS = 24;
 const WETLAND_MOUNTAIN_HEIGHT_MAX_METERS = 10;
 const BIOME_BLEND_MAX_SLOTS = 8;
@@ -1354,7 +1356,11 @@ function getBiomeBlendDominantWeight(blend) {
 
 function getTerrainDetailBiomeFadeFromBlend(blend) {
   const dominantWeight = getBiomeBlendDominantWeight(blend);
-  return smoothstep(0.58, 0.92, dominantWeight);
+  if (!(dominantWeight > 0)) return 0;
+  // Approximate signed distance from the biome edge using the smoothstep slope near the boundary.
+  const distanceFromEdgeMeters = (dominantWeight - 0.5) * DETAIL_BIOME_EDGE_DISTANCE_FACTOR;
+  // Fade from 0 at the edge to full strength a couple meters inside the biome.
+  return smoothstep(0, DETAIL_BIOME_FADE_OUT_METERS, distanceFromEdgeMeters);
 }
 
 function fillBlendedVisualSampleAt(x, z, target = blendedVisualStateScratch) {
