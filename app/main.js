@@ -3376,18 +3376,40 @@ function sampleGroundHeightForCollision(x, z) {
   return Number.isFinite(fast) ? fast : heightAt(x, z);
 }
 
-function teleportPlayerToWorldCoordinates(x, z) {
+function queueTeleportChunkLoad(subtitle = "Loading destination") {
+  beginChunkBuildUi("teleport", `${subtitle} (0%)`);
+  const chunkCx = Math.floor(player.position.x / CHUNK_SIZE);
+  const chunkCz = Math.floor(player.position.z / CHUNK_SIZE);
+  ensureChunksIncremental(chunkCx, chunkCz, {
+    batchSize: 4,
+    onProgress(done, total) {
+      const pct = total > 0 ? Math.round((done / total) * 100) : 100;
+      setStartupLoadingMessage("Loading...", `${subtitle} (${pct}%)`);
+    },
+    onComplete() {
+      finishChunkBuildUi("teleport");
+      ensureMidTerrainRuntimeIncremental(
+        Math.floor(player.position.x / MID_TILE_SIZE),
+        Math.floor(player.position.z / MID_TILE_SIZE)
+      );
+      ensureFarTerrainRuntimeIncremental(
+        Math.floor(player.position.x / FAR_TILE_SIZE),
+        Math.floor(player.position.z / FAR_TILE_SIZE)
+      );
+    },
+  });
+}
+
+function teleportPlayerToWorldCoordinates(x, z, options = {}) {
   if (!Number.isFinite(x) || !Number.isFinite(z)) return false;
   const groundY = sampleGroundHeightForCollision(x, z);
   if (!Number.isFinite(groundY)) return false;
   player.position.set(x, groundY, z);
   player.velocity.set(0, 0, 0);
   player.grounded = false;
-  const cx = Math.floor(player.position.x / CHUNK_SIZE);
-  const cz = Math.floor(player.position.z / CHUNK_SIZE);
-  ensureChunks(cx, cz);
   minimapNeedsRender = true;
   updateBiomeHud();
+  queueTeleportChunkLoad(options.subtitle || "Loading destination");
   saveState();
   return true;
 }
@@ -5093,9 +5115,7 @@ function teleportPlayerToBiome(rawBiomeName, options = {}) {
   player.position.set(target.x, target.y, target.z);
   player.velocity.set(0, 0, 0);
   player.grounded = false;
-  const cx = Math.floor(player.position.x / CHUNK_SIZE);
-  const cz = Math.floor(player.position.z / CHUNK_SIZE);
-  ensureChunks(cx, cz);
+  queueTeleportChunkLoad("Loading biome destination");
   updateBiomeHud();
   saveState();
 
