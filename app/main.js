@@ -266,6 +266,9 @@ const BIOME_BLEND_GRADIENT_STEP_METERS = 2;
 const BIOME_BLEND_PRECHECK_MARGIN = 0.05;
 const DETAIL_BIOME_FADE_OUT_METERS = 2;
 const DETAIL_BIOME_EDGE_DISTANCE_FACTOR = (4 * BIOME_BLEND_HALF_WIDTH_METERS) / 3;
+const BIOME_EDGE_SMOOTH_MAX_METERS = 200;
+const BIOME_EDGE_SMOOTH_START_METERS = 100;
+const DEFAULT_TRANSITION_BIOME_ID = "forest";
 const MOUNTAIN_BIOME_BORDER_BLEND_HEIGHT_METERS = 24;
 const WETLAND_MOUNTAIN_HEIGHT_MAX_METERS = 10;
 const BIOME_BLEND_MAX_SLOTS = 8;
@@ -2377,6 +2380,8 @@ const heightAt = createTerrainHeightSampler({
   terrainHorizontalScale: TERRAIN_HORIZONTAL_SCALE,
   sampleBiomeTerrainBlend: (x, z, target) => fillBiomeBlendSample(x, z, target),
   getBiomeTerrainProfile,
+  getDefaultBiomeTerrainProfile: () => getBiomeTerrainProfile(BIOME_DEFS[DEFAULT_TRANSITION_BIOME_ID]),
+  biomeEdgeSmooth: { start: BIOME_EDGE_SMOOTH_START_METERS, max: BIOME_EDGE_SMOOTH_MAX_METERS },
 });
 heightAt.mountainBiomeThresholdMeters = 100;
 

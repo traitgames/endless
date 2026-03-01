@@ -5,7 +5,11 @@ export function createTerrainHeightSampler({
   sampleBiomeTerrainBlend,
   getBiomeTerrainProfile,
   getWaterLevel,
+  getDefaultBiomeTerrainProfile,
+  biomeEdgeSmooth,
 }) {
+  const EDGE_SMOOTH_MAX = Number.isFinite(biomeEdgeSmooth?.max) ? biomeEdgeSmooth.max : 64;
+  const EDGE_SMOOTH_START = Number.isFinite(biomeEdgeSmooth?.start) ? biomeEdgeSmooth.start : 3;
   function hash2(x, z) {
     const h = Math.sin(x * 127.1 + z * 311.7 + getNoiseSeed()) * 43758.5453;
     return h - Math.floor(h);
@@ -326,6 +330,8 @@ export function createTerrainHeightSampler({
 
     let height = 0;
     let totalWeight = 0;
+    let dominantBiome = null;
+    let dominantWeight = 0;
     for (let i = 0; i < blend.count; i += 1) {
       const weight = blend.weights[i];
       if (!(weight > 0)) continue;
@@ -334,13 +340,37 @@ export function createTerrainHeightSampler({
         typeof getBiomeTerrainProfile === "function" ? getBiomeTerrainProfile(biome) : biome?.terrainProfile || null;
       height += sampleBiomeTerrainHeight(x, z, terrain, profile) * weight;
       totalWeight += weight;
+      if (!dominantBiome || weight > dominantWeight) {
+        dominantBiome = biome;
+        dominantWeight = weight;
+      }
     }
     if (totalWeight <= 0) {
       const additive = fillMountainAdditiveSample(x, z);
       return sampleBiomeTerrainHeight(x, z, terrain, null) + additive.totalAdditiveHeight;
     }
+
+    // Optional biome-edge smoothing: blend toward a default biome near borders to avoid cliffs.
+    let defaultBiomeBlend = 0;
+    if (Number.isFinite(EDGE_SMOOTH_MAX) && EDGE_SMOOTH_MAX > 0 && dominantBiome) {
+      // Use drop in dominant weight as a proxy for proximity to a biome edge.
+      const edgeWeight = clamp01(1 - dominantWeight); // 0 deep inside biome, approaches 1 near hard border.
+      const easedEdge = edgeWeight * edgeWeight; // reduce smoothing effect when still solidly inside a biome
+      const edgeMeters = easedEdge * EDGE_SMOOTH_MAX;
+      defaultBiomeBlend = clamp01((edgeMeters - EDGE_SMOOTH_START) / (EDGE_SMOOTH_MAX - EDGE_SMOOTH_START));
+    }
     const additive = fillMountainAdditiveSample(x, z);
     let blendedHeight = height / totalWeight + additive.totalAdditiveHeight;
+
+    if (defaultBiomeBlend > 0 && typeof getDefaultBiomeTerrainProfile === "function") {
+      const defaultProfile = getDefaultBiomeTerrainProfile();
+      if (defaultProfile) {
+        const defaultHeight = sampleBiomeTerrainHeight(x, z, terrain, defaultProfile) + additive.totalAdditiveHeight;
+        // edgeT: 0 at border (full default), 1 deep inside dominant biome.
+        const edgeT = 1 - defaultBiomeBlend;
+        blendedHeight = lerp(defaultHeight, blendedHeight, edgeT);
+      }
+    }
     const wetlandWeight = getWetlandWeight(blend);
     if (wetlandWeight > 0 && typeof getWaterLevel === "function") {
       blendedHeight = applyWetlandWaterline(blendedHeight, getWaterLevel(), wetlandWeight);
