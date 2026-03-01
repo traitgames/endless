@@ -271,8 +271,11 @@ const BIOME_EDGE_SMOOTH_START_METERS = 100;
 const DEFAULT_TRANSITION_BIOME_ID = "forest";
 const MOUNTAIN_BIOME_BORDER_BLEND_HEIGHT_METERS = 24;
 const WETLAND_MOUNTAIN_HEIGHT_MAX_METERS = 10;
+const WETLAND_ELEVATION_FADE_BAND_METERS = 8;
 const BIOME_BLEND_MAX_SLOTS = 8;
 const MOUNTAIN_BIOME_SUFFIX = "_mountains";
+const BIOME_SUBDIVISION_PREFIX_JAGGED = "jagged_";
+const BIOME_SUBDIVISION_PREFIX_SMOOTH = "smooth_";
 
 const BIOME_DEFS = {
   glacier: {
@@ -563,6 +566,119 @@ function createMountainBiomeVariant(baseBiome) {
 for (const biome of Object.values({ ...BIOME_DEFS })) {
   if (biome.isMountainVariant) continue;
   BIOME_DEFS[`${biome.id}${MOUNTAIN_BIOME_SUFFIX}`] = createMountainBiomeVariant(biome);
+}
+BIOME_DEFS.wetland_mountains = BIOME_DEFS.rocky_mountains;
+
+const BUMPY_BIOME_SUBDIVISION_TARGET_IDS = new Set([
+  "badlands",
+  "badlands_mountains",
+  "glacier",
+  "glacier_mountains",
+  "rocky_mountains",
+]);
+const BUMPY_BIOME_SUBDIVISION_THRESHOLD_SMOOTH = 0.33;
+const BUMPY_BIOME_SUBDIVISION_THRESHOLD_JAGGED = 0.67;
+const BUMPY_BIOME_SUBDIVISION_PRIMARY_SCALE = 0.00082;
+const BUMPY_BIOME_SUBDIVISION_SECONDARY_SCALE = 0.00174;
+const BUMPY_BIOME_SUBDIVISION_PRECHECK_MARGIN = 0.06;
+const BUMPY_BIOME_SUBDIVISIONS = {};
+
+function cloneBiomeColor(color, fallbackHex = "#808080") {
+  if (color instanceof THREE.Color) return color.clone();
+  return new THREE.Color(fallbackHex);
+}
+
+function tintBiomeColor(color, tintHex, amount) {
+  return cloneBiomeColor(color).lerp(new THREE.Color(tintHex), clampNumber(amount, 0, 1, 0));
+}
+
+function createSubdivisionTerrainProfile(baseProfile, mode) {
+  const source = { ...(baseProfile || {}) };
+  const baseOctaves = Math.max(1, Math.floor(source.octaves ?? 4));
+  if (mode === "smooth") {
+    return {
+      ...source,
+      noiseAlgorithm: source.noiseAlgorithm === "ridged" ? "hybrid" : source.noiseAlgorithm ?? "hybrid",
+      noiseScaleMultiplier: (source.noiseScaleMultiplier ?? 1) * 1.12,
+      baseHeightMultiplier: (source.baseHeightMultiplier ?? 1) * 0.62,
+      ridgeScaleMultiplier: (source.ridgeScaleMultiplier ?? 1) * 0.84,
+      ridgeHeightMultiplier: (source.ridgeHeightMultiplier ?? 1) * 0.14,
+      octaves: Math.max(2, baseOctaves - 2),
+      lacunarity: Number.isFinite(source.lacunarity) ? source.lacunarity : 1.85,
+      gain: Number.isFinite(source.gain) ? source.gain : 0.52,
+      warpStrength: (source.warpStrength ?? 0) * 0.45,
+      warpScaleMultiplier: Number.isFinite(source.warpScaleMultiplier) ? source.warpScaleMultiplier : 1.55,
+      secondaryAmount: (source.secondaryAmount ?? 0) * 0.2,
+      gradientCap: 0.05,
+      gradientSampleMeters: 6,
+    };
+  }
+  return {
+    ...source,
+    noiseAlgorithm: source.noiseAlgorithm === "ridged" ? "hybrid" : source.noiseAlgorithm ?? "hybrid",
+    noiseScaleMultiplier: (source.noiseScaleMultiplier ?? 1) * 1.04,
+    baseHeightMultiplier: (source.baseHeightMultiplier ?? 1) * 0.8,
+    ridgeScaleMultiplier: (source.ridgeScaleMultiplier ?? 1) * 0.92,
+    ridgeHeightMultiplier: (source.ridgeHeightMultiplier ?? 1) * 0.36,
+    octaves: Math.max(2, baseOctaves - 1),
+    lacunarity: Number.isFinite(source.lacunarity) ? source.lacunarity : 1.9,
+    gain: Number.isFinite(source.gain) ? source.gain : 0.5,
+    warpStrength: (source.warpStrength ?? 0) * 0.7,
+    warpScaleMultiplier: Number.isFinite(source.warpScaleMultiplier) ? source.warpScaleMultiplier : 1.65,
+    secondaryAmount: (source.secondaryAmount ?? 0) * 0.45,
+    gradientCap: 0.3,
+    gradientSampleMeters: 5,
+  };
+}
+
+function buildBumpyBiomeSubdivisionVariants(baseBiome) {
+  const jaggedId = `${BIOME_SUBDIVISION_PREFIX_JAGGED}${baseBiome.id}`;
+  const smoothId = `${BIOME_SUBDIVISION_PREFIX_SMOOTH}${baseBiome.id}`;
+  const jaggedBiome = {
+    ...baseBiome,
+    id: jaggedId,
+    label: `Jagged ${baseBiome.label}`,
+    groundColor: tintBiomeColor(baseBiome.groundColor, "#5e6570", 0.08),
+    waterColor: tintBiomeColor(baseBiome.waterColor, "#6b7f96", 0.07),
+    fogColor: tintBiomeColor(baseBiome.fogColor, "#c4d0de", 0.06),
+    fogDensityMultiplier: (baseBiome.fogDensityMultiplier ?? 1) * 1.05,
+    terrainProfile: { ...(baseBiome.terrainProfile || {}) },
+  };
+  const normalBiome = {
+    ...baseBiome,
+    id: baseBiome.id,
+    label: baseBiome.label,
+    groundColor: tintBiomeColor(baseBiome.groundColor, "#d7ddd1", 0.05),
+    waterColor: tintBiomeColor(baseBiome.waterColor, "#9eb2c4", 0.04),
+    fogColor: tintBiomeColor(baseBiome.fogColor, "#f0f4f8", 0.05),
+    fogDensityMultiplier: (baseBiome.fogDensityMultiplier ?? 1) * 0.98,
+    terrainProfile: createSubdivisionTerrainProfile(baseBiome.terrainProfile, "normal"),
+  };
+  const smoothBiome = {
+    ...baseBiome,
+    id: smoothId,
+    label: `Smooth ${baseBiome.label}`,
+    groundColor: tintBiomeColor(baseBiome.groundColor, "#d8dfdc", 0.14),
+    waterColor: tintBiomeColor(baseBiome.waterColor, "#bfd0e0", 0.13),
+    fogColor: tintBiomeColor(baseBiome.fogColor, "#f4f7fb", 0.16),
+    fogDensityMultiplier: (baseBiome.fogDensityMultiplier ?? 1) * 0.92,
+    terrainProfile: createSubdivisionTerrainProfile(baseBiome.terrainProfile, "smooth"),
+  };
+  return { jaggedBiome, normalBiome, smoothBiome };
+}
+
+for (const biomeId of BUMPY_BIOME_SUBDIVISION_TARGET_IDS) {
+  const baseBiome = BIOME_DEFS[biomeId];
+  if (!baseBiome) continue;
+  const { jaggedBiome, normalBiome, smoothBiome } = buildBumpyBiomeSubdivisionVariants(baseBiome);
+  BIOME_DEFS[biomeId] = normalBiome;
+  BIOME_DEFS[jaggedBiome.id] = jaggedBiome;
+  BIOME_DEFS[smoothBiome.id] = smoothBiome;
+  BUMPY_BIOME_SUBDIVISIONS[biomeId] = {
+    normalId: normalBiome.id,
+    jaggedId: jaggedBiome.id,
+    smoothId: smoothBiome.id,
+  };
 }
 BIOME_DEFS.wetland_mountains = BIOME_DEFS.rocky_mountains;
 
@@ -1272,7 +1388,10 @@ function setTerrainDetailIntensity(intensity) {
 }
 
 function getTerrainDetailBiomeId(biome) {
-  const biomeId = typeof biome?.baseBiomeId === "string" ? biome.baseBiomeId : biome?.id;
+  const rawBiomeId = typeof biome?.baseBiomeId === "string" ? biome.baseBiomeId : biome?.id;
+  const biomeId = String(rawBiomeId || "")
+    .replace(new RegExp(`^${BIOME_SUBDIVISION_PREFIX_JAGGED}`), "")
+    .replace(new RegExp(`^${BIOME_SUBDIVISION_PREFIX_SMOOTH}`), "");
   switch (biomeId) {
     case "glacier":
       return 1; // crystalline ice facets
@@ -2065,16 +2184,104 @@ function sampleBiomeClimateFields(x, z) {
   };
 }
 
+function biomeSubdivisionSeedOffset(biomeId) {
+  let hash = 0;
+  const id = String(biomeId || "");
+  for (let i = 0; i < id.length; i += 1) {
+    hash = (hash * 31 + id.charCodeAt(i)) % 100000;
+  }
+  return hash;
+}
+
+function sampleBumpyBiomeSubdivisionSelector(x, z, biomeId) {
+  const offset = biomeSubdivisionSeedOffset(biomeId);
+  const primary = fastSimplex2(
+    x * BUMPY_BIOME_SUBDIVISION_PRIMARY_SCALE,
+    z * BUMPY_BIOME_SUBDIVISION_PRIMARY_SCALE,
+    noiseSeed + offset + 401
+  );
+  const secondary = fastSimplex2(
+    x * BUMPY_BIOME_SUBDIVISION_SECONDARY_SCALE,
+    z * BUMPY_BIOME_SUBDIVISION_SECONDARY_SCALE,
+    noiseSeed + offset + 809
+  );
+  const combined = primary * 0.72 + secondary * 0.28;
+  return clampNumber(combined * 0.5 + 0.5, 0, 1, 0.5);
+}
+
+function getBumpySubdividedBiomeForPoint(x, z, biome) {
+  if (!biome) return biome;
+  const biomeId = String(biome.id || "");
+  if (biomeId.startsWith(BIOME_SUBDIVISION_PREFIX_JAGGED) || biomeId.startsWith(BIOME_SUBDIVISION_PREFIX_SMOOTH)) {
+    return biome;
+  }
+  const variants = BUMPY_BIOME_SUBDIVISIONS[biomeId];
+  if (!variants) return biome;
+  const selector = sampleBumpyBiomeSubdivisionSelector(x, z, biomeId);
+  if (selector <= BUMPY_BIOME_SUBDIVISION_THRESHOLD_SMOOTH) {
+    return BIOME_DEFS[variants.smoothId] || biome;
+  }
+  if (selector >= BUMPY_BIOME_SUBDIVISION_THRESHOLD_JAGGED) {
+    return BIOME_DEFS[variants.jaggedId] || biome;
+  }
+  return BIOME_DEFS[variants.normalId] || biome;
+}
+
+function getBumpySubdivisionVariantWeights(selector, selectorGradientPerMeter) {
+  const smoothToNormal = metersBoundaryBlend(
+    selector,
+    BUMPY_BIOME_SUBDIVISION_THRESHOLD_SMOOTH,
+    selectorGradientPerMeter
+  );
+  const normalToJagged = metersBoundaryBlend(
+    selector,
+    BUMPY_BIOME_SUBDIVISION_THRESHOLD_JAGGED,
+    selectorGradientPerMeter
+  );
+  return normalizeWeightTriplet(
+    1 - smoothToNormal,
+    smoothToNormal * (1 - normalToJagged),
+    normalToJagged
+  );
+}
+
+function getBumpySubdivisionVariantWeightsAt(x, z, biomeId) {
+  const selector = sampleBumpyBiomeSubdivisionSelector(x, z, biomeId);
+  const nearSmoothBoundary = Math.abs(selector - BUMPY_BIOME_SUBDIVISION_THRESHOLD_SMOOTH) <= BUMPY_BIOME_SUBDIVISION_PRECHECK_MARGIN;
+  const nearJaggedBoundary = Math.abs(selector - BUMPY_BIOME_SUBDIVISION_THRESHOLD_JAGGED) <= BUMPY_BIOME_SUBDIVISION_PRECHECK_MARGIN;
+  if (!nearSmoothBoundary && !nearJaggedBoundary) {
+    if (selector <= BUMPY_BIOME_SUBDIVISION_THRESHOLD_SMOOTH) return [1, 0, 0];
+    if (selector >= BUMPY_BIOME_SUBDIVISION_THRESHOLD_JAGGED) return [0, 0, 1];
+    return [0, 1, 0];
+  }
+
+  const h = BIOME_BLEND_GRADIENT_STEP_METERS;
+  const xp = sampleBumpyBiomeSubdivisionSelector(x + h, z, biomeId);
+  const xm = sampleBumpyBiomeSubdivisionSelector(x - h, z, biomeId);
+  const zp = sampleBumpyBiomeSubdivisionSelector(x, z + h, biomeId);
+  const zm = sampleBumpyBiomeSubdivisionSelector(x, z - h, biomeId);
+  const invSpan = 1 / (2 * h);
+  const gradX = (xp - xm) * invSpan;
+  const gradZ = (zp - zm) * invSpan;
+  const gradientPerMeter = Math.hypot(gradX, gradZ);
+  return getBumpySubdivisionVariantWeights(selector, gradientPerMeter);
+}
+
 function normalizeWeightTriplet(a, b, c) {
   const total = a + b + c;
   if (total <= 0) return [1, 0, 0];
   return [a / total, b / total, c / total];
 }
 
-function metersBoundaryBlend(value, threshold, gradientPerMeter) {
+function metersBoundaryBlendWithHalfWidth(value, threshold, gradientPerMeter, halfWidthMeters = BIOME_BLEND_HALF_WIDTH_METERS) {
   const safeGradient = Math.max(Math.abs(gradientPerMeter), 1e-4);
   const signedMeters = (value - threshold) / safeGradient;
-  return smoothstep(-BIOME_BLEND_HALF_WIDTH_METERS, BIOME_BLEND_HALF_WIDTH_METERS, signedMeters);
+  const halfWidth = Math.max(0.5, Number(halfWidthMeters) || BIOME_BLEND_HALF_WIDTH_METERS);
+  return smoothstep(-halfWidth, halfWidth, signedMeters);
+}
+
+function metersBoundaryBlend(value, threshold, gradientPerMeter) {
+  return metersBoundaryBlendWithHalfWidth(value, threshold, gradientPerMeter, BIOME_BLEND_HALF_WIDTH_METERS);
 }
 
 function getBiomeCategoryWeights(temperature, temperatureGradientPerMeter) {
@@ -2169,7 +2376,8 @@ function normalizeBiomeBlendResult(target) {
 
 function applyWetlandHeightOverride(x, z, target) {
   if (!target) return target;
-  if (!shouldDemoteWetlandAt(x, z)) return target;
+  const wetlandRetainWeight = getWetlandRetentionWeightAt(x, z);
+  if (wetlandRetainWeight >= 0.999) return target;
   const meadow = BIOME_DEFS.meadow;
   const originalCount = target.count;
   if (originalCount <= 0) return target;
@@ -2186,12 +2394,18 @@ function applyWetlandHeightOverride(x, z, target) {
     const biome = originalBiomes[i];
     const weight = originalWeights[i];
     if (!(weight > 0)) continue;
-    const mapped = biome?.id === "wetland" ? meadow : biome;
-    upsertBiomeBlendEntry(target, mapped, weight);
+    if (biome?.id === "wetland") {
+      const meadowWeight = weight * (1 - wetlandRetainWeight);
+      const wetlandWeight = weight * wetlandRetainWeight;
+      if (meadowWeight > 0.0001) upsertBiomeBlendEntry(target, meadow, meadowWeight);
+      if (wetlandWeight > 0.0001) upsertBiomeBlendEntry(target, biome, wetlandWeight);
+      continue;
+    }
+    upsertBiomeBlendEntry(target, biome, weight);
   }
 
   if (target.dominantBiome?.id === "wetland") {
-    target.dominantBiome = meadow;
+    target.dominantBiome = wetlandRetainWeight >= 0.5 ? BIOME_DEFS.wetland : meadow;
   }
 
   return normalizeBiomeBlendResult(target);
@@ -2224,10 +2438,17 @@ function fillTerrainAdditiveSampleAt(x, z, target = mountainBiomeAdditiveScratch
 }
 
 function shouldDemoteWetlandAt(x, z) {
+  return getWetlandRetentionWeightAt(x, z) < 0.5;
+}
+
+function getWetlandRetentionWeightAt(x, z) {
   const center = fillTerrainAdditiveSampleAt(x, z, mountainBiomeAdditiveScratch);
   const centerHeight = center.mountainAdditiveHeight || 0;
-  if (centerHeight <= WETLAND_MOUNTAIN_HEIGHT_MAX_METERS) return false;
-  return centerHeight < getMountainBiomeThresholdMeters();
+  const fadeBand = Math.max(0.5, WETLAND_ELEVATION_FADE_BAND_METERS);
+  const fadeStart = WETLAND_MOUNTAIN_HEIGHT_MAX_METERS - fadeBand;
+  if (centerHeight <= fadeStart) return 1;
+  if (centerHeight >= WETLAND_MOUNTAIN_HEIGHT_MAX_METERS) return 0;
+  return 1 - smoothstep(fadeStart, WETLAND_MOUNTAIN_HEIGHT_MAX_METERS, centerHeight);
 }
 
 function getMountainBiomeVariant(biome) {
@@ -2291,6 +2512,41 @@ function applyMountainVariantsToBiomeBlend(x, z, target) {
   return target;
 }
 
+function applyBumpySubdivisionsToBiomeBlend(x, z, target) {
+  if (!target || target.count <= 0) return target;
+  const originalCount = target.count;
+  const originalBiomes = target.biomes.slice(0, originalCount);
+  const originalWeights = target.weights.slice(0, originalCount);
+  target.count = 0;
+  for (let i = 0; i < target.biomes.length; i += 1) {
+    target.biomes[i] = null;
+    target.weights[i] = 0;
+  }
+
+  for (let i = 0; i < originalCount; i += 1) {
+    const biome = originalBiomes[i];
+    const weight = originalWeights[i];
+    if (!biome || !(weight > 0)) continue;
+    const variants = BUMPY_BIOME_SUBDIVISIONS[biome.id];
+    if (!variants) {
+      upsertBiomeBlendEntry(target, biome, weight);
+      continue;
+    }
+    const [smoothW, normalW, jaggedW] = getBumpySubdivisionVariantWeightsAt(x, z, biome.id);
+    if (smoothW > 0.0001) upsertBiomeBlendEntry(target, BIOME_DEFS[variants.smoothId] || biome, weight * smoothW);
+    if (normalW > 0.0001) upsertBiomeBlendEntry(target, BIOME_DEFS[variants.normalId] || biome, weight * normalW);
+    if (jaggedW > 0.0001) upsertBiomeBlendEntry(target, BIOME_DEFS[variants.jaggedId] || biome, weight * jaggedW);
+  }
+  target.dominantBiome = null;
+  return normalizeBiomeBlendResult(target);
+}
+
+function finalizeBiomeBlendAt(x, z, target) {
+  applyMountainVariantsToBiomeBlend(x, z, target);
+  applyWetlandHeightOverride(x, z, target);
+  return applyBumpySubdivisionsToBiomeBlend(x, z, target);
+}
+
 function getBiomeWithMountainVariantAt(x, z, biome) {
   if (!biome) return biome;
   return getMountainBiomeBlendWeightAt(x, z) >= 0.5
@@ -2315,8 +2571,7 @@ function fillBiomeBlendSample(x, z, target = createBiomeBlendSampleResult()) {
 
   if (!nearTempBoundary && !nearSelectorBoundary) {
     setSingleBiomeBlendResult(target, dominantBiome);
-    applyWetlandHeightOverride(x, z, target);
-    return applyMountainVariantsToBiomeBlend(x, z, target);
+    return finalizeBiomeBlendAt(x, z, target);
   }
 
   const h = BIOME_BLEND_GRADIENT_STEP_METERS;
@@ -2351,12 +2606,10 @@ function fillBiomeBlendSample(x, z, target = createBiomeBlendSampleResult()) {
   }
   if (target.count === 0) {
     setSingleBiomeBlendResult(target, dominantBiome);
-    applyWetlandHeightOverride(x, z, target);
-    return applyMountainVariantsToBiomeBlend(x, z, target);
+    return finalizeBiomeBlendAt(x, z, target);
   }
   normalizeBiomeBlendResult(target);
-  applyWetlandHeightOverride(x, z, target);
-  return applyMountainVariantsToBiomeBlend(x, z, target);
+  return finalizeBiomeBlendAt(x, z, target);
 }
 
 const terrainColorBlendScratch = createBiomeBlendSampleResult();
@@ -2393,8 +2646,12 @@ function getBiomeAt(x, z) {
   const variants = BIOME_VARIANTS[category];
   const index = Math.min(2, Math.floor(climate.selector * 3));
   const baseBiome = BIOME_DEFS[variants[index]];
-  const adjustedBiome = baseBiome?.id === "wetland" && shouldDemoteWetlandAt(x, z) ? BIOME_DEFS.meadow : baseBiome;
-  return getBiomeWithMountainVariantAt(x, z, adjustedBiome);
+  const mountainAdjusted = getBiomeWithMountainVariantAt(x, z, baseBiome);
+  const wetlandAdjusted =
+    mountainAdjusted?.id === "wetland" && shouldDemoteWetlandAt(x, z)
+      ? BIOME_DEFS.meadow
+      : mountainAdjusted;
+  return getBumpySubdividedBiomeForPoint(x, z, wetlandAdjusted);
 }
 
 function getGroundPointInfo(x, z) {
@@ -4655,8 +4912,7 @@ function handleLocalHelpCommand(message) {
 }
 
 function showWorldCommandHelp() {
-  const biomeNames = Object.values(BIOME_DEFS)
-    .map((biome) => biome.id)
+  const biomeNames = Array.from(new Set(Object.keys(BIOME_DEFS)))
     .sort()
     .join(", ");
   addChatEntry({
@@ -5177,10 +5433,11 @@ function resolveBiomeName(name) {
     .toLowerCase()
     .replace(/[^a-z]/g, "");
   if (!normalized) return null;
-  for (const biome of Object.values(BIOME_DEFS)) {
+  for (const [key, biome] of Object.entries(BIOME_DEFS)) {
+    const keyName = String(key).toLowerCase().replace(/[^a-z]/g, "");
     const idKey = biome.id.toLowerCase().replace(/[^a-z]/g, "");
     const labelKey = biome.label.toLowerCase().replace(/[^a-z]/g, "");
-    if (normalized === idKey || normalized === labelKey) {
+    if (normalized === keyName || normalized === idKey || normalized === labelKey) {
       return biome;
     }
   }

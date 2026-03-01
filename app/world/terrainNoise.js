@@ -23,6 +23,12 @@ export function createTerrainHeightSampler({
     return a + (b - a) * t;
   }
 
+  function clamp(value, min, max) {
+    if (value < min) return min;
+    if (value > max) return max;
+    return value;
+  }
+
   function clamp01(value) {
     if (value <= 0) return 0;
     if (value >= 1) return 1;
@@ -247,7 +253,7 @@ export function createTerrainHeightSampler({
     return copyMountainSample(target, mountainCache);
   }
 
-  function sampleBiomeTerrainHeight(x, z, terrain, profile) {
+  function sampleBiomeTerrainHeightRaw(x, z, terrain, profile) {
     const noiseScaleMultiplier = profile?.noiseScaleMultiplier ?? 1;
     const baseHeightMultiplier = profile?.baseHeightMultiplier ?? 1;
     const ridgeScaleMultiplier = profile?.ridgeScaleMultiplier ?? 1;
@@ -313,6 +319,33 @@ export function createTerrainHeightSampler({
     }
 
     return base * baseHeight + ridge * ridgeHeight;
+  }
+
+  function sampleBiomeTerrainHeight(x, z, terrain, profile) {
+    const center = sampleBiomeTerrainHeightRaw(x, z, terrain, profile);
+    const gradientCap = Number.isFinite(profile?.gradientCap) ? Math.max(0, profile.gradientCap) : null;
+    if (!Number.isFinite(gradientCap) || gradientCap == null) return center;
+
+    const sampleMeters = Number.isFinite(profile?.gradientSampleMeters)
+      ? Math.max(1, profile.gradientSampleMeters)
+      : 4;
+    const allowedDelta = gradientCap * sampleMeters;
+    const left = sampleBiomeTerrainHeightRaw(x - sampleMeters, z, terrain, profile);
+    const right = sampleBiomeTerrainHeightRaw(x + sampleMeters, z, terrain, profile);
+    const down = sampleBiomeTerrainHeightRaw(x, z - sampleMeters, terrain, profile);
+    const up = sampleBiomeTerrainHeightRaw(x, z + sampleMeters, terrain, profile);
+
+    let lower = -Infinity;
+    let upper = Infinity;
+    const bounds = [left, right, down, up];
+    for (let i = 0; i < bounds.length; i += 1) {
+      const neighbor = bounds[i];
+      lower = Math.max(lower, neighbor - allowedDelta);
+      upper = Math.min(upper, neighbor + allowedDelta);
+    }
+
+    if (lower <= upper) return clamp(center, lower, upper);
+    return (lower + upper) * 0.5;
   }
 
   const biomeBlendScratch = {
