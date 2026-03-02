@@ -243,7 +243,7 @@ const DEFAULT_WORLD = {
     canopyColor: "#4a8953",
   },
   water: {
-    level: 1.5,
+    level: 0.0,
     colorHex: "#4a93c7",
     opacity: 0.6,
   },
