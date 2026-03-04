@@ -53,7 +53,7 @@ export function createTerrainHeightSampler({
     let weight = 0;
     for (let i = 0; i < blend.count; i += 1) {
       const biome = blend.biomes[i];
-      if (biome?.id === "wetland") {
+      if (biome?.waterlineMode === "wetland") {
         weight += blend.weights[i];
       }
     }
@@ -350,8 +350,8 @@ export function createTerrainHeightSampler({
 
   const biomeBlendScratch = {
     count: 0,
-    biomes: Array(8).fill(null),
-    weights: Array(8).fill(0),
+    biomes: Array(24).fill(null),
+    weights: Array(24).fill(0),
   };
 
   function sampleHeightWithBlend(x, z, blend) {

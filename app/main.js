@@ -26,6 +26,7 @@ const chunkEl = document.getElementById("chunk");
 
 const biomeEl = document.getElementById("biome");
 const temperatureTypeEl = document.getElementById("temperature-type");
+const humidityTypeEl = document.getElementById("humidity-type");
 const fpsEl = document.getElementById("fps");
 const clockTimeEl = document.getElementById("clock-time");
 const startupLoadingEl = document.getElementById("startup-loading");
@@ -259,6 +260,30 @@ const BIOME_VARIANTS = {
   temperate: ["meadow", "forest", "wetland"],
   hot: ["desert", "savanna", "badlands"],
 };
+const HUMIDITY_ZONE_KEYS = ["xeric", "mesic", "hydric"];
+const HUMIDITY_ZONE_LABELS = {
+  xeric: "Xeric",
+  mesic: "Mesic",
+  hydric: "Hydric",
+};
+const CLIMATE_ZONE_THRESHOLD_LOW = 0.37;
+const CLIMATE_ZONE_THRESHOLD_HIGH = 0.63;
+const BIOME_HUMIDITY_LOOKUP = {
+  wetland: { xeric: "saltflat", mesic: "wetland", hydric: "wetland_hydric" },
+  forest: { xeric: "woodland_temperate", mesic: "forest", hydric: "rainforest_temperate" },
+  meadow: { xeric: "steppe", mesic: "meadow", hydric: "marsh" },
+  glacier: { xeric: "polar_desert", mesic: "glacier", hydric: "icefield" },
+  taiga: { xeric: "woodland_cold", mesic: "taiga", hydric: "muskeg" },
+  tundra: { xeric: "tundra", mesic: "tundra_mesic", hydric: "mire" },
+  savanna: { xeric: "savanna", mesic: "savanna_mesic", hydric: "monsoon_forest" },
+  badlands: { xeric: "badlands", mesic: "scrubland", hydric: "thorn_forest" },
+  desert: { xeric: "desert", mesic: "shrubland", hydric: "rainforest_hot" },
+};
+const ROCKY_MOUNTAIN_HUMIDITY_LOOKUP = {
+  temperate: { xeric: "alpine_steppe", mesic: "montane", hydric: "cloudforest_temperate" },
+  cold: { xeric: "alpine_tundra", mesic: "subalpine", hydric: "alpine_mire" },
+  hot: { xeric: "rockydesert", mesic: "montane_woodland", hydric: "cloudforest_hot" },
+};
 
 const BIOME_BLEND_TRANSITION_WIDTH_METERS = 30;
 const BIOME_BLEND_HALF_WIDTH_METERS = BIOME_BLEND_TRANSITION_WIDTH_METERS * 0.5;
@@ -272,7 +297,7 @@ const DEFAULT_TRANSITION_BIOME_ID = "forest";
 const MOUNTAIN_BIOME_BORDER_BLEND_HEIGHT_METERS = 24;
 const WETLAND_MOUNTAIN_HEIGHT_MAX_METERS = 10;
 const WETLAND_ELEVATION_FADE_BAND_METERS = 8;
-const BIOME_BLEND_MAX_SLOTS = 8;
+const BIOME_BLEND_MAX_SLOTS = 24;
 const MOUNTAIN_BIOME_SUFFIX = "_mountains";
 const BIOME_SUBDIVISION_PREFIX_JAGGED = "jagged_";
 const BIOME_SUBDIVISION_PREFIX_SMOOTH = "smooth_";
@@ -514,6 +539,811 @@ const BIOME_DEFS = {
   },
 };
 
+Object.assign(BIOME_DEFS, {
+  saltflat: {
+    id: "saltflat",
+    label: "Saltflat",
+    category: "temperate",
+    humidityBand: "xeric",
+    groundColor: new THREE.Color("#d9cfb2"),
+    waterColor: new THREE.Color("#8bb0bc"),
+    fogColor: new THREE.Color("#d8d3c4"),
+    fogDensityMultiplier: 0.9,
+    terrainProfile: {
+      noiseAlgorithm: "billow",
+      noiseScaleMultiplier: 0.84,
+      baseHeightMultiplier: 0.58,
+      ridgeScaleMultiplier: 0.72,
+      ridgeHeightMultiplier: 0.18,
+      octaves: 3,
+      lacunarity: 1.9,
+      gain: 0.53,
+      secondaryAmount: 0.05,
+      gradientCap: 0.18,
+      gradientSampleMeters: 5,
+    },
+    hasTrees: false,
+  },
+  wetland_hydric: {
+    id: "wetland_hydric",
+    label: "Wetland (Hydric)",
+    category: "temperate",
+    humidityBand: "hydric",
+    wetlandRetentionGroup: "wetland",
+    waterlineMode: "wetland",
+    groundColor: new THREE.Color("#3f7269"),
+    waterColor: new THREE.Color("#337163"),
+    fogColor: new THREE.Color("#9ec0b5"),
+    fogDensityMultiplier: 1.42,
+    terrainProfile: {
+      noiseAlgorithm: "hybrid",
+      noiseScaleMultiplier: 1.2,
+      baseHeightMultiplier: 0.44,
+      ridgeScaleMultiplier: 0.7,
+      ridgeHeightMultiplier: 0.15,
+      octaves: 4,
+      lacunarity: 1.7,
+      gain: 0.56,
+      warpStrength: 0.22,
+      warpScaleMultiplier: 1.42,
+      secondaryAmount: 0.07,
+    },
+    hasTrees: true,
+    treeStyle: "wetland",
+    treeDensityMultiplier: 0.84,
+    trunkTint: new THREE.Color("#584434"),
+    canopyTint: new THREE.Color("#4a8752"),
+  },
+  woodland_temperate: {
+    id: "woodland_temperate",
+    label: "Woodland (Temperate)",
+    category: "temperate",
+    humidityBand: "xeric",
+    groundColor: new THREE.Color("#8a9b5a"),
+    waterColor: new THREE.Color("#6b96b4"),
+    fogColor: new THREE.Color("#c9d6ad"),
+    fogDensityMultiplier: 0.96,
+    terrainProfile: {
+      noiseAlgorithm: "hybrid",
+      noiseScaleMultiplier: 1.02,
+      baseHeightMultiplier: 0.86,
+      ridgeScaleMultiplier: 1.04,
+      ridgeHeightMultiplier: 0.52,
+      octaves: 4,
+      lacunarity: 1.9,
+      gain: 0.5,
+      secondaryAmount: 0.1,
+    },
+    hasTrees: true,
+    treeStyle: "woodland",
+    treeDensityMultiplier: 0.58,
+    trunkTint: new THREE.Color("#6b5138"),
+    canopyTint: new THREE.Color("#8ea256"),
+  },
+  rainforest_temperate: {
+    id: "rainforest_temperate",
+    label: "Rainforest (Temperate)",
+    category: "temperate",
+    humidityBand: "hydric",
+    groundColor: new THREE.Color("#355f3f"),
+    waterColor: new THREE.Color("#377a7f"),
+    fogColor: new THREE.Color("#98c3a4"),
+    fogDensityMultiplier: 1.28,
+    terrainProfile: {
+      noiseAlgorithm: "hybrid",
+      noiseScaleMultiplier: 1.14,
+      baseHeightMultiplier: 1.04,
+      ridgeScaleMultiplier: 1.06,
+      ridgeHeightMultiplier: 0.58,
+      octaves: 5,
+      lacunarity: 1.88,
+      gain: 0.51,
+      warpStrength: 0.14,
+      warpScaleMultiplier: 1.4,
+      secondaryAmount: 0.12,
+    },
+    hasTrees: true,
+    treeStyle: "rainforest",
+    treeDensityMultiplier: 1.22,
+    trunkTint: new THREE.Color("#5b4232"),
+    canopyTint: new THREE.Color("#2d7a3d"),
+  },
+  steppe: {
+    id: "steppe",
+    label: "Steppe",
+    category: "temperate",
+    humidityBand: "xeric",
+    groundColor: new THREE.Color("#bda86a"),
+    waterColor: new THREE.Color("#72a6bf"),
+    fogColor: new THREE.Color("#dbcda0"),
+    fogDensityMultiplier: 0.86,
+    terrainProfile: {
+      noiseAlgorithm: "billow",
+      noiseScaleMultiplier: 1.08,
+      baseHeightMultiplier: 0.7,
+      ridgeScaleMultiplier: 0.84,
+      ridgeHeightMultiplier: 0.28,
+      octaves: 4,
+      lacunarity: 1.85,
+      gain: 0.54,
+      secondaryAmount: 0.08,
+    },
+    hasTrees: true,
+    treeStyle: "woodland",
+    treeDensityMultiplier: 0.24,
+    trunkTint: new THREE.Color("#6f553c"),
+    canopyTint: new THREE.Color("#a7a95b"),
+  },
+  marsh: {
+    id: "marsh",
+    label: "Marsh",
+    category: "temperate",
+    humidityBand: "hydric",
+    waterlineMode: "wetland",
+    wetlandRetentionGroup: "wetland",
+    groundColor: new THREE.Color("#496f5a"),
+    waterColor: new THREE.Color("#3e756c"),
+    fogColor: new THREE.Color("#a8cab5"),
+    fogDensityMultiplier: 1.36,
+    terrainProfile: {
+      noiseAlgorithm: "hybrid",
+      noiseScaleMultiplier: 1.16,
+      baseHeightMultiplier: 0.5,
+      ridgeScaleMultiplier: 0.74,
+      ridgeHeightMultiplier: 0.18,
+      octaves: 4,
+      lacunarity: 1.76,
+      gain: 0.55,
+      warpStrength: 0.18,
+      warpScaleMultiplier: 1.34,
+      secondaryAmount: 0.06,
+    },
+    hasTrees: true,
+    treeStyle: "wetland",
+    treeDensityMultiplier: 0.62,
+    trunkTint: new THREE.Color("#614837"),
+    canopyTint: new THREE.Color("#5f8f58"),
+  },
+  polar_desert: {
+    id: "polar_desert",
+    label: "Polar Desert",
+    category: "cold",
+    humidityBand: "xeric",
+    groundColor: new THREE.Color("#d8ddd8"),
+    waterColor: new THREE.Color("#9eb9c8"),
+    fogColor: new THREE.Color("#d7e2e8"),
+    fogDensityMultiplier: 1.0,
+    terrainProfile: {
+      noiseAlgorithm: "ridged",
+      noiseScaleMultiplier: 0.9,
+      baseHeightMultiplier: 0.86,
+      ridgeScaleMultiplier: 1.18,
+      ridgeHeightMultiplier: 0.86,
+      octaves: 4,
+      lacunarity: 2.0,
+      gain: 0.5,
+      secondaryAmount: 0.05,
+    },
+    hasTrees: false,
+  },
+  icefield: {
+    id: "icefield",
+    label: "Icefield",
+    category: "cold",
+    humidityBand: "hydric",
+    groundColor: new THREE.Color("#e8f5ff"),
+    waterColor: new THREE.Color("#9fd3ef"),
+    fogColor: new THREE.Color("#e3f1ff"),
+    fogDensityMultiplier: 1.26,
+    terrainProfile: {
+      noiseAlgorithm: "ridged",
+      noiseScaleMultiplier: 0.8,
+      baseHeightMultiplier: 1.26,
+      ridgeScaleMultiplier: 1.44,
+      ridgeHeightMultiplier: 1.62,
+      octaves: 5,
+      lacunarity: 2.02,
+      gain: 0.48,
+      secondaryAmount: 0.07,
+    },
+    hasTrees: false,
+  },
+  woodland_cold: {
+    id: "woodland_cold",
+    label: "Woodland (Cold)",
+    category: "cold",
+    humidityBand: "xeric",
+    groundColor: new THREE.Color("#7e8c82"),
+    waterColor: new THREE.Color("#6f8da0"),
+    fogColor: new THREE.Color("#afbdbe"),
+    fogDensityMultiplier: 1.02,
+    terrainProfile: {
+      noiseAlgorithm: "hybrid",
+      noiseScaleMultiplier: 1.02,
+      baseHeightMultiplier: 0.88,
+      ridgeScaleMultiplier: 1.08,
+      ridgeHeightMultiplier: 0.62,
+      octaves: 4,
+      lacunarity: 1.9,
+      gain: 0.51,
+      secondaryAmount: 0.06,
+    },
+    hasTrees: true,
+    treeStyle: "muskeg",
+    treeDensityMultiplier: 0.46,
+    trunkTint: new THREE.Color("#6a5442"),
+    canopyTint: new THREE.Color("#7a9d88"),
+  },
+  muskeg: {
+    id: "muskeg",
+    label: "Muskeg",
+    category: "cold",
+    humidityBand: "hydric",
+    waterlineMode: "wetland",
+    groundColor: new THREE.Color("#4f6356"),
+    waterColor: new THREE.Color("#4a6f73"),
+    fogColor: new THREE.Color("#9cb4aa"),
+    fogDensityMultiplier: 1.3,
+    terrainProfile: {
+      noiseAlgorithm: "hybrid",
+      noiseScaleMultiplier: 1.1,
+      baseHeightMultiplier: 0.56,
+      ridgeScaleMultiplier: 0.82,
+      ridgeHeightMultiplier: 0.26,
+      octaves: 4,
+      lacunarity: 1.82,
+      gain: 0.54,
+      warpStrength: 0.16,
+      warpScaleMultiplier: 1.3,
+      secondaryAmount: 0.05,
+    },
+    hasTrees: true,
+    treeStyle: "muskeg",
+    treeDensityMultiplier: 0.54,
+    trunkTint: new THREE.Color("#5b4a38"),
+    canopyTint: new THREE.Color("#5d7f63"),
+  },
+  tundra_mesic: {
+    id: "tundra_mesic",
+    label: "Tundra (Mesic)",
+    category: "cold",
+    humidityBand: "mesic",
+    groundColor: new THREE.Color("#aeb19d"),
+    waterColor: new THREE.Color("#7192a4"),
+    fogColor: new THREE.Color("#c7cecb"),
+    fogDensityMultiplier: 1.1,
+    terrainProfile: {
+      noiseAlgorithm: "hybrid",
+      noiseScaleMultiplier: 0.98,
+      baseHeightMultiplier: 0.84,
+      ridgeScaleMultiplier: 1.0,
+      ridgeHeightMultiplier: 0.56,
+      octaves: 4,
+      lacunarity: 1.88,
+      gain: 0.52,
+      secondaryAmount: 0.08,
+    },
+    hasTrees: false,
+  },
+  mire: {
+    id: "mire",
+    label: "Mire",
+    category: "cold",
+    humidityBand: "hydric",
+    waterlineMode: "wetland",
+    groundColor: new THREE.Color("#5f6f63"),
+    waterColor: new THREE.Color("#4f7075"),
+    fogColor: new THREE.Color("#a7b8b1"),
+    fogDensityMultiplier: 1.32,
+    terrainProfile: {
+      noiseAlgorithm: "hybrid",
+      noiseScaleMultiplier: 1.08,
+      baseHeightMultiplier: 0.52,
+      ridgeScaleMultiplier: 0.76,
+      ridgeHeightMultiplier: 0.2,
+      octaves: 4,
+      lacunarity: 1.8,
+      gain: 0.54,
+      warpStrength: 0.14,
+      warpScaleMultiplier: 1.26,
+      secondaryAmount: 0.05,
+    },
+    hasTrees: false,
+  },
+  savanna_mesic: {
+    id: "savanna_mesic",
+    label: "Savanna (Mesic)",
+    category: "hot",
+    humidityBand: "mesic",
+    groundColor: new THREE.Color("#b7a35b"),
+    waterColor: new THREE.Color("#67a1b9"),
+    fogColor: new THREE.Color("#dfcf97"),
+    fogDensityMultiplier: 0.96,
+    terrainProfile: {
+      noiseAlgorithm: "fbm_ridged",
+      noiseScaleMultiplier: 1.0,
+      baseHeightMultiplier: 0.92,
+      ridgeScaleMultiplier: 1.0,
+      ridgeHeightMultiplier: 0.52,
+      octaves: 4,
+      lacunarity: 1.9,
+      gain: 0.5,
+      secondaryAmount: 0.1,
+    },
+    hasTrees: true,
+    treeStyle: "savanna",
+    treeDensityMultiplier: 0.52,
+    trunkTint: new THREE.Color("#73523a"),
+    canopyTint: new THREE.Color("#92ac4b"),
+  },
+  monsoon_forest: {
+    id: "monsoon_forest",
+    label: "Monsoon Forest",
+    category: "hot",
+    humidityBand: "hydric",
+    waterlineMode: "wetland",
+    groundColor: new THREE.Color("#3d6b44"),
+    waterColor: new THREE.Color("#3e7f7f"),
+    fogColor: new THREE.Color("#a5c68d"),
+    fogDensityMultiplier: 1.24,
+    terrainProfile: {
+      noiseAlgorithm: "hybrid",
+      noiseScaleMultiplier: 1.12,
+      baseHeightMultiplier: 1.02,
+      ridgeScaleMultiplier: 1.04,
+      ridgeHeightMultiplier: 0.56,
+      octaves: 5,
+      lacunarity: 1.9,
+      gain: 0.5,
+      warpStrength: 0.16,
+      warpScaleMultiplier: 1.34,
+      secondaryAmount: 0.13,
+    },
+    hasTrees: true,
+    treeStyle: "monsoon",
+    treeDensityMultiplier: 1.16,
+    trunkTint: new THREE.Color("#5f4332"),
+    canopyTint: new THREE.Color("#2f7d3f"),
+  },
+  scrubland: {
+    id: "scrubland",
+    label: "Scrubland",
+    category: "hot",
+    humidityBand: "mesic",
+    groundColor: new THREE.Color("#9a8254"),
+    waterColor: new THREE.Color("#7e8f7d"),
+    fogColor: new THREE.Color("#c7ab7e"),
+    fogDensityMultiplier: 0.94,
+    terrainProfile: {
+      noiseAlgorithm: "hybrid",
+      noiseScaleMultiplier: 1.06,
+      baseHeightMultiplier: 0.92,
+      ridgeScaleMultiplier: 1.16,
+      ridgeHeightMultiplier: 0.72,
+      octaves: 4,
+      lacunarity: 1.98,
+      gain: 0.5,
+      secondaryAmount: 0.07,
+    },
+    hasTrees: true,
+    treeStyle: "shrubland",
+    treeDensityMultiplier: 0.34,
+    trunkTint: new THREE.Color("#6f5138"),
+    canopyTint: new THREE.Color("#8d8e46"),
+  },
+  thorn_forest: {
+    id: "thorn_forest",
+    label: "Thorn Forest",
+    category: "hot",
+    humidityBand: "hydric",
+    groundColor: new THREE.Color("#836744"),
+    waterColor: new THREE.Color("#6f7c5e"),
+    fogColor: new THREE.Color("#be9a77"),
+    fogDensityMultiplier: 1.0,
+    terrainProfile: {
+      noiseAlgorithm: "ridged",
+      noiseScaleMultiplier: 1.08,
+      baseHeightMultiplier: 0.96,
+      ridgeScaleMultiplier: 1.3,
+      ridgeHeightMultiplier: 0.9,
+      octaves: 4,
+      lacunarity: 2.04,
+      gain: 0.49,
+      secondaryAmount: 0.08,
+    },
+    hasTrees: true,
+    treeStyle: "thorn",
+    treeDensityMultiplier: 0.42,
+    trunkTint: new THREE.Color("#64462f"),
+    canopyTint: new THREE.Color("#7e8d3d"),
+  },
+  shrubland: {
+    id: "shrubland",
+    label: "Shrubland",
+    category: "hot",
+    humidityBand: "mesic",
+    groundColor: new THREE.Color("#c2a96f"),
+    waterColor: new THREE.Color("#7fa5a6"),
+    fogColor: new THREE.Color("#d6bf8f"),
+    fogDensityMultiplier: 0.9,
+    terrainProfile: {
+      noiseAlgorithm: "billow",
+      noiseScaleMultiplier: 0.9,
+      baseHeightMultiplier: 0.78,
+      ridgeScaleMultiplier: 1.12,
+      ridgeHeightMultiplier: 0.34,
+      octaves: 4,
+      lacunarity: 1.96,
+      gain: 0.5,
+      secondaryAmount: 0.12,
+    },
+    hasTrees: true,
+    treeStyle: "shrubland",
+    treeDensityMultiplier: 0.28,
+    trunkTint: new THREE.Color("#6e5035"),
+    canopyTint: new THREE.Color("#919e4a"),
+  },
+  rainforest_hot: {
+    id: "rainforest_hot",
+    label: "Rainforest (Hot)",
+    category: "hot",
+    humidityBand: "hydric",
+    waterlineMode: "wetland",
+    groundColor: new THREE.Color("#2f5b33"),
+    waterColor: new THREE.Color("#2f7878"),
+    fogColor: new THREE.Color("#9bc08d"),
+    fogDensityMultiplier: 1.24,
+    terrainProfile: {
+      noiseAlgorithm: "hybrid",
+      noiseScaleMultiplier: 1.08,
+      baseHeightMultiplier: 0.96,
+      ridgeScaleMultiplier: 1.1,
+      ridgeHeightMultiplier: 0.46,
+      octaves: 5,
+      lacunarity: 1.9,
+      gain: 0.5,
+      warpStrength: 0.14,
+      warpScaleMultiplier: 1.32,
+      secondaryAmount: 0.14,
+    },
+    hasTrees: true,
+    treeStyle: "rainforest",
+    treeDensityMultiplier: 1.28,
+    trunkTint: new THREE.Color("#5c4230"),
+    canopyTint: new THREE.Color("#24703a"),
+  },
+  alpine_steppe: {
+    id: "alpine_steppe",
+    label: "Alpine Steppe",
+    category: "temperate",
+    humidityBand: "xeric",
+    isMountainVariant: true,
+    baseBiomeId: "rocky_mountains",
+    groundColor: new THREE.Color("#9f9d86"),
+    waterColor: new THREE.Color("#748b95"),
+    fogColor: new THREE.Color("#c7c9bc"),
+    fogDensityMultiplier: 1.02,
+    terrainProfile: {
+      noiseAlgorithm: "ridged",
+      noiseScaleMultiplier: 0.94,
+      baseHeightMultiplier: 1.18,
+      ridgeScaleMultiplier: 1.38,
+      ridgeHeightMultiplier: 1.18,
+      octaves: 5,
+      lacunarity: 2.0,
+      gain: 0.48,
+      secondaryAmount: 0.1,
+    },
+    hasTrees: false,
+  },
+  montane: {
+    id: "montane",
+    label: "Montane",
+    category: "temperate",
+    humidityBand: "mesic",
+    isMountainVariant: true,
+    baseBiomeId: "rocky_mountains",
+    groundColor: new THREE.Color("#7a8d73"),
+    waterColor: new THREE.Color("#5f7f8f"),
+    fogColor: new THREE.Color("#b8c7b7"),
+    fogDensityMultiplier: 1.1,
+    terrainProfile: {
+      noiseAlgorithm: "ridged",
+      noiseScaleMultiplier: 0.92,
+      baseHeightMultiplier: 1.2,
+      ridgeScaleMultiplier: 1.4,
+      ridgeHeightMultiplier: 1.24,
+      octaves: 5,
+      lacunarity: 2.0,
+      gain: 0.48,
+      secondaryAmount: 0.11,
+    },
+    hasTrees: true,
+    treeStyle: "subalpine",
+    treeDensityMultiplier: 0.42,
+    trunkTint: new THREE.Color("#6a5541"),
+    canopyTint: new THREE.Color("#5b8660"),
+  },
+  cloudforest_temperate: {
+    id: "cloudforest_temperate",
+    label: "Cloudforest (Temperate)",
+    category: "temperate",
+    humidityBand: "hydric",
+    isMountainVariant: true,
+    baseBiomeId: "rocky_mountains",
+    groundColor: new THREE.Color("#5f7f6f"),
+    waterColor: new THREE.Color("#4d7f88"),
+    fogColor: new THREE.Color("#9eb9b2"),
+    fogDensityMultiplier: 1.22,
+    terrainProfile: {
+      noiseAlgorithm: "ridged",
+      noiseScaleMultiplier: 0.9,
+      baseHeightMultiplier: 1.24,
+      ridgeScaleMultiplier: 1.42,
+      ridgeHeightMultiplier: 1.18,
+      octaves: 5,
+      lacunarity: 1.98,
+      gain: 0.49,
+      warpStrength: 0.13,
+      warpScaleMultiplier: 1.5,
+      secondaryAmount: 0.12,
+    },
+    hasTrees: true,
+    treeStyle: "cloudforest",
+    treeDensityMultiplier: 0.62,
+    trunkTint: new THREE.Color("#604b3a"),
+    canopyTint: new THREE.Color("#4c8d62"),
+  },
+  alpine_tundra: {
+    id: "alpine_tundra",
+    label: "Alpine Tundra",
+    category: "cold",
+    humidityBand: "xeric",
+    isMountainVariant: true,
+    baseBiomeId: "rocky_mountains",
+    groundColor: new THREE.Color("#a5a69a"),
+    waterColor: new THREE.Color("#758b98"),
+    fogColor: new THREE.Color("#ccd2d0"),
+    fogDensityMultiplier: 1.08,
+    terrainProfile: {
+      noiseAlgorithm: "ridged",
+      noiseScaleMultiplier: 0.92,
+      baseHeightMultiplier: 1.2,
+      ridgeScaleMultiplier: 1.36,
+      ridgeHeightMultiplier: 1.22,
+      octaves: 5,
+      lacunarity: 2.0,
+      gain: 0.48,
+      secondaryAmount: 0.09,
+    },
+    hasTrees: false,
+  },
+  subalpine: {
+    id: "subalpine",
+    label: "Subalpine",
+    category: "cold",
+    humidityBand: "mesic",
+    isMountainVariant: true,
+    baseBiomeId: "rocky_mountains",
+    groundColor: new THREE.Color("#718574"),
+    waterColor: new THREE.Color("#5b798d"),
+    fogColor: new THREE.Color("#b5c4be"),
+    fogDensityMultiplier: 1.14,
+    terrainProfile: {
+      noiseAlgorithm: "ridged",
+      noiseScaleMultiplier: 0.9,
+      baseHeightMultiplier: 1.22,
+      ridgeScaleMultiplier: 1.38,
+      ridgeHeightMultiplier: 1.2,
+      octaves: 5,
+      lacunarity: 1.98,
+      gain: 0.49,
+      secondaryAmount: 0.11,
+    },
+    hasTrees: true,
+    treeStyle: "subalpine",
+    treeDensityMultiplier: 0.48,
+    trunkTint: new THREE.Color("#665142"),
+    canopyTint: new THREE.Color("#5f8168"),
+  },
+  alpine_mire: {
+    id: "alpine_mire",
+    label: "Alpine Mire",
+    category: "cold",
+    humidityBand: "hydric",
+    isMountainVariant: true,
+    baseBiomeId: "rocky_mountains",
+    waterlineMode: "wetland",
+    groundColor: new THREE.Color("#5d6e67"),
+    waterColor: new THREE.Color("#4d6d72"),
+    fogColor: new THREE.Color("#9fb0ad"),
+    fogDensityMultiplier: 1.26,
+    terrainProfile: {
+      noiseAlgorithm: "ridged",
+      noiseScaleMultiplier: 0.88,
+      baseHeightMultiplier: 1.12,
+      ridgeScaleMultiplier: 1.32,
+      ridgeHeightMultiplier: 1.0,
+      octaves: 5,
+      lacunarity: 1.95,
+      gain: 0.5,
+      warpStrength: 0.12,
+      warpScaleMultiplier: 1.45,
+      secondaryAmount: 0.1,
+    },
+    hasTrees: true,
+    treeStyle: "muskeg",
+    treeDensityMultiplier: 0.34,
+    trunkTint: new THREE.Color("#5a4739"),
+    canopyTint: new THREE.Color("#58705f"),
+  },
+  rockydesert: {
+    id: "rockydesert",
+    label: "Rocky Desert",
+    category: "hot",
+    humidityBand: "xeric",
+    isMountainVariant: true,
+    baseBiomeId: "rocky_mountains",
+    groundColor: new THREE.Color("#9e7a58"),
+    waterColor: new THREE.Color("#7a7f70"),
+    fogColor: new THREE.Color("#caa27d"),
+    fogDensityMultiplier: 0.96,
+    terrainProfile: {
+      noiseAlgorithm: "ridged",
+      noiseScaleMultiplier: 0.92,
+      baseHeightMultiplier: 1.18,
+      ridgeScaleMultiplier: 1.42,
+      ridgeHeightMultiplier: 1.24,
+      octaves: 5,
+      lacunarity: 2.02,
+      gain: 0.48,
+      secondaryAmount: 0.1,
+    },
+    hasTrees: false,
+  },
+  montane_woodland: {
+    id: "montane_woodland",
+    label: "Montane Woodland",
+    category: "hot",
+    humidityBand: "mesic",
+    isMountainVariant: true,
+    baseBiomeId: "rocky_mountains",
+    groundColor: new THREE.Color("#7f7f58"),
+    waterColor: new THREE.Color("#607f82"),
+    fogColor: new THREE.Color("#c0bb94"),
+    fogDensityMultiplier: 1.02,
+    terrainProfile: {
+      noiseAlgorithm: "ridged",
+      noiseScaleMultiplier: 0.9,
+      baseHeightMultiplier: 1.2,
+      ridgeScaleMultiplier: 1.38,
+      ridgeHeightMultiplier: 1.22,
+      octaves: 5,
+      lacunarity: 2.0,
+      gain: 0.48,
+      secondaryAmount: 0.1,
+    },
+    hasTrees: true,
+    treeStyle: "woodland",
+    treeDensityMultiplier: 0.52,
+    trunkTint: new THREE.Color("#6a4e36"),
+    canopyTint: new THREE.Color("#7f9848"),
+  },
+  cloudforest_hot: {
+    id: "cloudforest_hot",
+    label: "Cloudforest (Hot)",
+    category: "hot",
+    humidityBand: "hydric",
+    isMountainVariant: true,
+    baseBiomeId: "rocky_mountains",
+    groundColor: new THREE.Color("#5b775d"),
+    waterColor: new THREE.Color("#4f7e82"),
+    fogColor: new THREE.Color("#a9c0a0"),
+    fogDensityMultiplier: 1.2,
+    terrainProfile: {
+      noiseAlgorithm: "ridged",
+      noiseScaleMultiplier: 0.88,
+      baseHeightMultiplier: 1.22,
+      ridgeScaleMultiplier: 1.4,
+      ridgeHeightMultiplier: 1.2,
+      octaves: 5,
+      lacunarity: 2.0,
+      gain: 0.48,
+      warpStrength: 0.12,
+      warpScaleMultiplier: 1.45,
+      secondaryAmount: 0.11,
+    },
+    hasTrees: true,
+    treeStyle: "cloudforest",
+    treeDensityMultiplier: 0.66,
+    trunkTint: new THREE.Color("#614734"),
+    canopyTint: new THREE.Color("#4e8a54"),
+  },
+});
+
+const BIOME_DETAIL_TEXTURE_IDS = {
+  glacier: 1,
+  icefield: 1,
+  polar_desert: 2,
+  tundra: 2,
+  tundra_mesic: 2,
+  alpine_tundra: 2,
+  taiga: 3,
+  woodland_cold: 3,
+  subalpine: 3,
+  meadow: 4,
+  steppe: 4,
+  alpine_steppe: 4,
+  forest: 5,
+  woodland_temperate: 5,
+  montane_woodland: 5,
+  wetland: 6,
+  wetland_hydric: 6,
+  marsh: 6,
+  mire: 6,
+  muskeg: 6,
+  alpine_mire: 6,
+  desert: 7,
+  saltflat: 7,
+  rockydesert: 7,
+  savanna: 8,
+  savanna_mesic: 8,
+  scrubland: 8,
+  shrubland: 8,
+  badlands: 9,
+  thorn_forest: 9,
+  rainforest_temperate: 10,
+  monsoon_forest: 10,
+  rainforest_hot: 10,
+  rocky_mountains: 11,
+  montane: 11,
+  cloudforest_temperate: 11,
+  cloudforest_hot: 11,
+};
+
+const BIOME_WATERLINE_MODES = {
+  wetland: "wetland",
+  wetland_hydric: "wetland",
+  marsh: "wetland",
+  mire: "wetland",
+  muskeg: "wetland",
+  monsoon_forest: "wetland",
+  rainforest_hot: "wetland",
+  alpine_mire: "wetland",
+};
+
+const BIOME_HUMIDITY_BANDS = {
+  glacier: "mesic",
+  tundra: "xeric",
+  taiga: "mesic",
+  meadow: "mesic",
+  forest: "mesic",
+  wetland: "mesic",
+  rocky_mountains: "mesic",
+  desert: "xeric",
+  savanna: "xeric",
+  badlands: "xeric",
+};
+
+const BIOME_WETLAND_RETENTION_GROUP = {
+  wetland: "wetland",
+  wetland_hydric: "wetland",
+  marsh: "wetland",
+};
+
+for (const [biomeId, detailId] of Object.entries(BIOME_DETAIL_TEXTURE_IDS)) {
+  if (BIOME_DEFS[biomeId]) BIOME_DEFS[biomeId].detailTextureId = detailId;
+}
+for (const [biomeId, mode] of Object.entries(BIOME_WATERLINE_MODES)) {
+  if (BIOME_DEFS[biomeId]) BIOME_DEFS[biomeId].waterlineMode = mode;
+}
+for (const [biomeId, humidityBand] of Object.entries(BIOME_HUMIDITY_BANDS)) {
+  if (BIOME_DEFS[biomeId]) BIOME_DEFS[biomeId].humidityBand = humidityBand;
+}
+for (const [biomeId, group] of Object.entries(BIOME_WETLAND_RETENTION_GROUP)) {
+  if (BIOME_DEFS[biomeId]) BIOME_DEFS[biomeId].wetlandRetentionGroup = group;
+}
+
 function blendBiomeColorToMountain(baseColor, amount, lift = 0) {
   const target = new THREE.Color(baseColor);
   target.lerp(new THREE.Color("#7d8790"), amount);
@@ -572,9 +1402,22 @@ BIOME_DEFS.wetland_mountains = BIOME_DEFS.rocky_mountains;
 const BUMPY_BIOME_SUBDIVISION_TARGET_IDS = new Set([
   "badlands",
   "badlands_mountains",
+  "scrubland",
+  "thorn_forest",
+  "desert",
+  "saltflat",
   "glacier",
   "glacier_mountains",
+  "icefield",
+  "polar_desert",
   "rocky_mountains",
+  "alpine_steppe",
+  "alpine_tundra",
+  "alpine_mire",
+  "rockydesert",
+  "montane",
+  "cloudforest_temperate",
+  "cloudforest_hot",
 ]);
 const BUMPY_BIOME_SUBDIVISION_THRESHOLD_SMOOTH = 0.33;
 const BUMPY_BIOME_SUBDIVISION_THRESHOLD_JAGGED = 0.67;
@@ -1388,10 +2231,13 @@ function setTerrainDetailIntensity(intensity) {
 }
 
 function getTerrainDetailBiomeId(biome) {
-  const rawBiomeId = typeof biome?.baseBiomeId === "string" ? biome.baseBiomeId : biome?.id;
+  if (Number.isFinite(biome?.detailTextureId)) return biome.detailTextureId;
+  const rawBiomeId = typeof biome?.id === "string" ? biome.id : biome?.baseBiomeId;
   const biomeId = String(rawBiomeId || "")
     .replace(new RegExp(`^${BIOME_SUBDIVISION_PREFIX_JAGGED}`), "")
     .replace(new RegExp(`^${BIOME_SUBDIVISION_PREFIX_SMOOTH}`), "");
+  const def = BIOME_DEFS[biomeId];
+  if (Number.isFinite(def?.detailTextureId)) return def.detailTextureId;
   switch (biomeId) {
     case "glacier":
       return 1; // crystalline ice facets
@@ -2119,14 +2965,30 @@ function fastSimplex2(x, z, seed) {
   return 70 * (n0 + n1 + n2);
 }
 
+function sampleClimateBandNoise(x, z, seedOffset = 0, zoneScaleMultiplier = 1) {
+  const axisSeed = noiseSeed + seedOffset;
+  const phase = axisSeed * 0.000017;
+  // Larger climate zones (~9x area) without changing local biome granularity.
+  const CLIMATE_ZONE_SCALE = 2 / 3;
+  const zoneScale = CLIMATE_ZONE_SCALE / Math.max(0.01, zoneScaleMultiplier);
+  const sx = x * 0.00115 * zoneScale;
+  const sz = z * 0.00105 * zoneScale;
+  const jitter = fastSimplex2(x * 0.00042 * zoneScale, z * 0.00042 * zoneScale, axisSeed + 7);
+  const raw =
+    0.5 +
+    Math.sin(sx + phase) * 0.22 +
+    Math.sin(sz * 1.18 - phase * 1.4) * 0.18 +
+    Math.sin((sx + sz) * 0.72 + phase * 0.7) * 0.14 +
+    jitter * 0.14;
+  return clampNumber(raw, 0, 1, 0.5);
+}
+
 function sampleBiomeClimate(x, z) {
-  const phaseA = noiseSeed * 0.000017;
-  const phaseB = noiseSeed * 0.000023;
-  // Larger temperature zones (~9x area) without changing local biome granularity.
-  const TEMPERATURE_ZONE_SCALE = 2 / 3;
-  const sx = x * 0.00115 * TEMPERATURE_ZONE_SCALE;
-  const sz = z * 0.00105 * TEMPERATURE_ZONE_SCALE;
-  const tempJitter = fastSimplex2(x * 0.00042 * TEMPERATURE_ZONE_SCALE, z * 0.00042 * TEMPERATURE_ZONE_SCALE, noiseSeed + 7);
+  const temperature = sampleClimateBandNoise(x, z, 0);
+  const humidity = sampleClimateBandNoise(x, z, 9137, 1.3);
+  const selectorSeed = noiseSeed + 317;
+  const phaseA = selectorSeed * 0.000017;
+  const phaseB = selectorSeed * 0.000023;
   const warpBaseX = x * 0.00032;
   const warpBaseZ = z * 0.00028;
   const warpA = Math.sin(warpBaseX + phaseA * 2.1);
@@ -2138,13 +3000,7 @@ function sampleBiomeClimate(x, z) {
   const mz = (z + warpZ) * 0.00102;
   const dx = x + warpX * 0.6;
   const dz = z + warpZ * 0.6;
-  const tempRaw =
-    0.5 +
-    Math.sin(sx + phaseA) * 0.22 +
-    Math.sin(sz * 1.18 - phaseA * 1.4) * 0.18 +
-    Math.sin((sx + sz) * 0.72 + phaseA * 0.7) * 0.14 +
-    tempJitter * 0.14;
-  const moistureRaw =
+  const selectorMacroRaw =
     0.5 +
     Math.sin((mx * 0.84 - mz * 0.34) + phaseB) * 0.23 +
     Math.sin((mz * 1.31 + mx * 0.22) - phaseB * 0.9) * 0.16 +
@@ -2166,8 +3022,9 @@ function sampleBiomeClimate(x, z) {
         detailJitter * -1.05
     ) * 0.12;
   return {
-    temperature: clampNumber(tempRaw, 0, 1, 0.5),
-    moisture: clampNumber(moistureRaw, 0, 1, 0.5),
+    temperature,
+    humidity,
+    selectorMacro: clampNumber(selectorMacroRaw, 0, 1, 0.5),
     detail: clampNumber(detailRaw, 0, 1, 0.5),
   };
 }
@@ -2175,7 +3032,7 @@ function sampleBiomeClimate(x, z) {
 function sampleBiomeClimateFields(x, z) {
   const climate = sampleBiomeClimate(x, z);
   const mixBias = clampNumber(0.25 + climate.detail * 0.5, 0.2, 0.75, 0.45);
-  const rawSelector = climate.moisture * (1 - mixBias) + climate.detail * mixBias;
+  const rawSelector = climate.selectorMacro * (1 - mixBias) + climate.detail * mixBias;
   const ridge = 1 - Math.abs(rawSelector * 2 - 1);
   const shapedSelector = clampNumber(rawSelector + (ridge - 0.5) * 0.08, 0, 1, 0.5);
   return {
@@ -2284,13 +3141,43 @@ function metersBoundaryBlend(value, threshold, gradientPerMeter) {
   return metersBoundaryBlendWithHalfWidth(value, threshold, gradientPerMeter, BIOME_BLEND_HALF_WIDTH_METERS);
 }
 
+function getTemperatureCategoryFromValue(temperature) {
+  if (temperature < CLIMATE_ZONE_THRESHOLD_LOW) return "cold";
+  if (temperature > CLIMATE_ZONE_THRESHOLD_HIGH) return "hot";
+  return "temperate";
+}
+
+function getHumidityBandKey(value) {
+  if (value < CLIMATE_ZONE_THRESHOLD_LOW) return "xeric";
+  if (value > CLIMATE_ZONE_THRESHOLD_HIGH) return "hydric";
+  return "mesic";
+}
+
+function getHumidityMappedBiome(baseBiome, humidityBand) {
+  if (!baseBiome) return null;
+  const lookup = BIOME_HUMIDITY_LOOKUP[baseBiome.id];
+  if (!lookup) return baseBiome;
+  const mappedId = lookup[humidityBand];
+  return BIOME_DEFS[mappedId] || baseBiome;
+}
+
 function getBiomeCategoryWeights(temperature, temperatureGradientPerMeter) {
-  const coldToTemperate = metersBoundaryBlend(temperature, 0.37, temperatureGradientPerMeter);
-  const temperateToHot = metersBoundaryBlend(temperature, 0.63, temperatureGradientPerMeter);
+  const coldToTemperate = metersBoundaryBlend(temperature, CLIMATE_ZONE_THRESHOLD_LOW, temperatureGradientPerMeter);
+  const temperateToHot = metersBoundaryBlend(temperature, CLIMATE_ZONE_THRESHOLD_HIGH, temperatureGradientPerMeter);
   return normalizeWeightTriplet(
     1 - coldToTemperate,
     coldToTemperate * (1 - temperateToHot),
     temperateToHot
+  );
+}
+
+function getHumidityZoneWeights(humidity, humidityGradientPerMeter) {
+  const xericToMesic = metersBoundaryBlend(humidity, CLIMATE_ZONE_THRESHOLD_LOW, humidityGradientPerMeter);
+  const mesicToHydric = metersBoundaryBlend(humidity, CLIMATE_ZONE_THRESHOLD_HIGH, humidityGradientPerMeter);
+  return normalizeWeightTriplet(
+    1 - xericToMesic,
+    xericToMesic * (1 - mesicToHydric),
+    mesicToHydric
   );
 }
 
@@ -2378,7 +3265,6 @@ function applyWetlandHeightOverride(x, z, target) {
   if (!target) return target;
   const wetlandRetainWeight = getWetlandRetentionWeightAt(x, z);
   if (wetlandRetainWeight >= 0.999) return target;
-  const meadow = BIOME_DEFS.meadow;
   const originalCount = target.count;
   if (originalCount <= 0) return target;
   const originalBiomes = target.biomes.slice(0, originalCount);
@@ -2394,18 +3280,24 @@ function applyWetlandHeightOverride(x, z, target) {
     const biome = originalBiomes[i];
     const weight = originalWeights[i];
     if (!(weight > 0)) continue;
-    if (biome?.id === "wetland") {
-      const meadowWeight = weight * (1 - wetlandRetainWeight);
+    if (biome?.wetlandRetentionGroup === "wetland") {
+      const humidityBand = biome.humidityBand || "mesic";
+      const fallbackId = BIOME_HUMIDITY_LOOKUP.meadow?.[humidityBand] || "meadow";
+      const fallbackBiome = BIOME_DEFS[fallbackId] || BIOME_DEFS.meadow;
+      const fallbackWeight = weight * (1 - wetlandRetainWeight);
       const wetlandWeight = weight * wetlandRetainWeight;
-      if (meadowWeight > 0.0001) upsertBiomeBlendEntry(target, meadow, meadowWeight);
+      if (fallbackWeight > 0.0001) upsertBiomeBlendEntry(target, fallbackBiome, fallbackWeight);
       if (wetlandWeight > 0.0001) upsertBiomeBlendEntry(target, biome, wetlandWeight);
       continue;
     }
     upsertBiomeBlendEntry(target, biome, weight);
   }
 
-  if (target.dominantBiome?.id === "wetland") {
-    target.dominantBiome = wetlandRetainWeight >= 0.5 ? BIOME_DEFS.wetland : meadow;
+  if (target.dominantBiome?.wetlandRetentionGroup === "wetland") {
+    const dominantHumidityBand = target.dominantBiome.humidityBand || "mesic";
+    const fallbackId = BIOME_HUMIDITY_LOOKUP.meadow?.[dominantHumidityBand] || "meadow";
+    const fallbackBiome = BIOME_DEFS[fallbackId] || BIOME_DEFS.meadow;
+    target.dominantBiome = wetlandRetainWeight >= 0.5 ? target.dominantBiome : fallbackBiome;
   }
 
   return normalizeBiomeBlendResult(target);
@@ -2454,6 +3346,12 @@ function getWetlandRetentionWeightAt(x, z) {
 function getMountainBiomeVariant(biome) {
   if (!biome) return null;
   if (biome.isMountainVariant) return biome;
+  const humidityBand = biome.humidityBand || "mesic";
+  const lookup = ROCKY_MOUNTAIN_HUMIDITY_LOOKUP[biome.category];
+  const climateMountainId = lookup?.[humidityBand];
+  if (climateMountainId && BIOME_DEFS[climateMountainId]) {
+    return BIOME_DEFS[climateMountainId];
+  }
   return BIOME_DEFS[`${biome.id}${MOUNTAIN_BIOME_SUFFIX}`] || biome;
 }
 
@@ -2556,20 +3454,24 @@ function getBiomeWithMountainVariantAt(x, z, biome) {
 
 function fillBiomeBlendSample(x, z, target = createBiomeBlendSampleResult()) {
   const center = sampleBiomeClimateFields(x, z);
-  const categoryIndex = center.temperature < 0.37 ? 0 : center.temperature > 0.63 ? 2 : 1;
+  const dominantCategory = getTemperatureCategoryFromValue(center.temperature);
   const variantIndex = Math.min(2, Math.floor(center.selector * 3));
-  const dominantCategory = categoryIndex === 0 ? "cold" : categoryIndex === 2 ? "hot" : "temperate";
-  const dominantBiome = BIOME_DEFS[BIOME_VARIANTS[dominantCategory][variantIndex]];
+  const dominantHumidityBand = getHumidityBandKey(center.humidity);
+  const dominantBaseBiome = BIOME_DEFS[BIOME_VARIANTS[dominantCategory][variantIndex]];
+  const dominantBiome = getHumidityMappedBiome(dominantBaseBiome, dominantHumidityBand);
   target.dominantBiome = dominantBiome;
 
   const nearTempBoundary =
-    Math.abs(center.temperature - 0.37) <= BIOME_BLEND_PRECHECK_MARGIN ||
-    Math.abs(center.temperature - 0.63) <= BIOME_BLEND_PRECHECK_MARGIN;
+    Math.abs(center.temperature - CLIMATE_ZONE_THRESHOLD_LOW) <= BIOME_BLEND_PRECHECK_MARGIN ||
+    Math.abs(center.temperature - CLIMATE_ZONE_THRESHOLD_HIGH) <= BIOME_BLEND_PRECHECK_MARGIN;
   const nearSelectorBoundary =
     Math.abs(center.selector - 1 / 3) <= BIOME_BLEND_PRECHECK_MARGIN ||
     Math.abs(center.selector - 2 / 3) <= BIOME_BLEND_PRECHECK_MARGIN;
+  const nearHumidityBoundary =
+    Math.abs(center.humidity - CLIMATE_ZONE_THRESHOLD_LOW) <= BIOME_BLEND_PRECHECK_MARGIN ||
+    Math.abs(center.humidity - CLIMATE_ZONE_THRESHOLD_HIGH) <= BIOME_BLEND_PRECHECK_MARGIN;
 
-  if (!nearTempBoundary && !nearSelectorBoundary) {
+  if (!nearTempBoundary && !nearSelectorBoundary && !nearHumidityBoundary) {
     setSingleBiomeBlendResult(target, dominantBiome);
     return finalizeBiomeBlendAt(x, z, target);
   }
@@ -2584,24 +3486,38 @@ function fillBiomeBlendSample(x, z, target = createBiomeBlendSampleResult()) {
   const tempGradZ = (zp.temperature - zm.temperature) * invSpan;
   const selectorGradX = (xp.selector - xm.selector) * invSpan;
   const selectorGradZ = (zp.selector - zm.selector) * invSpan;
+  const humidityGradX = (xp.humidity - xm.humidity) * invSpan;
+  const humidityGradZ = (zp.humidity - zm.humidity) * invSpan;
   const tempGradientPerMeter = Math.hypot(tempGradX, tempGradZ);
   const selectorGradientPerMeter = Math.hypot(selectorGradX, selectorGradZ);
+  const humidityGradientPerMeter = Math.hypot(humidityGradX, humidityGradZ);
 
   const [coldW, temperateW, hotW] = getBiomeCategoryWeights(center.temperature, tempGradientPerMeter);
   const [lowW, midW, highW] = getBiomeVariantWeights(center.selector, selectorGradientPerMeter);
+  const [xericW, mesicW, hydricW] = getHumidityZoneWeights(center.humidity, humidityGradientPerMeter);
 
   target.count = 0;
   const categoryWeights = [coldW, temperateW, hotW];
   const categoryKeys = ["cold", "temperate", "hot"];
   const variantWeights = [lowW, midW, highW];
+  const humidityWeights = [xericW, mesicW, hydricW];
   for (let ci = 0; ci < categoryKeys.length; ci += 1) {
     const cWeight = categoryWeights[ci];
     if (!(cWeight > 0.0001)) continue;
     const variants = BIOME_VARIANTS[categoryKeys[ci]];
     for (let vi = 0; vi < variants.length; vi += 1) {
-      const weight = cWeight * variantWeights[vi];
-      if (!(weight > 0.0001)) continue;
-      upsertBiomeBlendEntry(target, BIOME_DEFS[variants[vi]], weight);
+      const variantWeight = variantWeights[vi];
+      if (!(variantWeight > 0.0001)) continue;
+      const baseBiome = BIOME_DEFS[variants[vi]];
+      if (!baseBiome) continue;
+      for (let hi = 0; hi < humidityWeights.length; hi += 1) {
+        const humidityWeight = humidityWeights[hi];
+        if (!(humidityWeight > 0.0001)) continue;
+        const weight = cWeight * variantWeight * humidityWeight;
+        if (!(weight > 0.0001)) continue;
+        const humidityBand = HUMIDITY_ZONE_KEYS[hi];
+        upsertBiomeBlendEntry(target, getHumidityMappedBiome(baseBiome, humidityBand), weight);
+      }
     }
   }
   if (target.count === 0) {
@@ -2640,17 +3556,18 @@ heightAt.mountainBiomeThresholdMeters = 100;
 
 function getBiomeAt(x, z) {
   const climate = sampleBiomeClimateFields(x, z);
-  let category = "temperate";
-  if (climate.temperature < 0.37) category = "cold";
-  else if (climate.temperature > 0.63) category = "hot";
+  const category = getTemperatureCategoryFromValue(climate.temperature);
+  const humidityBand = getHumidityBandKey(climate.humidity);
   const variants = BIOME_VARIANTS[category];
   const index = Math.min(2, Math.floor(climate.selector * 3));
-  const baseBiome = BIOME_DEFS[variants[index]];
+  const baseBiome = getHumidityMappedBiome(BIOME_DEFS[variants[index]], humidityBand);
   const mountainAdjusted = getBiomeWithMountainVariantAt(x, z, baseBiome);
-  const wetlandAdjusted =
-    mountainAdjusted?.id === "wetland" && shouldDemoteWetlandAt(x, z)
-      ? BIOME_DEFS.meadow
-      : mountainAdjusted;
+  let wetlandAdjusted = mountainAdjusted;
+  if (mountainAdjusted?.wetlandRetentionGroup === "wetland" && shouldDemoteWetlandAt(x, z)) {
+    const fallbackHumidityBand = mountainAdjusted.humidityBand || humidityBand;
+    const fallbackId = BIOME_HUMIDITY_LOOKUP.meadow?.[fallbackHumidityBand] || "meadow";
+    wetlandAdjusted = BIOME_DEFS[fallbackId] || BIOME_DEFS.meadow;
+  }
   return getBumpySubdividedBiomeForPoint(x, z, wetlandAdjusted);
 }
 
@@ -3293,9 +4210,21 @@ function buildTreeChunk(cx, cz) {
 
     const scale = 0.7 + hash2(cx * 97 + i * 13 + 7, cz * 83 + i * 11 + 17) * 0.9;
     const materialSet = getBiomeTreeMaterialSet(biome);
+    const treeStyle = biome.treeStyle ?? "broadleaf";
+    const trunkHeightScale =
+      treeStyle === "shrubland"
+        ? 0.56
+        : treeStyle === "thorn"
+          ? 0.74
+          : treeStyle === "muskeg"
+            ? 0.82
+            : treeStyle === "rainforest" || treeStyle === "monsoon"
+              ? 1.18
+              : 1;
+    const trunkWidthScale = treeStyle === "shrubland" ? 1.0 : treeStyle === "thorn" ? 1.2 : 1.5;
     const trunk = new THREE.Mesh(treeTrunkGeometry, materialSet.trunk);
-    trunk.position.set(worldX, groundY + 2.0 * scale, worldZ);
-    trunk.scale.set(1.5 * scale, scale, 1.5 * scale);
+    trunk.position.set(worldX, groundY + 2.0 * scale * trunkHeightScale, worldZ);
+    trunk.scale.set(trunkWidthScale * scale, scale * trunkHeightScale, trunkWidthScale * scale);
     trunk.receiveShadow = true;
     trunk.castShadow = scale > 0.92;
     trunk.renderOrder = TREE_RENDER_ORDER;
@@ -3304,18 +4233,17 @@ function buildTreeChunk(cx, cz) {
     const canopyMaterial =
       materialSet.canopies[Math.floor(hash2(cx * 181 + i * 9 + 17, cz * 223 + i * 13 + 43) * materialSet.canopies.length)];
     const variant = Math.floor(hash2(cx * 131 + i * 7 + 31, cz * 197 + i * 5 + 61) * 3);
-    const treeStyle = biome.treeStyle ?? "broadleaf";
 
-    if (treeStyle === "conifer") {
+    if (treeStyle === "conifer" || treeStyle === "subalpine") {
       const canopy = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
-      canopy.position.set(worldX, groundY + 5.8 * scale, worldZ);
+      canopy.position.set(worldX, groundY + 5.8 * scale * trunkHeightScale, worldZ);
       canopy.scale.set(2.05 * scale, 1.15 * scale, 2.05 * scale);
       canopy.receiveShadow = true;
       canopy.castShadow = scale > 0.96;
       canopy.renderOrder = TREE_RENDER_ORDER;
       group.add(canopy);
       const upper = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
-      upper.position.set(worldX, groundY + 7.3 * scale, worldZ);
+      upper.position.set(worldX, groundY + 7.3 * scale * trunkHeightScale, worldZ);
       upper.scale.set(1.28 * scale, 0.72 * scale, 1.28 * scale);
       upper.receiveShadow = true;
       upper.castShadow = false;
@@ -3339,6 +4267,50 @@ function buildTreeChunk(cx, cz) {
         canopySide.renderOrder = TREE_RENDER_ORDER;
         group.add(canopySide);
       }
+    } else if (treeStyle === "rainforest" || treeStyle === "monsoon") {
+      const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+      canopyMain.position.set(worldX, groundY + 6.95 * scale, worldZ);
+      canopyMain.scale.set(1.85 * scale, 1.34 * scale, 1.85 * scale);
+      canopyMain.receiveShadow = true;
+      canopyMain.castShadow = scale > 0.9;
+      canopyMain.renderOrder = TREE_RENDER_ORDER;
+      group.add(canopyMain);
+
+      const canopyUpper = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+      canopyUpper.position.set(worldX - 0.2 * scale, groundY + 8.15 * scale, worldZ + 0.14 * scale);
+      canopyUpper.scale.set(1.08 * scale, 0.84 * scale, 1.08 * scale);
+      canopyUpper.receiveShadow = true;
+      canopyUpper.castShadow = false;
+      canopyUpper.renderOrder = TREE_RENDER_ORDER;
+      group.add(canopyUpper);
+
+      if (variant !== 0 || treeStyle === "monsoon") {
+        const flank = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+        flank.position.set(worldX + 0.86 * scale, groundY + 6.55 * scale, worldZ - 0.65 * scale);
+        flank.scale.set(0.9 * scale, 0.64 * scale, 0.9 * scale);
+        flank.receiveShadow = true;
+        flank.castShadow = false;
+        flank.renderOrder = TREE_RENDER_ORDER;
+        group.add(flank);
+      }
+    } else if (treeStyle === "woodland") {
+      const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+      canopyMain.position.set(worldX, groundY + 5.75 * scale, worldZ);
+      canopyMain.scale.set(1.56 * scale, 0.82 * scale, 1.56 * scale);
+      canopyMain.receiveShadow = true;
+      canopyMain.castShadow = scale > 0.94;
+      canopyMain.renderOrder = TREE_RENDER_ORDER;
+      group.add(canopyMain);
+
+      if (variant === 2) {
+        const canopySide = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+        canopySide.position.set(worldX - 0.62 * scale, groundY + 5.38 * scale, worldZ + 0.42 * scale);
+        canopySide.scale.set(0.76 * scale, 0.4 * scale, 0.76 * scale);
+        canopySide.receiveShadow = true;
+        canopySide.castShadow = false;
+        canopySide.renderOrder = TREE_RENDER_ORDER;
+        group.add(canopySide);
+      }
     } else if (treeStyle === "wetland") {
       const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
       canopyMain.position.set(worldX, groundY + 6.0 * scale, worldZ);
@@ -3355,6 +4327,84 @@ function buildTreeChunk(cx, cz) {
       droop.castShadow = false;
       droop.renderOrder = TREE_RENDER_ORDER;
       group.add(droop);
+    } else if (treeStyle === "shrubland") {
+      const shrubA = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+      shrubA.position.set(worldX, groundY + 3.2 * scale, worldZ);
+      shrubA.scale.set(1.24 * scale, 0.54 * scale, 1.24 * scale);
+      shrubA.receiveShadow = true;
+      shrubA.castShadow = false;
+      shrubA.renderOrder = TREE_RENDER_ORDER;
+      group.add(shrubA);
+
+      if (variant !== 1) {
+        const shrubB = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+        shrubB.position.set(worldX + 0.46 * scale, groundY + 3.0 * scale, worldZ - 0.38 * scale);
+        shrubB.scale.set(0.84 * scale, 0.34 * scale, 0.84 * scale);
+        shrubB.receiveShadow = true;
+        shrubB.castShadow = false;
+        shrubB.renderOrder = TREE_RENDER_ORDER;
+        group.add(shrubB);
+      }
+    } else if (treeStyle === "thorn") {
+      const canopyMain = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
+      canopyMain.position.set(worldX, groundY + 4.95 * scale, worldZ);
+      canopyMain.scale.set(1.08 * scale, 0.86 * scale, 1.08 * scale);
+      canopyMain.receiveShadow = true;
+      canopyMain.castShadow = scale > 0.96;
+      canopyMain.renderOrder = TREE_RENDER_ORDER;
+      group.add(canopyMain);
+
+      const thornSpire = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
+      thornSpire.position.set(worldX + 0.16 * scale, groundY + 6.1 * scale, worldZ - 0.12 * scale);
+      thornSpire.scale.set(0.52 * scale, 0.66 * scale, 0.52 * scale);
+      thornSpire.receiveShadow = true;
+      thornSpire.castShadow = false;
+      thornSpire.renderOrder = TREE_RENDER_ORDER;
+      group.add(thornSpire);
+    } else if (treeStyle === "cloudforest") {
+      const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+      canopyMain.position.set(worldX, groundY + 6.4 * scale, worldZ);
+      canopyMain.scale.set(1.72 * scale, 1.08 * scale, 1.72 * scale);
+      canopyMain.receiveShadow = true;
+      canopyMain.castShadow = scale > 0.9;
+      canopyMain.renderOrder = TREE_RENDER_ORDER;
+      group.add(canopyMain);
+
+      const mossCape = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
+      mossCape.position.set(worldX, groundY + 5.05 * scale, worldZ);
+      mossCape.scale.set(1.52 * scale, 0.52 * scale, 1.52 * scale);
+      mossCape.receiveShadow = true;
+      mossCape.castShadow = false;
+      mossCape.renderOrder = TREE_RENDER_ORDER;
+      group.add(mossCape);
+
+      if (variant === 2) {
+        const upper = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
+        upper.position.set(worldX - 0.08 * scale, groundY + 7.65 * scale, worldZ + 0.1 * scale);
+        upper.scale.set(0.88 * scale, 0.56 * scale, 0.88 * scale);
+        upper.receiveShadow = true;
+        upper.castShadow = false;
+        upper.renderOrder = TREE_RENDER_ORDER;
+        group.add(upper);
+      }
+    } else if (treeStyle === "muskeg") {
+      const canopy = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
+      canopy.position.set(worldX, groundY + 4.7 * scale, worldZ);
+      canopy.scale.set(1.32 * scale, 0.82 * scale, 1.32 * scale);
+      canopy.receiveShadow = true;
+      canopy.castShadow = scale > 1.02;
+      canopy.renderOrder = TREE_RENDER_ORDER;
+      group.add(canopy);
+
+      if (variant !== 0) {
+        const side = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+        side.position.set(worldX - 0.48 * scale, groundY + 4.35 * scale, worldZ + 0.34 * scale);
+        side.scale.set(0.56 * scale, 0.36 * scale, 0.56 * scale);
+        side.receiveShadow = true;
+        side.castShadow = false;
+        side.renderOrder = TREE_RENDER_ORDER;
+        group.add(side);
+      }
     } else if (variant === 1) {
       const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
       canopyMain.position.set(worldX, groundY + 6.1 * scale, worldZ);
@@ -4375,13 +5425,18 @@ function updateBiomeHud() {
   if (!movedFar && !stale) return;
 
   const visual = fillBlendedVisualSampleAt(x, z);
+  const climate = sampleBiomeClimateFields(x, z);
+  const temperatureCategory = getTemperatureCategoryFromValue(climate.temperature);
+  const humidityBand = getHumidityBandKey(climate.humidity);
   applyVisualSampleToAtmosphereAndWater(visual);
   if (biomeEl) {
     biomeEl.textContent = visual?.biome?.label ?? visual?.biome?.id ?? "Unknown";
   }
   if (temperatureTypeEl) {
-    const category = visual?.biome?.category;
-    temperatureTypeEl.textContent = category ? `${category[0].toUpperCase()}${category.slice(1)}` : "Unknown";
+    temperatureTypeEl.textContent = `${temperatureCategory[0].toUpperCase()}${temperatureCategory.slice(1)}`;
+  }
+  if (humidityTypeEl) {
+    humidityTypeEl.textContent = HUMIDITY_ZONE_LABELS[humidityBand] || "Unknown";
   }
   lastVisualSampleX = x;
   lastVisualSampleZ = z;

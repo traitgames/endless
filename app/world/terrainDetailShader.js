@@ -142,6 +142,29 @@ export function buildTerrainDetailFragmentChunk() {
           return color;
         }
 
+        if (biomeId == 10.0) {
+          float broadLeaf = smoothstep(0.44, 0.78, detailNoise(p * 1.7));
+          float darkSpeckle = smoothstep(0.68, 0.94, detailNoise(p * 5.1 + broadLeaf * 3.1));
+          float dampVein = 1.0 - smoothstep(0.12, 0.32, abs(sin(p.x * 1.5 + detailNoise(p * 0.26) * 5.6)));
+          vec3 jungleTint = vec3(0.1, 0.28, 0.14);
+          vec3 loamTint = vec3(0.16, 0.13, 0.08);
+          color = mix(color, color * 0.58 + jungleTint * 0.46, detailWeight(broadLeaf * 0.74, mask, intensity));
+          color = mix(color, color * 0.72 + loamTint * 0.34, detailWeight(darkSpeckle * 0.52 + dampVein * 0.32, mask, intensity));
+          return color;
+        }
+
+        if (biomeId == 11.0) {
+          float scree = smoothstep(0.52, 0.86, detailNoise(p * 3.4));
+          float seam = abs(sin(p.y * 2.2 + detailNoise(p * 0.32) * 6.4));
+          float striation = smoothstep(0.38, 0.74, seam);
+          float lichen = smoothstep(0.72, 0.95, detailNoise(p * 7.0));
+          vec3 slateTint = vec3(0.36, 0.4, 0.42);
+          vec3 mossTint = vec3(0.2, 0.3, 0.22);
+          color = mix(color, color * 0.66 + slateTint * 0.4, detailWeight(scree * 0.72 + striation * 0.28, mask, intensity));
+          color = mix(color, color * 0.8 + mossTint * 0.3, detailWeight(lichen * 0.44, mask, intensity));
+          return color;
+        }
+
         return color;
       }
   `;
