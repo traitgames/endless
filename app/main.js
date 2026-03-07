@@ -1131,10 +1131,10 @@ Object.assign(BIOME_DEFS, {
     fogDensityMultiplier: 1.14,
     terrainProfile: {
       noiseAlgorithm: "ridged",
-      noiseScaleMultiplier: 0.9,
-      baseHeightMultiplier: 1.22,
-      ridgeScaleMultiplier: 1.38,
-      ridgeHeightMultiplier: 1.2,
+      noiseScaleMultiplier: 0.5,
+      baseHeightMultiplier: 1.098,
+      ridgeScaleMultiplier: 0.8,
+      ridgeHeightMultiplier: 1.08,
       octaves: 5,
       lacunarity: 1.98,
       gain: 0.49,
@@ -1214,10 +1214,10 @@ Object.assign(BIOME_DEFS, {
     fogDensityMultiplier: 1.02,
     terrainProfile: {
       noiseAlgorithm: "ridged",
-      noiseScaleMultiplier: 0.9,
-      baseHeightMultiplier: 1.2,
-      ridgeScaleMultiplier: 1.38,
-      ridgeHeightMultiplier: 1.22,
+      noiseScaleMultiplier: 0.4,
+      baseHeightMultiplier: 0.4,
+      ridgeScaleMultiplier: 1.01,
+      ridgeHeightMultiplier: 1.01,
       octaves: 5,
       lacunarity: 2.0,
       gain: 0.48,
@@ -1424,6 +1424,9 @@ const BUMPY_BIOME_SUBDIVISION_THRESHOLD_JAGGED = 0.67;
 const BUMPY_BIOME_SUBDIVISION_PRIMARY_SCALE = 0.00082;
 const BUMPY_BIOME_SUBDIVISION_SECONDARY_SCALE = 0.00174;
 const BUMPY_BIOME_SUBDIVISION_PRECHECK_MARGIN = 0.06;
+const JAGGED_BIOME_WIDTH_SCALE_MULTIPLIER = 1.3;
+const JAGGED_BIOME_HEIGHT_SCALE_MULTIPLIER = 0.8;
+const JAGGED_BIOME_NOISE_SCALE_ADJUST = 1 / JAGGED_BIOME_WIDTH_SCALE_MULTIPLIER;
 const BUMPY_BIOME_SUBDIVISIONS = {};
 
 function cloneBiomeColor(color, fallbackHex = "#808080") {
@@ -1438,6 +1441,18 @@ function tintBiomeColor(color, tintHex, amount) {
 function createSubdivisionTerrainProfile(baseProfile, mode) {
   const source = { ...(baseProfile || {}) };
   const baseOctaves = Math.max(1, Math.floor(source.octaves ?? 4));
+  if (mode === "jagged") {
+    return {
+      ...source,
+      noiseScaleMultiplier: (source.noiseScaleMultiplier ?? 1) * JAGGED_BIOME_NOISE_SCALE_ADJUST,
+      baseHeightMultiplier: (source.baseHeightMultiplier ?? 1) * JAGGED_BIOME_HEIGHT_SCALE_MULTIPLIER,
+      ridgeScaleMultiplier: (source.ridgeScaleMultiplier ?? 1) * JAGGED_BIOME_NOISE_SCALE_ADJUST,
+      ridgeHeightMultiplier: (source.ridgeHeightMultiplier ?? 1) * JAGGED_BIOME_HEIGHT_SCALE_MULTIPLIER,
+      warpScaleMultiplier:
+        (Number.isFinite(source.warpScaleMultiplier) ? source.warpScaleMultiplier : 1.7) *
+        JAGGED_BIOME_NOISE_SCALE_ADJUST,
+    };
+  }
   if (mode === "smooth") {
     return {
       ...source,
@@ -1485,7 +1500,7 @@ function buildBumpyBiomeSubdivisionVariants(baseBiome) {
     waterColor: tintBiomeColor(baseBiome.waterColor, "#6b7f96", 0.07),
     fogColor: tintBiomeColor(baseBiome.fogColor, "#c4d0de", 0.06),
     fogDensityMultiplier: (baseBiome.fogDensityMultiplier ?? 1) * 1.05,
-    terrainProfile: { ...(baseBiome.terrainProfile || {}) },
+    terrainProfile: createSubdivisionTerrainProfile(baseBiome.terrainProfile, "jagged"),
   };
   const normalBiome = {
     ...baseBiome,
