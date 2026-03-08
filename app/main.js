@@ -30,6 +30,8 @@ import {
   DEFAULT_TRANSITION_BIOME_ID,
   DETAIL_BIOME_EDGE_DISTANCE_FACTOR,
   DETAIL_BIOME_FADE_OUT_METERS,
+  HUMIDITY_ZONE_THRESHOLD_HIGH,
+  HUMIDITY_ZONE_THRESHOLD_LOW,
   HUMIDITY_ZONE_KEYS,
   HUMIDITY_ZONE_LABELS,
   MOUNTAIN_BIOME_BORDER_BLEND_HEIGHT_METERS,
@@ -1910,8 +1912,8 @@ function getTemperatureCategoryFromValue(temperature) {
 }
 
 function getHumidityBandKey(value) {
-  if (value < CLIMATE_ZONE_THRESHOLD_LOW) return "xeric";
-  if (value > CLIMATE_ZONE_THRESHOLD_HIGH) return "hydric";
+  if (value < HUMIDITY_ZONE_THRESHOLD_LOW) return "xeric";
+  if (value > HUMIDITY_ZONE_THRESHOLD_HIGH) return "hydric";
   return "mesic";
 }
 
@@ -1934,8 +1936,8 @@ function getBiomeCategoryWeights(temperature, temperatureGradientPerMeter) {
 }
 
 function getHumidityZoneWeights(humidity, humidityGradientPerMeter) {
-  const xericToMesic = metersBoundaryBlend(humidity, CLIMATE_ZONE_THRESHOLD_LOW, humidityGradientPerMeter);
-  const mesicToHydric = metersBoundaryBlend(humidity, CLIMATE_ZONE_THRESHOLD_HIGH, humidityGradientPerMeter);
+  const xericToMesic = metersBoundaryBlend(humidity, HUMIDITY_ZONE_THRESHOLD_LOW, humidityGradientPerMeter);
+  const mesicToHydric = metersBoundaryBlend(humidity, HUMIDITY_ZONE_THRESHOLD_HIGH, humidityGradientPerMeter);
   return normalizeWeightTriplet(
     1 - xericToMesic,
     xericToMesic * (1 - mesicToHydric),
@@ -2230,8 +2232,8 @@ function fillBiomeBlendSample(x, z, target = createBiomeBlendSampleResult()) {
     Math.abs(center.selector - 1 / 3) <= BIOME_BLEND_PRECHECK_MARGIN ||
     Math.abs(center.selector - 2 / 3) <= BIOME_BLEND_PRECHECK_MARGIN;
   const nearHumidityBoundary =
-    Math.abs(center.humidity - CLIMATE_ZONE_THRESHOLD_LOW) <= BIOME_BLEND_PRECHECK_MARGIN ||
-    Math.abs(center.humidity - CLIMATE_ZONE_THRESHOLD_HIGH) <= BIOME_BLEND_PRECHECK_MARGIN;
+    Math.abs(center.humidity - HUMIDITY_ZONE_THRESHOLD_LOW) <= BIOME_BLEND_PRECHECK_MARGIN ||
+    Math.abs(center.humidity - HUMIDITY_ZONE_THRESHOLD_HIGH) <= BIOME_BLEND_PRECHECK_MARGIN;
 
   if (!nearTempBoundary && !nearSelectorBoundary && !nearHumidityBoundary) {
     setSingleBiomeBlendResult(target, dominantBiome);

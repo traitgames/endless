@@ -13,10 +13,10 @@ const definition = Object.freeze({
     },
     "terrainProfile": {
       "noiseAlgorithm": "billow",
-      "noiseScaleMultiplier": 0.6461538461538461,
-      "baseHeightMultiplier": 0.46399999999999997,
-      "ridgeScaleMultiplier": 0.5538461538461538,
-      "ridgeHeightMultiplier": 0.144,
+      "noiseScaleMultiplier": 2.5,
+      "baseHeightMultiplier": 0.1,
+      "ridgeScaleMultiplier": 0.6,
+      "ridgeHeightMultiplier": 0.2,
       "octaves": 3,
       "lacunarity": 1.9,
       "gain": 0.53,
@@ -24,7 +24,7 @@ const definition = Object.freeze({
       "gradientCap": 0.18,
       "gradientSampleMeters": 5,
       "warpScaleMultiplier": 1.3076923076923075,
-      "heightOffset": 0
+      "heightOffset": 1
     },
     "hasTrees": false,
     "fogDensityMultiplier": 0.9450000000000001,

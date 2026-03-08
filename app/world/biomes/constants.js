@@ -14,6 +14,8 @@ export const HUMIDITY_ZONE_LABELS = Object.freeze({
 
 export const CLIMATE_ZONE_THRESHOLD_LOW = 0.37;
 export const CLIMATE_ZONE_THRESHOLD_HIGH = 0.63;
+export const HUMIDITY_ZONE_THRESHOLD_LOW = 0.23;
+export const HUMIDITY_ZONE_THRESHOLD_HIGH = 0.555;
 
 export const BIOME_HUMIDITY_LOOKUP = Object.freeze({
   wetland: Object.freeze({ xeric: "saltflat", mesic: "wetland", hydric: "wetland_hydric" }),

@@ -9,9 +9,9 @@ const definition = Object.freeze({
   },
   "terrainProfile": {
     "noiseAlgorithm": "billow",
-    "noiseScaleMultiplier": 0.84,
-    "baseHeightMultiplier": 0.58,
-    "ridgeScaleMultiplier": 0.72,
+    "noiseScaleMultiplier": 1.2,
+    "baseHeightMultiplier": 0.03,
+    "ridgeScaleMultiplier": 0.2,
     "ridgeHeightMultiplier": 0.18,
     "octaves": 3,
     "lacunarity": 1.9,
@@ -19,7 +19,7 @@ const definition = Object.freeze({
     "secondaryAmount": 0.05,
     "gradientCap": 0.18,
     "gradientSampleMeters": 5,
-    "heightOffset": 0
+    "heightOffset": 3
   },
   "hasTrees": false,
   "fogDensityMultiplier": 0.9,
