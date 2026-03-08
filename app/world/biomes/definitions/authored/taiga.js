@@ -18,7 +18,8 @@ const definition = Object.freeze({
     "octaves": 5,
     "lacunarity": 1.95,
     "gain": 0.49,
-    "secondaryAmount": 0.05
+    "secondaryAmount": 0.05,
+    "heightOffset": 5
   },
   "hasTrees": true,
   "fogDensityMultiplier": 1.12,

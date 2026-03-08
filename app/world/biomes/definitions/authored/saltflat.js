@@ -18,7 +18,8 @@ const definition = Object.freeze({
     "gain": 0.53,
     "secondaryAmount": 0.05,
     "gradientCap": 0.18,
-    "gradientSampleMeters": 5
+    "gradientSampleMeters": 5,
+    "heightOffset": 0
   },
   "hasTrees": false,
   "fogDensityMultiplier": 0.9,

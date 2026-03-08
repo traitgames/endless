@@ -12,16 +12,17 @@ const definition = Object.freeze({
       "fog": "#e1effd"
     },
     "terrainProfile": {
-      "noiseAlgorithm": "ridged",
-      "noiseScaleMultiplier": 0.6153846153846154,
-      "baseHeightMultiplier": 1.008,
-      "ridgeScaleMultiplier": 1.1076923076923075,
-      "ridgeHeightMultiplier": 1.2960000000000003,
-      "octaves": 5,
-      "lacunarity": 2.02,
-      "gain": 0.48,
-      "secondaryAmount": 0.07,
-      "warpScaleMultiplier": 1.3076923076923075
+           "noiseAlgorithm": "ridged",
+      "noiseScaleMultiplier": 2.2,
+      "baseHeightMultiplier": 0.5,
+      "ridgeScaleMultiplier": 0.5,
+      "ridgeHeightMultiplier": 0.1,
+      "octaves": 8,
+      "lacunarity": 5,
+      "gain": 0.5,
+      "secondaryAmount": 0.06,
+      "warpScaleMultiplier": 1.3076923076923075,
+      "heightOffset": -2
     },
     "hasTrees": false,
     "fogDensityMultiplier": 1.3230000000000002,

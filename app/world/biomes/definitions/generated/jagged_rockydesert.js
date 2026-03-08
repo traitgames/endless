@@ -21,7 +21,8 @@ const definition = Object.freeze({
       "lacunarity": 2.02,
       "gain": 0.48,
       "secondaryAmount": 0.1,
-      "warpScaleMultiplier": 1.3076923076923075
+      "warpScaleMultiplier": 1.3076923076923075,
+      "heightOffset": 0
     },
     "hasTrees": false,
     "fogDensityMultiplier": 1.008,

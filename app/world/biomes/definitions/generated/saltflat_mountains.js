@@ -23,7 +23,8 @@ const definition = Object.freeze({
       "gradientCap": 0.18,
       "gradientSampleMeters": 5,
       "warpStrength": 0.12,
-      "warpScaleMultiplier": 1.7
+      "warpScaleMultiplier": 1.7,
+      "heightOffset": 0
     },
     "hasTrees": false,
     "fogDensityMultiplier": 0.9720000000000001,
