@@ -3636,7 +3636,7 @@ function renderMinimap() {
   const nearSafeRadius = NEAR_FADE_END_METERS - CHUNK_SIZE * 0.5;
   const midSafeRadius = MID_TILE_CULL_RADIUS - MID_TILE_HALF_DIAGONAL;
   const maxSquareRadius = minimapWorldRadius * Math.SQRT2;
-  const useNearOnly = minimapZoomIndex <= 1 && maxSquareRadius <= nearSafeRadius;
+  const useNearOnly = minimapZoomIndex <= 4 && maxSquareRadius <= nearSafeRadius;
   const useMidOnly = !useNearOnly && maxSquareRadius <= midSafeRadius;
   const sampleMode = useNearOnly ? "near" : useMidOnly ? "mid" : "far";
   const waterLevel = state.world.water.level;
