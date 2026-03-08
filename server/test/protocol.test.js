@@ -32,6 +32,21 @@ test("normalizeAction accepts local world command passthrough", () => {
   });
 });
 
+test("normalizeAction accepts biome heightOffset override", () => {
+  assert.deepEqual(
+    normalizeAction({
+      type: "set_biome_settings",
+      biomeId: "forest",
+      terrainProfile: { heightOffset: 12 },
+    }),
+    {
+      type: "set_biome_settings",
+      biomeId: "forest",
+      terrainProfile: { heightOffset: 12 },
+    }
+  );
+});
+
 test("normalizeUpdate supports legacy keys", () => {
   const out = normalizeUpdate({ seed: 42, terrainColor: "#aabbcc" });
   assert.equal(out.ok, true);

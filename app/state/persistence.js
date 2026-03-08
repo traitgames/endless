@@ -217,6 +217,7 @@ function normalizeBiomeSettings(value) {
     copyClampedNumber(terrainCfg, terrainProfile, "warpStrength", 0, 1.2);
     copyClampedNumber(terrainCfg, terrainProfile, "warpScaleMultiplier", 0.2, 5);
     copyClampedNumber(terrainCfg, terrainProfile, "secondaryAmount", -1, 1);
+    copyClampedNumber(terrainCfg, terrainProfile, "heightOffset", -200, 200);
     if (Object.keys(terrainProfile).length > 0) {
       next.terrainProfile = terrainProfile;
     }

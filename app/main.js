@@ -5054,6 +5054,7 @@ function applyBiomeSettingsUpdateFromAction(action) {
       assignNumber("warpStrength", 0, 1.2);
       assignNumber("warpScaleMultiplier", 0.2, 5);
       assignNumber("secondaryAmount", -1, 1);
+      assignNumber("heightOffset", -200, 200);
       if (Object.keys(terrainProfile).length > 0) next.terrainProfile = terrainProfile;
       else if (next.terrainProfile) {
         delete next.terrainProfile;

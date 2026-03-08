@@ -258,6 +258,7 @@ export function createTerrainHeightSampler({
     const baseHeightMultiplier = profile?.baseHeightMultiplier ?? 1;
     const ridgeScaleMultiplier = profile?.ridgeScaleMultiplier ?? 1;
     const ridgeHeightMultiplier = profile?.ridgeHeightMultiplier ?? 1;
+    const heightOffset = Number.isFinite(profile?.heightOffset) ? profile.heightOffset : 0;
     const octaves = Math.max(1, Math.floor(profile?.octaves ?? 4));
     const lacunarity = Number.isFinite(profile?.lacunarity) ? profile.lacunarity : 1.9;
     const gain = Number.isFinite(profile?.gain) ? profile.gain : 0.5;
@@ -318,7 +319,7 @@ export function createTerrainHeightSampler({
       base += secondary * secondaryAmount;
     }
 
-    return base * baseHeight + ridge * ridgeHeight;
+    return base * baseHeight + ridge * ridgeHeight + heightOffset;
   }
 
   function sampleBiomeTerrainHeight(x, z, terrain, profile) {

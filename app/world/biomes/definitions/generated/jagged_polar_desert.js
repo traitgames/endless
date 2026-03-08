@@ -13,15 +13,15 @@ const definition = Object.freeze({
     },
     "terrainProfile": {
       "noiseAlgorithm": "ridged",
-      "noiseScaleMultiplier": 0.6923076923076923,
-      "baseHeightMultiplier": 0.6880000000000001,
-      "ridgeScaleMultiplier": 0.9076923076923076,
-      "ridgeHeightMultiplier": 0.6880000000000001,
+      "noiseScaleMultiplier": 0.4,
+      "baseHeightMultiplier": 1.2,
+      "ridgeScaleMultiplier": 0.7,
+      "ridgeHeightMultiplier": 0.1,
       "octaves": 4,
-      "lacunarity": 2,
+      "lacunarity": 5,
       "gain": 0.5,
       "secondaryAmount": 0.05,
-      "warpScaleMultiplier": 1.3076923076923075
+      "warpScaleMultiplier": 1.2
     },
     "hasTrees": false,
     "fogDensityMultiplier": 1.05,

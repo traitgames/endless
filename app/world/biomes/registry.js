@@ -322,6 +322,13 @@ export function buildBiomeRegistry({ THREE, clampNumber }) {
     BIOME_DEFS[definition.id] = applyBiomeDefinitionFields(THREE, generated, definition);
   }
 
+  for (const biome of Object.values(BIOME_DEFS)) {
+    const terrainProfile =
+      biome?.terrainProfile && typeof biome.terrainProfile === "object" ? { ...biome.terrainProfile } : {};
+    terrainProfile.heightOffset = Number.isFinite(terrainProfile.heightOffset) ? terrainProfile.heightOffset : 0;
+    biome.terrainProfile = terrainProfile;
+  }
+
   return {
     BIOME_DEFS,
     BUMPY_BIOME_SUBDIVISIONS,
