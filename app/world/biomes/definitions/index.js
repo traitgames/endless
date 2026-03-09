@@ -6,31 +6,49 @@ import alpineTundra from "./authored/alpine_tundra.js";
 import badlands from "./authored/badlands.js";
 import cloudforestHot from "./authored/cloudforest_hot.js";
 import cloudforestTemperate from "./authored/cloudforest_temperate.js";
+import coastalTundra from "./authored/coastal_tundra.js";
+import coldOcean from "./authored/cold_ocean.js";
+import coralReef from "./authored/coral_reef.js";
+import deepColdOcean from "./authored/deep_cold_ocean.js";
+import deepOcean from "./authored/deep_ocean.js";
+import deepTropicalOcean from "./authored/deep_tropical_ocean.js";
 import desert from "./authored/desert.js";
 import forest from "./authored/forest.js";
 import glacier from "./authored/glacier.js";
 import icefield from "./authored/icefield.js";
+import kelpForest from "./authored/kelp_forest.js";
+import kelpForestCold from "./authored/kelp_forest_cold.js";
+import kelpShore from "./authored/kelp_shore.js";
+import kelpShoreCold from "./authored/kelp_shore_cold.js";
+import mangrove from "./authored/mangrove.js";
 import marsh from "./authored/marsh.js";
 import meadow from "./authored/meadow.js";
 import mire from "./authored/mire.js";
 import monsoonForest from "./authored/monsoon_forest.js";
 import montane from "./authored/montane.js";
 import montaneWoodland from "./authored/montane_woodland.js";
+import mudflat from "./authored/mudflat.js";
 import muskeg from "./authored/muskeg.js";
+import ocean from "./authored/ocean.js";
 import polarDesert from "./authored/polar_desert.js";
 import rainforestHot from "./authored/rainforest_hot.js";
 import rainforestTemperate from "./authored/rainforest_temperate.js";
+import rockyShore from "./authored/rocky_shore.js";
 import rockyMountains from "./authored/rocky_mountains.js";
 import rockydesert from "./authored/rockydesert.js";
 import saltflat from "./authored/saltflat.js";
+import saltMarsh from "./authored/salt_marsh.js";
 import savanna from "./authored/savanna.js";
 import savannaMesic from "./authored/savanna_mesic.js";
 import scrubland from "./authored/scrubland.js";
+import seagrassMeadow from "./authored/seagrass_meadow.js";
 import shrubland from "./authored/shrubland.js";
 import steppe from "./authored/steppe.js";
 import subalpine from "./authored/subalpine.js";
 import taiga from "./authored/taiga.js";
 import thornForest from "./authored/thorn_forest.js";
+import tropicalLagoon from "./authored/tropical_lagoon.js";
+import tropicalOcean from "./authored/tropical_ocean.js";
 import tundra from "./authored/tundra.js";
 import tundraMesic from "./authored/tundra_mesic.js";
 import wetland from "./authored/wetland.js";
@@ -109,31 +127,49 @@ export const AUTHORED_BIOME_DEFINITIONS = Object.freeze([
   badlands,
   cloudforestHot,
   cloudforestTemperate,
+  coastalTundra,
+  coldOcean,
+  coralReef,
+  deepColdOcean,
+  deepOcean,
+  deepTropicalOcean,
   desert,
   forest,
   glacier,
   icefield,
+  kelpForest,
+  kelpForestCold,
+  kelpShore,
+  kelpShoreCold,
+  mangrove,
   marsh,
   meadow,
   mire,
   monsoonForest,
   montane,
   montaneWoodland,
+  mudflat,
   muskeg,
+  ocean,
   polarDesert,
   rainforestHot,
   rainforestTemperate,
+  rockyShore,
   rockyMountains,
   rockydesert,
   saltflat,
+  saltMarsh,
   savanna,
   savannaMesic,
   scrubland,
+  seagrassMeadow,
   shrubland,
   steppe,
   subalpine,
   taiga,
   thornForest,
+  tropicalLagoon,
+  tropicalOcean,
   tundra,
   tundraMesic,
   wetland,

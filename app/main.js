@@ -36,6 +36,16 @@ import {
   HUMIDITY_ZONE_LABELS,
   MOUNTAIN_BIOME_BORDER_BLEND_HEIGHT_METERS,
   MOUNTAIN_BIOME_SUFFIX,
+  OCEAN_BIOME_COASTAL_MAX_MOUNTAIN_ADDITIVE_HEIGHT,
+  OCEAN_DEEP_BIOME_COAST_SIGNAL_END,
+  OCEAN_DEEP_BIOME_COAST_RANGE_MASK_SCALE,
+  OCEAN_DEEP_BIOME_COAST_SIGNAL_START,
+  OCEAN_BIOME_OPEN_BLEND_PRECHECK_HEIGHT,
+  OCEAN_BIOME_OPEN_COASTAL_BLEND_HALF_WIDTH_METERS,
+  OCEAN_BIOME_OPEN_MAX_MOUNTAIN_ADDITIVE_HEIGHT,
+  OCEAN_BIOME_LAND_BLEND_HALF_WIDTH_METERS,
+  OCEAN_BIOME_LAND_BLEND_PRECHECK_HEIGHT,
+  OCEAN_BIOME_VARIANTS,
   ROCKY_MOUNTAIN_HUMIDITY_LOOKUP,
   WETLAND_ELEVATION_FADE_BAND_METERS,
   WETLAND_MOUNTAIN_HEIGHT_MAX_METERS,
@@ -767,8 +777,12 @@ const MINIMAP_MOVE_THRESHOLD_SQ = 9;
 const MINIMAP_YAW_THRESHOLD = 0.05;
 const MINIMAP_FALLBACK_COLOR = { r: 0.06, g: 0.08, b: 0.1 };
 const MINIMAP_WATER_SHALLOW_TINT = new THREE.Color("#3f86a5");
+const MINIMAP_WATER_MID_TINT = new THREE.Color("#215275");
 const MINIMAP_WATER_DEEP_TINT = new THREE.Color("#0b2433");
-const MINIMAP_WATER_DEPTH_MAX = 14;
+const MINIMAP_WATER_ABYSS_TINT = new THREE.Color("#05131e");
+const MINIMAP_WATER_DEPTH_MID = 36;
+const MINIMAP_WATER_DEPTH_ABYSS_START = 88;
+const MINIMAP_WATER_DEPTH_MAX = 130;
 const MINIMAP_SLOPE_MIN_RADIANS = Math.PI * (5 / 180);
 const MINIMAP_SLOPE_MAX_RADIANS = Math.PI * 0.25;
 const MINIMAP_SLOPE_BLEND_MAX = 0.9;
@@ -1925,6 +1939,26 @@ function getHumidityMappedBiome(baseBiome, humidityBand) {
   return BIOME_DEFS[mappedId] || baseBiome;
 }
 
+function getOceanBiome(regime, temperatureCategory, variantIndex) {
+  const regimeVariants = OCEAN_BIOME_VARIANTS[regime];
+  if (!regimeVariants) return null;
+  const categoryVariants = regimeVariants[temperatureCategory];
+  if (!Array.isArray(categoryVariants) || categoryVariants.length === 0) return null;
+  const clampedIndex = clampNumber(Math.floor(variantIndex), 0, categoryVariants.length - 1, 0);
+  const biomeId = categoryVariants[clampedIndex];
+  return BIOME_DEFS[biomeId] || null;
+}
+
+function getOceanRegimeFromMountainAdditiveHeight(heightMeters) {
+  if (heightMeters < OCEAN_BIOME_OPEN_MAX_MOUNTAIN_ADDITIVE_HEIGHT) return "open";
+  if (heightMeters < OCEAN_BIOME_COASTAL_MAX_MOUNTAIN_ADDITIVE_HEIGHT) return "coastal";
+  return "land";
+}
+
+function isDeepOpenOceanBiome(biome) {
+  return typeof biome?.id === "string" && biome.id.startsWith("deep_");
+}
+
 function getBiomeCategoryWeights(temperature, temperatureGradientPerMeter) {
   const coldToTemperate = metersBoundaryBlend(temperature, CLIMATE_ZONE_THRESHOLD_LOW, temperatureGradientPerMeter);
   const temperateToHot = metersBoundaryBlend(temperature, CLIMATE_ZONE_THRESHOLD_HIGH, temperatureGradientPerMeter);
@@ -2093,6 +2127,18 @@ function fillTerrainAdditiveSampleAt(x, z, target = mountainBiomeAdditiveScratch
   return target;
 }
 
+function getDeepOceanAllowance(mountainAdditiveHeight, rangeMask) {
+  const centerMountainSignal = Math.max(0, mountainAdditiveHeight || 0);
+  const centerRangeSignal = Math.max(0, rangeMask || 0) * OCEAN_DEEP_BIOME_COAST_RANGE_MASK_SCALE;
+  const coastSignal = Math.max(centerMountainSignal, centerRangeSignal);
+  const nearCoastWeight = smoothstep(
+    OCEAN_DEEP_BIOME_COAST_SIGNAL_START,
+    OCEAN_DEEP_BIOME_COAST_SIGNAL_END,
+    coastSignal
+  );
+  return 1 - nearCoastWeight;
+}
+
 function shouldDemoteWetlandAt(x, z) {
   return getWetlandRetentionWeightAt(x, z) < 0.5;
 }
@@ -2222,21 +2268,68 @@ function fillBiomeBlendSample(x, z, target = createBiomeBlendSampleResult()) {
   const variantIndex = Math.min(2, Math.floor(center.selector * 3));
   const dominantHumidityBand = getHumidityBandKey(center.humidity);
   const dominantBaseBiome = BIOME_DEFS[BIOME_VARIANTS[dominantCategory][variantIndex]];
-  const dominantBiome = getHumidityMappedBiome(dominantBaseBiome, dominantHumidityBand);
+  const dominantLandBiome = getHumidityMappedBiome(dominantBaseBiome, dominantHumidityBand);
+  const centerMountainSample = fillTerrainAdditiveSampleAt(x, z, mountainBiomeAdditiveScratch);
+  const centerMountainAdditiveHeight = centerMountainSample.mountainAdditiveHeight || 0;
+  const centerMountainRangeMask = centerMountainSample.rangeMask || 0;
+  const dominantOceanRegime = getOceanRegimeFromMountainAdditiveHeight(centerMountainAdditiveHeight);
+  const dominantOceanBiome =
+    dominantOceanRegime === "land" ? null : getOceanBiome(dominantOceanRegime, dominantCategory, variantIndex);
+  const dominantBiome = dominantOceanBiome || dominantLandBiome;
   target.dominantBiome = dominantBiome;
+  const needsDeepOceanGapCheck = dominantOceanRegime === "open" && isDeepOpenOceanBiome(dominantOceanBiome);
 
+  const nearOceanOpenBoundary =
+    Math.abs(centerMountainAdditiveHeight - OCEAN_BIOME_OPEN_MAX_MOUNTAIN_ADDITIVE_HEIGHT) <=
+    OCEAN_BIOME_OPEN_BLEND_PRECHECK_HEIGHT;
+  const nearOceanLandBoundary =
+    Math.abs(centerMountainAdditiveHeight - OCEAN_BIOME_COASTAL_MAX_MOUNTAIN_ADDITIVE_HEIGHT) <=
+      OCEAN_BIOME_LAND_BLEND_PRECHECK_HEIGHT;
   const nearTempBoundary =
     Math.abs(center.temperature - CLIMATE_ZONE_THRESHOLD_LOW) <= BIOME_BLEND_PRECHECK_MARGIN ||
     Math.abs(center.temperature - CLIMATE_ZONE_THRESHOLD_HIGH) <= BIOME_BLEND_PRECHECK_MARGIN;
   const nearSelectorBoundary =
     Math.abs(center.selector - 1 / 3) <= BIOME_BLEND_PRECHECK_MARGIN ||
     Math.abs(center.selector - 2 / 3) <= BIOME_BLEND_PRECHECK_MARGIN;
+  const shouldBlendHumidity = dominantOceanRegime === "land" || nearOceanLandBoundary;
   const nearHumidityBoundary =
-    Math.abs(center.humidity - HUMIDITY_ZONE_THRESHOLD_LOW) <= BIOME_BLEND_PRECHECK_MARGIN ||
-    Math.abs(center.humidity - HUMIDITY_ZONE_THRESHOLD_HIGH) <= BIOME_BLEND_PRECHECK_MARGIN;
+    shouldBlendHumidity &&
+    (Math.abs(center.humidity - HUMIDITY_ZONE_THRESHOLD_LOW) <= BIOME_BLEND_PRECHECK_MARGIN ||
+      Math.abs(center.humidity - HUMIDITY_ZONE_THRESHOLD_HIGH) <= BIOME_BLEND_PRECHECK_MARGIN);
 
-  if (!nearTempBoundary && !nearSelectorBoundary && !nearHumidityBoundary) {
+  if (
+    !nearTempBoundary &&
+    !nearSelectorBoundary &&
+    !nearHumidityBoundary &&
+    !nearOceanOpenBoundary &&
+    !nearOceanLandBoundary &&
+    !needsDeepOceanGapCheck
+  ) {
     setSingleBiomeBlendResult(target, dominantBiome);
+    return finalizeBiomeBlendAt(x, z, target);
+  }
+
+  if (!nearTempBoundary && !nearSelectorBoundary && !nearHumidityBoundary && !nearOceanOpenBoundary && !nearOceanLandBoundary && needsDeepOceanGapCheck) {
+    const deepAllowance = getDeepOceanAllowance(centerMountainAdditiveHeight, centerMountainRangeMask);
+    const deepBiome = dominantOceanBiome;
+    const bufferedOceanBiome = getOceanBiome("open", dominantCategory, 0) || deepBiome;
+    if (!(deepAllowance > 0.0001) || !deepBiome || !bufferedOceanBiome || deepBiome.id === bufferedOceanBiome.id) {
+      setSingleBiomeBlendResult(target, bufferedOceanBiome || dominantBiome);
+      return finalizeBiomeBlendAt(x, z, target);
+    }
+    if (deepAllowance >= 0.9999) {
+      setSingleBiomeBlendResult(target, deepBiome);
+      return finalizeBiomeBlendAt(x, z, target);
+    }
+    target.count = 0;
+    target.dominantBiome = deepAllowance >= 0.5 ? deepBiome : bufferedOceanBiome;
+    for (let i = 0; i < target.biomes.length; i += 1) {
+      target.biomes[i] = null;
+      target.weights[i] = 0;
+    }
+    upsertBiomeBlendEntry(target, bufferedOceanBiome, 1 - deepAllowance);
+    upsertBiomeBlendEntry(target, deepBiome, deepAllowance);
+    normalizeBiomeBlendResult(target);
     return finalizeBiomeBlendAt(x, z, target);
   }
 
@@ -2260,6 +2353,42 @@ function fillBiomeBlendSample(x, z, target = createBiomeBlendSampleResult()) {
   const [lowW, midW, highW] = getBiomeVariantWeights(center.selector, selectorGradientPerMeter);
   const [xericW, mesicW, hydricW] = getHumidityZoneWeights(center.humidity, humidityGradientPerMeter);
 
+  let oceanOpenWeight = 0;
+  let oceanCoastalWeight = 0;
+  let landWeight = 1;
+  if (dominantOceanRegime === "open") {
+    oceanOpenWeight = 1;
+    landWeight = 0;
+  } else if (dominantOceanRegime === "coastal") {
+    oceanCoastalWeight = 1;
+    landWeight = 0;
+  }
+
+  if (nearOceanOpenBoundary || nearOceanLandBoundary) {
+    const openToCoastal = smoothstep(
+      OCEAN_BIOME_OPEN_MAX_MOUNTAIN_ADDITIVE_HEIGHT - OCEAN_BIOME_OPEN_COASTAL_BLEND_HALF_WIDTH_METERS,
+      OCEAN_BIOME_OPEN_MAX_MOUNTAIN_ADDITIVE_HEIGHT + OCEAN_BIOME_OPEN_COASTAL_BLEND_HALF_WIDTH_METERS,
+      centerMountainAdditiveHeight
+    );
+    const coastalToLand = smoothstep(
+      OCEAN_BIOME_COASTAL_MAX_MOUNTAIN_ADDITIVE_HEIGHT - OCEAN_BIOME_LAND_BLEND_HALF_WIDTH_METERS,
+      OCEAN_BIOME_COASTAL_MAX_MOUNTAIN_ADDITIVE_HEIGHT + OCEAN_BIOME_LAND_BLEND_HALF_WIDTH_METERS,
+      centerMountainAdditiveHeight
+    );
+    oceanOpenWeight = 1 - openToCoastal;
+    oceanCoastalWeight = openToCoastal * (1 - coastalToLand);
+    landWeight = openToCoastal * coastalToLand;
+  }
+  [oceanOpenWeight, oceanCoastalWeight, landWeight] = normalizeWeightTriplet(
+    oceanOpenWeight,
+    oceanCoastalWeight,
+    landWeight
+  );
+  const deepOceanAllowance =
+    oceanOpenWeight > 0.0001 && midW > 0.0001
+      ? getDeepOceanAllowance(centerMountainAdditiveHeight, centerMountainRangeMask)
+      : 1;
+
   target.count = 0;
   const categoryWeights = [coldW, temperateW, hotW];
   const categoryKeys = ["cold", "temperate", "hot"];
@@ -2272,15 +2401,44 @@ function fillBiomeBlendSample(x, z, target = createBiomeBlendSampleResult()) {
     for (let vi = 0; vi < variants.length; vi += 1) {
       const variantWeight = variantWeights[vi];
       if (!(variantWeight > 0.0001)) continue;
-      const baseBiome = BIOME_DEFS[variants[vi]];
-      if (!baseBiome) continue;
-      for (let hi = 0; hi < humidityWeights.length; hi += 1) {
-        const humidityWeight = humidityWeights[hi];
-        if (!(humidityWeight > 0.0001)) continue;
-        const weight = cWeight * variantWeight * humidityWeight;
-        if (!(weight > 0.0001)) continue;
-        const humidityBand = HUMIDITY_ZONE_KEYS[hi];
-        upsertBiomeBlendEntry(target, getHumidityMappedBiome(baseBiome, humidityBand), weight);
+      const climateWeight = cWeight * variantWeight;
+      if (!(climateWeight > 0.0001)) continue;
+      const categoryKey = categoryKeys[ci];
+
+      if (oceanOpenWeight > 0.0001) {
+        const openBiome = getOceanBiome("open", categoryKey, vi);
+        const openWeight = climateWeight * oceanOpenWeight;
+        if (openBiome && openWeight > 0.0001) {
+          if (deepOceanAllowance < 0.9999 && isDeepOpenOceanBiome(openBiome)) {
+            const deepWeight = openWeight * deepOceanAllowance;
+            const bufferedWeight = openWeight - deepWeight;
+            if (deepWeight > 0.0001) upsertBiomeBlendEntry(target, openBiome, deepWeight);
+            if (bufferedWeight > 0.0001) {
+              const bufferedBiome = getOceanBiome("open", categoryKey, 0) || openBiome;
+              upsertBiomeBlendEntry(target, bufferedBiome, bufferedWeight);
+            }
+          } else {
+            upsertBiomeBlendEntry(target, openBiome, openWeight);
+          }
+        }
+      }
+
+      if (oceanCoastalWeight > 0.0001) {
+        const coastalBiome = getOceanBiome("coastal", categoryKey, vi);
+        if (coastalBiome) upsertBiomeBlendEntry(target, coastalBiome, climateWeight * oceanCoastalWeight);
+      }
+
+      if (landWeight > 0.0001) {
+        const baseBiome = BIOME_DEFS[variants[vi]];
+        if (!baseBiome) continue;
+        for (let hi = 0; hi < humidityWeights.length; hi += 1) {
+          const humidityWeight = humidityWeights[hi];
+          if (!(humidityWeight > 0.0001)) continue;
+          const weight = climateWeight * humidityWeight * landWeight;
+          if (!(weight > 0.0001)) continue;
+          const humidityBand = HUMIDITY_ZONE_KEYS[hi];
+          upsertBiomeBlendEntry(target, getHumidityMappedBiome(baseBiome, humidityBand), weight);
+        }
       }
     }
   }
@@ -2322,8 +2480,23 @@ function getBiomeAt(x, z) {
   const climate = sampleBiomeClimateFields(x, z);
   const category = getTemperatureCategoryFromValue(climate.temperature);
   const humidityBand = getHumidityBandKey(climate.humidity);
-  const variants = BIOME_VARIANTS[category];
   const index = Math.min(2, Math.floor(climate.selector * 3));
+  const mountainSample = fillTerrainAdditiveSampleAt(x, z, mountainBiomeAdditiveScratch);
+  const mountainAdditiveHeight = mountainSample.mountainAdditiveHeight || 0;
+  const mountainRangeMask = mountainSample.rangeMask || 0;
+  const oceanRegime = getOceanRegimeFromMountainAdditiveHeight(mountainAdditiveHeight);
+  if (oceanRegime !== "land") {
+    const oceanBiome = getOceanBiome(oceanRegime, category, index);
+    if (oceanRegime === "open" && isDeepOpenOceanBiome(oceanBiome)) {
+      const deepAllowance = getDeepOceanAllowance(mountainAdditiveHeight, mountainRangeMask);
+      if (deepAllowance < 0.5) {
+        return getOceanBiome("open", category, 0) || oceanBiome || BIOME_DEFS.ocean || BIOME_DEFS.meadow;
+      }
+    }
+    return oceanBiome || BIOME_DEFS.ocean || BIOME_DEFS.meadow;
+  }
+
+  const variants = BIOME_VARIANTS[category];
   const baseBiome = getHumidityMappedBiome(BIOME_DEFS[variants[index]], humidityBand);
   const mountainAdjusted = getBiomeWithMountainVariantAt(x, z, baseBiome);
   let wetlandAdjusted = mountainAdjusted;
@@ -3493,7 +3666,9 @@ function teleportPlayerToWorldCoordinates(x, z, options = {}) {
 const minimapColorScratch = { r: 0, g: 0, b: 0 };
 const minimapWaterBaseScratch = new THREE.Color();
 const minimapWaterShallowScratch = new THREE.Color();
+const minimapWaterMidScratch = new THREE.Color();
 const minimapWaterDeepScratch = new THREE.Color();
+const minimapWaterAbyssScratch = new THREE.Color();
 
 function syncMinimapCanvasSize() {
   if (!minimapCanvas || !minimapCtx) return;
@@ -3643,8 +3818,10 @@ function renderMinimap() {
   const sampleMode = useNearOnly ? "near" : useMidOnly ? "mid" : "far";
   const waterLevel = state.world.water.level;
   minimapWaterBaseScratch.set(state.world.water.colorHex);
-  minimapWaterShallowScratch.copy(minimapWaterBaseScratch).lerp(MINIMAP_WATER_SHALLOW_TINT, 0.45);
-  minimapWaterDeepScratch.copy(minimapWaterBaseScratch).lerp(MINIMAP_WATER_DEEP_TINT, 0.7);
+  minimapWaterShallowScratch.copy(minimapWaterBaseScratch).lerp(MINIMAP_WATER_SHALLOW_TINT, 0.42);
+  minimapWaterMidScratch.copy(minimapWaterBaseScratch).lerp(MINIMAP_WATER_MID_TINT, 0.58);
+  minimapWaterDeepScratch.copy(minimapWaterBaseScratch).lerp(MINIMAP_WATER_DEEP_TINT, 0.8);
+  minimapWaterAbyssScratch.copy(minimapWaterBaseScratch).lerp(MINIMAP_WATER_ABYSS_TINT, 0.92);
   const span = minimapWorldRadius * 2;
   const startX = player.position.x - minimapWorldRadius;
   const startZ = player.position.z - minimapWorldRadius;
@@ -3666,10 +3843,24 @@ function renderMinimap() {
       let b = MINIMAP_FALLBACK_COLOR.b;
       if (Number.isFinite(heightSample) && heightSample < waterLevel) {
         const depth = waterLevel - heightSample;
-        const t = clampNumber(depth / MINIMAP_WATER_DEPTH_MAX, 0, 1, 0);
-        r = minimapWaterShallowScratch.r + (minimapWaterDeepScratch.r - minimapWaterShallowScratch.r) * t;
-        g = minimapWaterShallowScratch.g + (minimapWaterDeepScratch.g - minimapWaterShallowScratch.g) * t;
-        b = minimapWaterShallowScratch.b + (minimapWaterDeepScratch.b - minimapWaterShallowScratch.b) * t;
+        const clampedDepth = clampNumber(depth, 0, MINIMAP_WATER_DEPTH_MAX, 0);
+        if (clampedDepth <= MINIMAP_WATER_DEPTH_MID) {
+          const t = smoothstep(0, MINIMAP_WATER_DEPTH_MID, clampedDepth);
+          r = minimapWaterShallowScratch.r + (minimapWaterMidScratch.r - minimapWaterShallowScratch.r) * t;
+          g = minimapWaterShallowScratch.g + (minimapWaterMidScratch.g - minimapWaterShallowScratch.g) * t;
+          b = minimapWaterShallowScratch.b + (minimapWaterMidScratch.b - minimapWaterShallowScratch.b) * t;
+        } else {
+          const t = smoothstep(MINIMAP_WATER_DEPTH_MID, MINIMAP_WATER_DEPTH_MAX, clampedDepth);
+          r = minimapWaterMidScratch.r + (minimapWaterDeepScratch.r - minimapWaterMidScratch.r) * t;
+          g = minimapWaterMidScratch.g + (minimapWaterDeepScratch.g - minimapWaterMidScratch.g) * t;
+          b = minimapWaterMidScratch.b + (minimapWaterDeepScratch.b - minimapWaterMidScratch.b) * t;
+        }
+        if (clampedDepth > MINIMAP_WATER_DEPTH_ABYSS_START) {
+          const abyssT = smoothstep(MINIMAP_WATER_DEPTH_ABYSS_START, MINIMAP_WATER_DEPTH_MAX, clampedDepth);
+          r += (minimapWaterAbyssScratch.r - r) * abyssT;
+          g += (minimapWaterAbyssScratch.g - g) * abyssT;
+          b += (minimapWaterAbyssScratch.b - b) * abyssT;
+        }
       } else {
         const color = sampleLoadedBiomeColorAt(worldX, worldZ, minimapColorScratch, sampleMode);
         r = clampNumber(color ? color.r : MINIMAP_FALLBACK_COLOR.r, 0, 1, 0);

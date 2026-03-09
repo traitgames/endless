@@ -4,6 +4,29 @@ export const BIOME_VARIANTS = Object.freeze({
   hot: Object.freeze(["desert", "savanna", "badlands"]),
 });
 
+export const OCEAN_BIOME_VARIANTS = Object.freeze({
+  coastal: Object.freeze({
+    hot: Object.freeze(["mangrove", "seagrass_meadow", "tropical_lagoon"]),
+    temperate: Object.freeze(["kelp_shore", "mudflat", "salt_marsh"]),
+    cold: Object.freeze(["kelp_shore_cold", "rocky_shore", "coastal_tundra"]),
+  }),
+  open: Object.freeze({
+    hot: Object.freeze(["tropical_ocean", "deep_tropical_ocean", "coral_reef"]),
+    temperate: Object.freeze(["ocean", "deep_ocean", "kelp_forest"]),
+    cold: Object.freeze(["cold_ocean", "deep_cold_ocean", "kelp_forest_cold"]),
+  }),
+});
+
+export const OCEAN_BIOME_COASTAL_MAX_MOUNTAIN_ADDITIVE_HEIGHT = 1;
+export const OCEAN_BIOME_OPEN_MAX_MOUNTAIN_ADDITIVE_HEIGHT = 0.35;
+export const OCEAN_BIOME_OPEN_COASTAL_BLEND_HALF_WIDTH_METERS = 0.35;
+export const OCEAN_BIOME_OPEN_BLEND_PRECHECK_HEIGHT = 0.6;
+export const OCEAN_BIOME_LAND_BLEND_HALF_WIDTH_METERS = 1.25;
+export const OCEAN_BIOME_LAND_BLEND_PRECHECK_HEIGHT = 2;
+export const OCEAN_DEEP_BIOME_COAST_RANGE_MASK_SCALE = 28;
+export const OCEAN_DEEP_BIOME_COAST_SIGNAL_START = 0.04;
+export const OCEAN_DEEP_BIOME_COAST_SIGNAL_END = 0.24;
+
 export const HUMIDITY_ZONE_KEYS = Object.freeze(["xeric", "mesic", "hydric"]);
 
 export const HUMIDITY_ZONE_LABELS = Object.freeze({
