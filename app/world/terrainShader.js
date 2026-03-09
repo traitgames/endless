@@ -16,6 +16,8 @@ export function configureTerrainMaterial({
     shader.uniforms.uTint = { value: new THREE.Color(state.world.terrainColor) };
     shader.uniforms.uDetailRenderDistance = { value: getDetailRenderDistance() };
     shader.uniforms.uDetailIntensity = { value: state.world?.terrainDetail?.intensity ?? 1 };
+    shader.uniforms.uUnderwaterTint = { value: new THREE.Color(state.world.water.colorHex) };
+    shader.uniforms.uUnderwaterBlend = { value: 0 };
     if (fade) {
       shader.uniforms.uFadeStart = { value: fade.start };
       shader.uniforms.uFadeEnd = { value: fade.end };
@@ -95,6 +97,22 @@ export function configureTerrainMaterial({
       uniform float uNightFogStrength;
       `
       : "";
+    const terrainUnderwaterChunk = `
+      uniform vec3 uUnderwaterTint;
+      uniform float uUnderwaterBlend;
+
+      float hardLightChannel(float base, float blend) {
+        return blend < 0.5 ? (2.0 * base * blend) : (1.0 - 2.0 * (1.0 - base) * (1.0 - blend));
+      }
+
+      vec3 hardLightBlend(vec3 base, vec3 blend) {
+        return vec3(
+          hardLightChannel(base.r, blend.r),
+          hardLightChannel(base.g, blend.g),
+          hardLightChannel(base.b, blend.b)
+        );
+      }
+      `;
     const terrainFogUniformChunk = fog
       ? `
       uniform float uFogIntensity;
@@ -128,6 +146,7 @@ ${terrainDetailFragmentChunk}
 ${terrainFadeChunk}
 ${terrainFadeSecondaryChunk}
 ${terrainNightChunk}
+${terrainUnderwaterChunk}
 ${terrainFogUniformChunk}
       `
       )
@@ -159,6 +178,9 @@ ${terrainFogUniformChunk}
       float nightMix = clamp(nightAmount * uNightStrength * nightFade, 0.0, 1.0);
       baseColor = mix(baseColor, uNightTint, nightMix);
       #endif
+      float underwaterBlend = clamp(uUnderwaterBlend, 0.0, 1.0);
+      vec3 underwaterHardLight = hardLightBlend(baseColor, clamp(uUnderwaterTint, vec3(0.0), vec3(1.0)));
+      baseColor = mix(baseColor, underwaterHardLight, underwaterBlend);
       vec4 diffuseColor = vec4(baseColor, opacity);
       #ifdef USE_TERRAIN_FADE
       float terrainFade = smoothstep(uFadeStart, uFadeEnd, length(vWorldPos.xz - cameraPosition.xz));

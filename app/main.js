@@ -405,6 +405,20 @@ const skyUniforms = {
   groundColor: { value: new THREE.Color("#e6f2ff") },
   sunColor: { value: new THREE.Color("#fff6d9") },
   sunDirection: { value: new THREE.Vector3(0.6, 0.8, 0.2).normalize() },
+  moonColor: { value: new THREE.Color("#b2c8f4") },
+  moonDirection: { value: new THREE.Vector3(-0.6, 0.35, -0.2).normalize() },
+  sunDiscPower: { value: 256 },
+  sunGlowPower: { value: 10 },
+  sunGlowStrength: { value: 0.34 },
+  moonDiscPower: { value: 280 },
+  moonStrength: { value: 0.8 },
+  sunRayStrength: { value: 0 },
+  moonRayStrength: { value: 0 },
+  skyTime: { value: 0 },
+  waterLevel: { value: state.world.water.level },
+  cameraWorldPos: { value: new THREE.Vector3(0, PLAYER_HEIGHT, 0) },
+  underwaterSkyMix: { value: 0 },
+  underwaterFogTint: { value: new THREE.Color(state.world.fog.colorHex) },
 };
 const sky = new THREE.Mesh(
   new THREE.SphereGeometry(6000, 48, 24),
@@ -426,17 +440,151 @@ const sky = new THREE.Mesh(
       uniform vec3 groundColor;
       uniform vec3 sunColor;
       uniform vec3 sunDirection;
+      uniform vec3 moonColor;
+      uniform vec3 moonDirection;
+      uniform float sunDiscPower;
+      uniform float sunGlowPower;
+      uniform float sunGlowStrength;
+      uniform float moonDiscPower;
+      uniform float moonStrength;
+      uniform float sunRayStrength;
+      uniform float moonRayStrength;
+      uniform float skyTime;
+      uniform float waterLevel;
+      uniform vec3 cameraWorldPos;
+      uniform float underwaterSkyMix;
+      uniform vec3 underwaterFogTint;
       varying vec3 vWorldPosition;
+
+      vec2 sampleWaveGradient(vec2 p, float t) {
+        float phaseA = dot(p, vec2(0.19, 0.12));
+        float phaseB = dot(p, vec2(-0.15, 0.17));
+        float phaseC = dot(p, vec2(0.31, -0.13));
+        vec2 grad = vec2(0.0);
+        grad += vec2(0.19, 0.12) * (cos(phaseA) * cos(t * 0.55)) * 0.42;
+        grad += vec2(-0.15, 0.17) * (cos(phaseB) * sin(t * 0.73)) * 0.36;
+        grad += vec2(0.31, -0.13) * (cos(phaseC + sin(t * 0.34) * 0.35) * cos(t * 0.91)) * 0.22;
+        return grad * 2.35;
+      }
+
+      vec3 sampleWaveNormal(vec2 p, float t) {
+        vec2 g = sampleWaveGradient(p, t);
+        return normalize(vec3(-g.x, 1.0, -g.y));
+      }
+
+      float sampleCausticPulse(vec2 p, float t) {
+        float c1 = sin(dot(p, vec2(0.73, -0.51))) * cos(t * 0.78);
+        float c2 = sin(dot(p, vec2(-0.94, 0.79)) + sin(t * 0.31) * 0.42) * sin(t * 0.63);
+        float c3 = sin(dot(p, vec2(0.47, 1.03))) * cos(t * 0.95);
+        float mixVal = c1 * 0.45 + c2 * 0.35 + c3 * 0.2;
+        return smoothstep(0.3, 1.0, 0.5 + 0.5 * mixVal);
+      }
+
+      float sampleRefractedBeam(vec3 viewDir, vec3 lightDir, vec2 hit, float t, float tightPower, float softPower) {
+        vec2 drift = vec2(sin(t * 0.37), cos(t * 0.29));
+        vec3 nA = sampleWaveNormal(hit, t);
+        vec3 nB = sampleWaveNormal(hit + drift * 6.0, t + 1.7);
+        vec3 nC = sampleWaveNormal(hit + vec2(-drift.y, drift.x) * 9.0, t + 3.4);
+        vec3 refrA = refract(-lightDir, nA, 1.0 / 1.333);
+        vec3 refrB = refract(-lightDir, nB, 1.0 / 1.333);
+        vec3 refrC = refract(-lightDir, nC, 1.0 / 1.333);
+        float alignA = max(dot(viewDir, normalize(-refrA)), 0.0);
+        float alignB = max(dot(viewDir, normalize(-refrB)), 0.0);
+        float alignC = max(dot(viewDir, normalize(-refrC)), 0.0);
+        float tight = pow(alignA, tightPower) * 0.72 + pow(alignB, tightPower * 0.96) * 0.2 + pow(alignC, tightPower * 0.92) * 0.08;
+        float soft = pow(max(alignA, alignB), softPower) * 0.06 + pow(alignC, softPower * 0.92) * 0.035;
+        float sheet = pow(max(dot(sampleWaveNormal(hit, t), -lightDir), 0.0), 8.0) * 0.05;
+        float pulse = sampleCausticPulse(hit * 0.18, t);
+        return (tight + soft + sheet) * mix(0.82, 1.62, pulse);
+      }
+
+      vec2 orbitOffset(vec2 origin, float radius, float angle, float wobbleFreq, float wobbleAmount) {
+        vec2 dir = vec2(cos(angle), sin(angle));
+        vec2 wobble = vec2(
+          sin(angle * wobbleFreq + origin.x * 0.09),
+          cos(angle * (wobbleFreq * 0.87) + origin.y * 0.07)
+        ) * wobbleAmount;
+        return origin + dir * radius + wobble;
+      }
+
       void main() {
-        vec3 dir = normalize(vWorldPosition);
+        vec3 dir = normalize(vWorldPosition - cameraWorldPos);
         float heightMix = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
         float nearHorizon = 1.0 - abs(dir.y);
         float horizonBoost = smoothstep(0.0, 0.7, nearHorizon);
         vec3 col = mix(groundColor, horizonColor, smoothstep(0.04, 0.56, heightMix));
         col = mix(col, topColor, smoothstep(0.5, 1.0, heightMix));
-        float sunAmount = pow(max(dot(dir, normalize(sunDirection)), 0.0), 256.0);
-        float sunGlow = pow(max(dot(dir, normalize(sunDirection)), 0.0), 10.0) * 0.34;
+        vec3 sunDir = normalize(sunDirection);
+        vec3 moonDir = normalize(moonDirection);
+        float sunDot = max(dot(dir, sunDir), 0.0);
+        float sunAmount = pow(sunDot, sunDiscPower);
+        float sunGlow = pow(sunDot, sunGlowPower) * sunGlowStrength;
         col += sunColor * (sunAmount + sunGlow);
+        float moonDot = max(dot(dir, moonDir), 0.0);
+        float moonDisc = pow(moonDot, moonDiscPower) * moonStrength;
+        col += moonColor * moonDisc;
+
+        bool raysActive = (sunRayStrength > 0.0001 || moonRayStrength > 0.0001);
+        bool cameraUnderwater = cameraWorldPos.y < waterLevel - 0.01;
+        if (raysActive && cameraUnderwater && dir.y > 0.0005) {
+          float travelToSurface = (waterLevel - cameraWorldPos.y) / max(dir.y, 0.0005);
+          vec2 surfaceHit = cameraWorldPos.xz + dir.xz * travelToSurface;
+          vec2 rayUv = surfaceHit * 3.05;
+          float waveTime = skyTime * 0.72;
+          float mediumFade = exp(-travelToSurface * 0.018);
+          if (sunRayStrength > 0.0001) {
+            vec2 sunOriginA = vec2(8.0, -6.0);
+            vec2 sunOriginB = vec2(-10.0, 7.0);
+            vec2 sunOriginC = vec2(13.0, 10.0);
+            vec2 sunOriginD = vec2(-4.0, -13.0);
+            vec2 sunOriginE = vec2(18.0, 2.0);
+            vec2 rayJitterA = orbitOffset(sunOriginA, 4.2, waveTime * 0.41, 2.8, 1.0);
+            vec2 rayJitterB = orbitOffset(sunOriginB, 3.9, -waveTime * 0.34 + 1.2, 2.2, 0.88);
+            vec2 rayJitterC = orbitOffset(sunOriginC, 3.7, waveTime * 0.48 - 0.8, 3.1, 0.96);
+            vec2 rayJitterD = orbitOffset(sunOriginD, 3.5, -waveTime * 0.37 + 0.4, 2.5, 0.84);
+            vec2 rayJitterE = orbitOffset(sunOriginE, 3.3, waveTime * 0.44 + 2.3, 2.9, 0.82);
+            float sunMaskA = smoothstep(0.88, 0.994, sampleCausticPulse((rayUv + rayJitterA) * 0.14, waveTime));
+            float sunMaskB = smoothstep(0.88, 0.994, sampleCausticPulse((rayUv + rayJitterB) * 0.14, waveTime + 1.8));
+            float sunMaskC = smoothstep(0.88, 0.994, sampleCausticPulse((rayUv + rayJitterC) * 0.14, waveTime + 3.3));
+            float sunMaskD = smoothstep(0.88, 0.994, sampleCausticPulse((rayUv + rayJitterD) * 0.14, waveTime + 4.9));
+            float sunMaskE = smoothstep(0.88, 0.994, sampleCausticPulse((rayUv + rayJitterE) * 0.14, waveTime + 6.2));
+            float sunBeam =
+              sampleRefractedBeam(dir, sunDir, rayUv + rayJitterA, waveTime + 0.9, 24.0, 5.9) * sunMaskA * 0.31 +
+              sampleRefractedBeam(dir, sunDir, rayUv + rayJitterB, waveTime + 2.1, 22.8, 5.5) * sunMaskB * 0.22 +
+              sampleRefractedBeam(dir, sunDir, rayUv + rayJitterC, waveTime + 3.4, 24.7, 6.1) * sunMaskC * 0.18 +
+              sampleRefractedBeam(dir, sunDir, rayUv + rayJitterD, waveTime + 4.8, 23.4, 5.7) * sunMaskD * 0.16 +
+              sampleRefractedBeam(dir, sunDir, rayUv + rayJitterE, waveTime + 6.0, 25.1, 6.3) * sunMaskE * 0.13;
+            float sunShaftField =
+              smoothstep(0.91, 0.997, sampleCausticPulse((rayUv + orbitOffset(vec2(0.0), 2.6, waveTime * 0.39, 2.4, 0.52)) * 0.18, waveTime + 2.7)) *
+              pow(max(dot(sampleWaveNormal(rayUv + orbitOffset(vec2(0.0), 2.2, -waveTime * 0.31, 2.1, 0.4), waveTime), -sunDir), 0.0), 5.0);
+            sunBeam += sunShaftField * (0.025 + 0.07 * pow(max(dir.y, 0.0), 1.4));
+            col += sunColor * (sunBeam * sunRayStrength * mediumFade);
+          }
+          if (moonRayStrength > 0.0001) {
+            vec2 moonOrigin = vec2(38.0, -22.0);
+            vec2 moonBase = rayUv + orbitOffset(moonOrigin, 3.7, -waveTime * 0.26 + 0.6, 2.0, 0.8);
+            vec2 moonJitterA = orbitOffset(vec2(0.0), 2.8, waveTime * 0.35 + 0.7, 2.6, 0.64);
+            vec2 moonJitterB = orbitOffset(vec2(9.0, -8.0), 2.6, -waveTime * 0.31 + 1.4, 2.3, 0.6);
+            vec2 moonJitterC = orbitOffset(vec2(-11.0, 10.0), 2.5, waveTime * 0.41 - 0.9, 2.9, 0.62);
+            vec2 moonJitterD = orbitOffset(vec2(4.0, 13.0), 2.3, -waveTime * 0.29 + 2.2, 2.4, 0.58);
+            float moonMaskA = smoothstep(0.89, 0.995, sampleCausticPulse((moonBase + moonJitterA) * 0.14, waveTime + 5.0));
+            float moonMaskB = smoothstep(0.89, 0.995, sampleCausticPulse((moonBase + moonJitterB) * 0.14, waveTime + 6.4));
+            float moonMaskC = smoothstep(0.89, 0.995, sampleCausticPulse((moonBase + moonJitterC) * 0.14, waveTime + 7.8));
+            float moonMaskD = smoothstep(0.89, 0.995, sampleCausticPulse((moonBase + moonJitterD) * 0.14, waveTime + 9.1));
+            float moonBeam =
+              sampleRefractedBeam(dir, moonDir, moonBase + moonJitterA, waveTime + 11.0, 23.0, 5.6) * moonMaskA * 0.33 +
+              sampleRefractedBeam(dir, moonDir, moonBase + moonJitterB, waveTime + 12.6, 21.8, 5.2) * moonMaskB * 0.25 +
+              sampleRefractedBeam(dir, moonDir, moonBase + moonJitterC, waveTime + 14.1, 20.9, 4.9) * moonMaskC * 0.22 +
+              sampleRefractedBeam(dir, moonDir, moonBase + moonJitterD, waveTime + 15.4, 22.2, 5.35) * moonMaskD * 0.18;
+            float moonShaftField =
+              smoothstep(0.92, 0.997, sampleCausticPulse((moonBase + orbitOffset(vec2(0.0), 2.0, -waveTime * 0.36, 2.2, 0.45)) * 0.17, waveTime + 6.2)) *
+              pow(max(dot(sampleWaveNormal(moonBase + orbitOffset(vec2(0.0), 1.8, waveTime * 0.32, 2.0, 0.36), waveTime + 2.0), -moonDir), 0.0), 5.1);
+            moonBeam += moonShaftField * (0.02 + 0.06 * pow(max(dir.y, 0.0), 1.2));
+            col += moonColor * (moonBeam * moonRayStrength * mediumFade);
+          }
+        }
+        col = mix(col, underwaterFogTint, clamp(underwaterSkyMix, 0.0, 1.0));
+        col *= mix(1.0, 0.42, clamp(underwaterSkyMix, 0.0, 1.0));
         col += vec3(0.09, 0.12, 0.16) * horizonBoost * 0.12;
         gl_FragColor = vec4(col, 1.0);
       }
@@ -520,6 +668,7 @@ const water = new THREE.Mesh(
     metalness: 0.03,
     clearcoat: 0.6,
     clearcoatRoughness: 0.25,
+    side: THREE.DoubleSide,
   })
 );
 const WATER_FADE_START_METERS = 1600;
@@ -527,6 +676,49 @@ const WATER_FADE_END_METERS = 5200;
 const WATER_NIGHT_DARKEN_STRENGTH = 0.95;
 const WATER_NIGHT_DARKEN_START_METERS = 0;
 const WATER_NIGHT_DARKEN_END_METERS = WATER_FADE_END_METERS;
+const UNDERWATER_SURFACE_BLEND_START_METERS = -0.18;
+const UNDERWATER_SURFACE_BLEND_FULL_METERS = 1.05;
+const UNDERWATER_ENTRY_SUBMERSION = 0.18;
+const UNDERWATER_EXIT_SUBMERSION = 0.08;
+const UNDERWATER_ADAPT_SECONDS = 4.6;
+const UNDERWATER_FOG_DENSITY_MULTIPLIER_ENTRY = 7.2;
+const UNDERWATER_FOG_DENSITY_MULTIPLIER_ADAPTED = 4.1;
+const UNDERWATER_FOG_DARKEN_ENTRY = 0.68;
+const UNDERWATER_FOG_DARKEN_ADAPTED = 0.92;
+const UNDERWATER_FOG_WATER_COLOR_MIX = 0.82;
+const UNDERWATER_FOG_WATER_COLOR_MIX_NIGHT = 0.2;
+const UNDERWATER_FOG_NIGHT_SKY_MIX = 0.92;
+const UNDERWATER_FOG_NIGHT_DARKEN = 0.06;
+const UNDERWATER_FOG_NIGHT_BLACKOUT_START_CYCLE = 18.5 / 24;
+const UNDERWATER_FOG_NIGHT_BLACKOUT_FULL_CYCLE = 20 / 24;
+const UNDERWATER_FOG_DAWN_RECOVER_START_CYCLE = 5 / 24;
+const UNDERWATER_FOG_DAWN_RECOVER_END_CYCLE = 6.5 / 24;
+const UNDERWATER_FOG_NIGHT_SURFACE_BLEND_BOOST = 0.9;
+const UNDERWATER_FOG_NIGHT_INSTANT_ENTRY_START_METERS = -0.02;
+const UNDERWATER_FOG_NIGHT_INSTANT_ENTRY_END_METERS = 0.02;
+const UNDERWATER_TERRAIN_NIGHT_ENTRY_BLEND_FLOOR = 0.9;
+const UNDERWATER_BLUR_PX_ENTRY = 3.4;
+const UNDERWATER_BLUR_PX_ADAPTED = 0.55;
+const UNDERWATER_SATURATION_ENTRY = 0.72;
+const UNDERWATER_SATURATION_ADAPTED = 0.92;
+const UNDERWATER_MIN_FOG_DENSITY = 0.004;
+const UNDERWATER_MAX_FOG_DENSITY = 0.26;
+const UNDERWATER_SURFACE_LIGHT_CUTOFF_DEPTH_METERS = 100;
+const UNDERWATER_DEPTH_FOG_MULTIPLIER_MAX = 2.2;
+const UNDERWATER_DEPTH_DARKEN_AT_CUTOFF = 0.18;
+const UNDERWATER_DEPTH_DARKEN_AT_ABYSS = 0.08;
+const UNDERWATER_SUN_DISC_POWER_AT_CUTOFF = 1600;
+const UNDERWATER_SUN_GLOW_STRENGTH_AT_CUTOFF = 0.015;
+const UNDERWATER_MOON_SCALE_AT_CUTOFF = 0.5;
+const UNDERWATER_FAR_TERRAIN_FADE_START_SUBMERSION = 0.08;
+const UNDERWATER_FAR_TERRAIN_FADE_END_SUBMERSION = 0.7;
+const UNDERWATER_SUN_RAY_STRENGTH_MAX = 0.95;
+const UNDERWATER_MOON_RAY_STRENGTH_MAX = 0.72;
+const UNDERWATER_RAY_RAMP_START_DEPTH_METERS = 0.02;
+const UNDERWATER_RAY_RAMP_FULL_DEPTH_METERS = 0.2;
+const UNDERWATER_TERRAIN_TINT_ADAPT_SECONDS = 1.0;
+const UNDERWATER_TERRAIN_TINT_BLEND_NEAR_MAX = 0.9;
+const UNDERWATER_TERRAIN_TINT_BLEND_MID_MAX = 0.72;
 const waterShaderState = { shader: null };
 if (water.material) {
   water.material.onBeforeCompile = (shader) => {
@@ -537,6 +729,9 @@ if (water.material) {
     shader.uniforms.uWaterNightStart = { value: WATER_NIGHT_DARKEN_START_METERS };
     shader.uniforms.uWaterNightEnd = { value: WATER_NIGHT_DARKEN_END_METERS };
     shader.uniforms.uWaterNightTint = { value: NIGHT_TINT_COLOR };
+    shader.uniforms.uWaterUnderwaterMix = { value: 0 };
+    shader.uniforms.uWaterUndersideTint = { value: new THREE.Color(state.world.water.colorHex) };
+    shader.uniforms.uWaterTime = { value: 0 };
     waterShaderState.shader = shader;
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -562,6 +757,9 @@ if (water.material) {
       uniform float uWaterNightStart;
       uniform float uWaterNightEnd;
       uniform vec3 uWaterNightTint;
+      uniform float uWaterUnderwaterMix;
+      uniform vec3 uWaterUndersideTint;
+      uniform float uWaterTime;
       varying vec3 vWorldPos;
       `
       )
@@ -570,10 +768,35 @@ if (water.material) {
         `
       vec4 diffuseColor = vec4( diffuse, opacity );
       float waterFade = smoothstep(uWaterFadeStart, uWaterFadeEnd, length(vWorldPos.xz - cameraPosition.xz));
-      diffuseColor.a *= clamp(1.0 - waterFade, 0.0, 1.0);
       float waterNightFade = smoothstep(uWaterNightStart, uWaterNightEnd, length(vWorldPos.xz - cameraPosition.xz));
       float waterNightMix = clamp(uWaterNightAmount * uWaterNightStrength * mix(0.35, 1.0, waterNightFade), 0.0, 1.0);
+      float nightAmount = clamp(uWaterNightAmount, 0.0, 1.0);
+      float undersideNightDarken = mix(1.0, 0.24, nightAmount);
+      float undersideNightTint = mix(0.0, 0.72, nightAmount);
+      float causticNightScale = mix(1.0, 0.24, nightAmount);
       diffuseColor.rgb = mix(diffuseColor.rgb, uWaterNightTint, waterNightMix);
+      float backface = gl_FrontFacing ? 0.0 : 1.0;
+      float surfaceAlpha = clamp(1.0 - waterFade, 0.0, 1.0);
+      float undersideMix = backface * clamp(0.46 + uWaterUnderwaterMix * 0.44, 0.0, 1.0);
+      diffuseColor.a *= mix(surfaceAlpha, 1.0, undersideMix);
+      vec3 undersideColor = mix(diffuseColor.rgb * 0.38, uWaterUndersideTint, 0.62);
+      undersideColor = mix(undersideColor, uWaterNightTint * 0.58, undersideNightTint);
+      undersideColor *= undersideNightDarken;
+      vec2 shimmerUv = vWorldPos.xz * 0.22 + vec2(uWaterTime * 0.31, -uWaterTime * 0.23);
+      vec2 shimmerUv2 = vWorldPos.xz * 0.38 + vec2(-uWaterTime * 0.42, uWaterTime * 0.28);
+      float rippleA = sin(shimmerUv.x * 6.2 + sin(shimmerUv.y * 2.3));
+      float rippleB = sin(shimmerUv.y * 5.7 - uWaterTime * 2.1 + sin(shimmerUv.x * 2.6));
+      float rippleC = sin((shimmerUv2.x + shimmerUv2.y) * 7.1 + uWaterTime * 1.2);
+      float ripple = rippleA * 0.42 + rippleB * 0.36 + rippleC * 0.22;
+      float causticSpark = pow(clamp(0.5 + 0.5 * ripple, 0.0, 1.0), 5.0);
+      float causticLines = abs(sin((shimmerUv2.x - shimmerUv2.y) * 8.4)) * abs(sin((shimmerUv.x + shimmerUv.y) * 9.1));
+      float caustic = clamp(causticSpark * 0.72 + pow(causticLines, 2.8) * 0.85, 0.0, 1.0);
+      vec3 causticColor = mix(vec3(0.2, 0.46, 0.58), vec3(0.78, 0.98, 1.0), caustic) * mix(1.0, 0.42, nightAmount);
+      diffuseColor.rgb = mix(diffuseColor.rgb, undersideColor, undersideMix);
+      diffuseColor.rgb += causticColor * undersideMix * (0.55 + uWaterUnderwaterMix * 1.2) * causticNightScale;
+      diffuseColor.rgb = mix(diffuseColor.rgb, uWaterUndersideTint * mix(0.75, 0.42, nightAmount), (1.0 - caustic) * undersideMix * 0.2);
+      diffuseColor.a = mix(diffuseColor.a, max(diffuseColor.a, mix(0.9, 0.72, nightAmount)), undersideMix);
+      diffuseColor.a = mix(diffuseColor.a, min(1.0, diffuseColor.a + caustic * 0.2 * causticNightScale), undersideMix);
       `
       );
   };
@@ -622,6 +845,18 @@ const atmosphereTemp = {
   skyHorizon: new THREE.Color(),
   skyGround: new THREE.Color(),
   fogMix: new THREE.Color(),
+};
+const underwaterState = {
+  submersion: 0,
+  adaptation: 1,
+  isUnderwater: false,
+  surfaceFogDensity: state.world.fog.density,
+  surfaceFogColor: new THREE.Color(state.world.fog.colorHex),
+  surfaceWaterColor: new THREE.Color(state.world.water.colorHex),
+  frameSurfaceFogColor: new THREE.Color(),
+  underwaterFogColor: new THREE.Color(),
+  undersideTint: new THREE.Color(state.world.water.colorHex),
+  canvasFilter: "",
 };
 const dynamicLightColors = {
   warmSun: new THREE.Color("#ff8f52"),
@@ -1223,6 +1458,7 @@ function syncTreeMaterials() {
 syncTreeMaterials();
 
 function syncTerrainShaderUniforms() {
+  skyUniforms.waterLevel.value = state.world.water.level - originOffset.y;
   if (terrainShaderState.shader) {
     terrainShaderState.shader.uniforms.uWaterLevel.value = state.world.water.level;
     terrainShaderState.shader.uniforms.uTint.value.set(state.world.terrainColor);
@@ -1260,6 +1496,12 @@ function syncTerrainShaderUniforms() {
     if (terrainShaderState.shader.uniforms.uNightTint) {
       terrainShaderState.shader.uniforms.uNightTint.value.copy(TERRAIN_NIGHT_TINT);
     }
+    if (terrainShaderState.shader.uniforms.uUnderwaterTint) {
+      terrainShaderState.shader.uniforms.uUnderwaterTint.value.copy(underwaterState.surfaceWaterColor);
+    }
+    if (terrainShaderState.shader.uniforms.uUnderwaterBlend) {
+      terrainShaderState.shader.uniforms.uUnderwaterBlend.value = 0;
+    }
   }
   if (waterShaderState.shader) {
     if (waterShaderState.shader.uniforms.uWaterFadeStart) {
@@ -1281,7 +1523,16 @@ function syncTerrainShaderUniforms() {
       waterShaderState.shader.uniforms.uWaterNightEnd.value = WATER_NIGHT_DARKEN_END_METERS;
     }
     if (waterShaderState.shader.uniforms.uWaterNightTint) {
-      waterShaderState.shader.uniforms.uWaterNightTint.value.copy(NIGHT_TINT_COLOR);
+      waterShaderState.shader.uniforms.uWaterNightTint.value.copy(scene.fog.color);
+    }
+    if (waterShaderState.shader.uniforms.uWaterUnderwaterMix) {
+      waterShaderState.shader.uniforms.uWaterUnderwaterMix.value = underwaterState.submersion;
+    }
+    if (waterShaderState.shader.uniforms.uWaterUndersideTint) {
+      waterShaderState.shader.uniforms.uWaterUndersideTint.value.copy(underwaterState.undersideTint);
+    }
+    if (waterShaderState.shader.uniforms.uWaterTime) {
+      waterShaderState.shader.uniforms.uWaterTime.value = 0;
     }
   }
   if (midTerrainShaderState.shader) {
@@ -1338,6 +1589,12 @@ function syncTerrainShaderUniforms() {
     if (midTerrainShaderState.shader.uniforms.uFogIntensity) {
       midTerrainShaderState.shader.uniforms.uFogIntensity.value = MID_FOG_INTENSITY;
     }
+    if (midTerrainShaderState.shader.uniforms.uUnderwaterTint) {
+      midTerrainShaderState.shader.uniforms.uUnderwaterTint.value.copy(underwaterState.surfaceWaterColor);
+    }
+    if (midTerrainShaderState.shader.uniforms.uUnderwaterBlend) {
+      midTerrainShaderState.shader.uniforms.uUnderwaterBlend.value = 0;
+    }
   }
   if (farTerrainShaderState.shader) {
     farTerrainShaderState.shader.uniforms.uWaterLevel.value = state.world.water.level;
@@ -1390,6 +1647,12 @@ function syncTerrainShaderUniforms() {
     if (farTerrainShaderState.shader.uniforms.uFogIntensity) {
       farTerrainShaderState.shader.uniforms.uFogIntensity.value = FAR_FOG_INTENSITY;
     }
+    if (farTerrainShaderState.shader.uniforms.uUnderwaterTint) {
+      farTerrainShaderState.shader.uniforms.uUnderwaterTint.value.copy(underwaterState.surfaceWaterColor);
+    }
+    if (farTerrainShaderState.shader.uniforms.uUnderwaterBlend) {
+      farTerrainShaderState.shader.uniforms.uUnderwaterBlend.value = 0;
+    }
   }
   if (treeFadeMaterials.size > 0) {
     for (const material of treeFadeMaterials) {
@@ -1424,6 +1687,9 @@ function syncWaterColorFromState() {
 
 function applyVisualSampleToAtmosphereAndWater(visual, options = {}) {
   if (!visual) return;
+  underwaterState.surfaceFogDensity = visual.fogDensity;
+  underwaterState.surfaceFogColor.copy(visual.fogColor);
+  underwaterState.surfaceWaterColor.copy(visual.waterColor);
   if (options.updateAtmosphere !== false) {
     atmosphereBase.fogColor.copy(visual.fogColor);
     scene.fog.color.set(atmosphereBase.fogColor);
@@ -1438,6 +1704,10 @@ function applyVisualSampleToAtmosphereAndWater(visual, options = {}) {
 function smoothstep(edge0, edge1, x) {
   const t = clampNumber((x - edge0) / (edge1 - edge0), 0, 1, 0);
   return t * t * (3 - 2 * t);
+}
+
+function lerpScalar(a, b, t) {
+  return a + (b - a) * clampNumber(t, 0, 1, 0);
 }
 
 function updateDayNightCycle(dt) {
@@ -1479,6 +1749,8 @@ function updateDayNightCycle(dt) {
   // Hide the moon mesh once it drops below the horizon instead of clamping it above the ground.
   moon.visible = moonVector.y > 0;
   skyUniforms.sunDirection.value.copy(sunVector);
+  skyUniforms.moonDirection.value.copy(moonVector);
+  skyUniforms.skyTime.value = worldTime;
 
   const skyTop = atmosphereTemp.skyTop
     .copy(atmosphericColors.nightTop)
@@ -1507,6 +1779,18 @@ function updateDayNightCycle(dt) {
     .copy(dynamicLightColors.warmSun)
     .lerp(dynamicLightColors.daySun, dayAmount)
     .lerp(dynamicLightColors.softSunset, twilight * 0.8);
+  skyUniforms.moonColor.value
+    .copy(atmosphericColors.moonTint)
+    .lerp(dynamicLightColors.moonWarm, twilight * 0.22);
+  skyUniforms.sunDiscPower.value = 256;
+  skyUniforms.sunGlowPower.value = 10;
+  skyUniforms.sunGlowStrength.value = 0.34;
+  skyUniforms.moonDiscPower.value = 280;
+  skyUniforms.moonStrength.value = clampNumber(0.12 + nightAmount * 0.9, 0.1, 1, 0.5);
+  skyUniforms.sunRayStrength.value = 0;
+  skyUniforms.moonRayStrength.value = 0;
+  skyUniforms.underwaterSkyMix.value = 0;
+  skyUniforms.underwaterFogTint.value.copy(fogMix);
   scene.fog.color.copy(fogMix);
   scene.background.copy(skyHorizon);
 
@@ -1552,6 +1836,253 @@ function updateDayNightCycle(dt) {
   }
   if (waterShaderState.shader?.uniforms.uWaterNightAmount) {
     waterShaderState.shader.uniforms.uWaterNightAmount.value = nightAmount;
+  }
+  if (waterShaderState.shader?.uniforms.uWaterNightTint) {
+    waterShaderState.shader.uniforms.uWaterNightTint.value.copy(fogMix);
+  }
+}
+
+function updateUnderwaterVisualEffects(dt) {
+  skyUniforms.waterLevel.value = state.world.water.level - originOffset.y;
+  skyUniforms.cameraWorldPos.value.set(
+    player.position.x - originOffset.x,
+    player.position.y - originOffset.y + PLAYER_HEIGHT,
+    player.position.z - originOffset.z
+  );
+  const eyeY = getEyeY(player, PLAYER_HEIGHT);
+  const eyeDepthBelowWater = state.world.water.level - eyeY;
+  const submersion = smoothstep(
+    UNDERWATER_SURFACE_BLEND_START_METERS,
+    UNDERWATER_SURFACE_BLEND_FULL_METERS,
+    eyeDepthBelowWater
+  );
+  const depthToLightCutoff = smoothstep(0, UNDERWATER_SURFACE_LIGHT_CUTOFF_DEPTH_METERS, eyeDepthBelowWater);
+  const abyssDepth = smoothstep(
+    UNDERWATER_SURFACE_LIGHT_CUTOFF_DEPTH_METERS,
+    UNDERWATER_SURFACE_LIGHT_CUTOFF_DEPTH_METERS * 2,
+    eyeDepthBelowWater
+  );
+  underwaterState.submersion = submersion;
+
+  if (underwaterState.isUnderwater) {
+    if (submersion <= UNDERWATER_EXIT_SUBMERSION) {
+      underwaterState.isUnderwater = false;
+    }
+  } else if (submersion >= UNDERWATER_ENTRY_SUBMERSION) {
+    underwaterState.isUnderwater = true;
+    underwaterState.adaptation = 0;
+  }
+
+  if (underwaterState.isUnderwater) {
+    underwaterState.adaptation = clampNumber(
+      underwaterState.adaptation + dt / UNDERWATER_ADAPT_SECONDS,
+      0,
+      1,
+      underwaterState.adaptation
+    );
+  } else if (submersion <= 0.001) {
+    underwaterState.adaptation = 1;
+  }
+
+  const surfaceFogDensity = clampNumber(
+    underwaterState.surfaceFogDensity,
+    0.001,
+    UNDERWATER_MAX_FOG_DENSITY,
+    state.world.fog.density
+  );
+  const underwaterDensityMultiplier = lerpScalar(
+    UNDERWATER_FOG_DENSITY_MULTIPLIER_ENTRY,
+    UNDERWATER_FOG_DENSITY_MULTIPLIER_ADAPTED,
+    underwaterState.adaptation
+  );
+  const underwaterFogDensity = clampNumber(
+    surfaceFogDensity *
+      underwaterDensityMultiplier *
+      lerpScalar(1, UNDERWATER_DEPTH_FOG_MULTIPLIER_MAX, depthToLightCutoff),
+    UNDERWATER_MIN_FOG_DENSITY,
+    UNDERWATER_MAX_FOG_DENSITY,
+    surfaceFogDensity
+  );
+  scene.fog.density = lerpScalar(surfaceFogDensity, underwaterFogDensity, submersion);
+
+  const frameFogColor = underwaterState.frameSurfaceFogColor.copy(scene.fog.color).lerp(underwaterState.surfaceFogColor, 0.35);
+  const nightFogAmount = smoothstep(0.18, 1.0, currentNightAmount);
+  const timeCycle = normalizeTimeCycle(state.timeOfDay);
+  const eveningBlackout = timeCycle == null ? 0 : smoothstep(
+    UNDERWATER_FOG_NIGHT_BLACKOUT_START_CYCLE,
+    UNDERWATER_FOG_NIGHT_BLACKOUT_FULL_CYCLE,
+    timeCycle
+  );
+  const dawnRecovery = timeCycle == null ? 1 : smoothstep(
+    UNDERWATER_FOG_DAWN_RECOVER_START_CYCLE,
+    UNDERWATER_FOG_DAWN_RECOVER_END_CYCLE,
+    timeCycle
+  );
+  const overnightBlackout = 1 - dawnRecovery;
+  const clockNightFogAmount = Math.max(eveningBlackout, overnightBlackout);
+  const underwaterNightFogAmount = Math.max(nightFogAmount, clockNightFogAmount);
+  const fogDarken = lerpScalar(UNDERWATER_FOG_DARKEN_ENTRY, UNDERWATER_FOG_DARKEN_ADAPTED, underwaterState.adaptation);
+  const depthDarkenTarget = lerpScalar(
+    UNDERWATER_DEPTH_DARKEN_AT_CUTOFF,
+    UNDERWATER_DEPTH_DARKEN_AT_ABYSS,
+    abyssDepth
+  );
+  const depthDarken = lerpScalar(1, depthDarkenTarget, depthToLightCutoff);
+  const underwaterWaterColorMix = lerpScalar(
+    UNDERWATER_FOG_WATER_COLOR_MIX,
+    UNDERWATER_FOG_WATER_COLOR_MIX_NIGHT,
+    underwaterNightFogAmount
+  );
+  const nightFogSkyMix = lerpScalar(0, UNDERWATER_FOG_NIGHT_SKY_MIX, underwaterNightFogAmount);
+  const nightFogDarken = lerpScalar(1, UNDERWATER_FOG_NIGHT_DARKEN, underwaterNightFogAmount);
+  const nightInstantFogBlend = underwaterNightFogAmount * smoothstep(
+    UNDERWATER_FOG_NIGHT_INSTANT_ENTRY_START_METERS,
+    UNDERWATER_FOG_NIGHT_INSTANT_ENTRY_END_METERS,
+    eyeDepthBelowWater
+  );
+  const underwaterFogColorBlend = clampNumber(
+    Math.max(
+      lerpScalar(
+        submersion,
+        Math.sqrt(Math.max(0, submersion)),
+        underwaterNightFogAmount * UNDERWATER_FOG_NIGHT_SURFACE_BLEND_BOOST
+      ),
+      nightInstantFogBlend
+    ),
+    0,
+    1,
+    submersion
+  );
+  underwaterState.underwaterFogColor
+    .copy(frameFogColor)
+    .lerp(underwaterState.surfaceWaterColor, underwaterWaterColorMix)
+    .lerp(atmosphereTemp.fogMix, nightFogSkyMix)
+    .multiplyScalar(fogDarken * depthDarken * nightFogDarken);
+  scene.fog.color.lerp(underwaterState.underwaterFogColor, underwaterFogColorBlend);
+  scene.background.lerp(scene.fog.color, underwaterFogColorBlend * 0.94);
+  renderer.setClearColor(scene.fog.color, 1);
+
+  const depthLightVisibility = 1 - depthToLightCutoff;
+  const celestialFadeDepth = smoothstep(0.22, 1.0, depthToLightCutoff);
+  const celestialVisibility = 1 - submersion * celestialFadeDepth * 0.72;
+  const sunShrink = submersion * depthToLightCutoff;
+  const rayDepthRise = smoothstep(
+    UNDERWATER_RAY_RAMP_START_DEPTH_METERS,
+    UNDERWATER_RAY_RAMP_FULL_DEPTH_METERS,
+    eyeDepthBelowWater
+  );
+  const rayDepthFall = 1 - smoothstep(0.78, 1.0, depthToLightCutoff);
+  const rayStrength =
+    (0.3 + 0.7 * submersion) *
+    rayDepthRise *
+    rayDepthFall *
+    Math.max(0.14, 1 - abyssDepth * 0.65);
+  const dayRayWeight = clampNumber(1 - currentNightAmount * 1.15, 0, 1, 1);
+  const nightRayWeight = clampNumber(currentNightAmount * 1.25, 0, 1, 0);
+  skyUniforms.sunColor.value.multiplyScalar(celestialVisibility);
+  skyUniforms.sunDiscPower.value = lerpScalar(256, UNDERWATER_SUN_DISC_POWER_AT_CUTOFF, sunShrink);
+  skyUniforms.sunGlowPower.value = lerpScalar(10, 30, sunShrink);
+  skyUniforms.sunGlowStrength.value = lerpScalar(0.34, UNDERWATER_SUN_GLOW_STRENGTH_AT_CUTOFF, sunShrink);
+  skyUniforms.sunRayStrength.value = rayStrength * dayRayWeight * (UNDERWATER_SUN_RAY_STRENGTH_MAX * 3.2);
+  skyUniforms.moonRayStrength.value = rayStrength * nightRayWeight * (UNDERWATER_MOON_RAY_STRENGTH_MAX * 2.8);
+  const underwaterSkyMix = submersion * smoothstep(0.12, 1.0, depthToLightCutoff) * lerpScalar(0.75, 1.15, abyssDepth);
+  skyUniforms.underwaterSkyMix.value = clampNumber(underwaterSkyMix, 0, 1, 0);
+  skyUniforms.underwaterFogTint.value.copy(scene.fog.color);
+  moon.material.opacity *= celestialVisibility;
+  moon.scale.setScalar(lerpScalar(1, UNDERWATER_MOON_SCALE_AT_CUTOFF, sunShrink));
+
+  const nightSurfaceDarken = smoothstep(0.18, 1.0, currentNightAmount);
+  underwaterState.undersideTint
+    .copy(underwaterState.surfaceWaterColor)
+    .multiplyScalar(lerpScalar(0.52, 0.23, nightSurfaceDarken))
+    .lerp(scene.fog.color, lerpScalar(0.48, 0.82, nightSurfaceDarken));
+  if (waterShaderState.shader?.uniforms.uWaterUnderwaterMix) {
+    waterShaderState.shader.uniforms.uWaterUnderwaterMix.value = submersion;
+  }
+  if (waterShaderState.shader?.uniforms.uWaterUndersideTint) {
+    waterShaderState.shader.uniforms.uWaterUndersideTint.value.copy(underwaterState.undersideTint);
+  }
+  if (waterShaderState.shader?.uniforms.uWaterTime) {
+    waterShaderState.shader.uniforms.uWaterTime.value = clock.elapsedTime;
+  }
+  const terrainUnderwaterAdaptBlend = underwaterState.isUnderwater
+    ? Math.max(
+        clampNumber(
+          underwaterState.adaptation * (UNDERWATER_ADAPT_SECONDS / UNDERWATER_TERRAIN_TINT_ADAPT_SECONDS),
+          0,
+          1,
+          0
+        ),
+        underwaterNightFogAmount * UNDERWATER_TERRAIN_NIGHT_ENTRY_BLEND_FLOOR
+      )
+    : 0;
+  const nearTerrainUnderwaterBlend = clampNumber(
+    terrainUnderwaterAdaptBlend * UNDERWATER_TERRAIN_TINT_BLEND_NEAR_MAX,
+    0,
+    UNDERWATER_TERRAIN_TINT_BLEND_NEAR_MAX,
+    0
+  );
+  const midTerrainUnderwaterBlend = clampNumber(
+    terrainUnderwaterAdaptBlend * UNDERWATER_TERRAIN_TINT_BLEND_MID_MAX,
+    0,
+    UNDERWATER_TERRAIN_TINT_BLEND_MID_MAX,
+    0
+  );
+  if (terrainShaderState.shader?.uniforms.uUnderwaterTint) {
+    terrainShaderState.shader.uniforms.uUnderwaterTint.value.copy(underwaterState.surfaceWaterColor);
+  }
+  if (terrainShaderState.shader?.uniforms.uUnderwaterBlend) {
+    terrainShaderState.shader.uniforms.uUnderwaterBlend.value = nearTerrainUnderwaterBlend;
+  }
+  if (midTerrainShaderState.shader?.uniforms.uUnderwaterTint) {
+    midTerrainShaderState.shader.uniforms.uUnderwaterTint.value.copy(underwaterState.surfaceWaterColor);
+  }
+  if (midTerrainShaderState.shader?.uniforms.uUnderwaterBlend) {
+    midTerrainShaderState.shader.uniforms.uUnderwaterBlend.value = midTerrainUnderwaterBlend;
+  }
+  if (farTerrainShaderState.shader?.uniforms.uUnderwaterTint) {
+    farTerrainShaderState.shader.uniforms.uUnderwaterTint.value.copy(underwaterState.surfaceWaterColor);
+  }
+  if (farTerrainShaderState.shader?.uniforms.uUnderwaterBlend) {
+    farTerrainShaderState.shader.uniforms.uUnderwaterBlend.value = 0;
+  }
+  const farTerrainVisibility = 1 - smoothstep(
+    UNDERWATER_FAR_TERRAIN_FADE_START_SUBMERSION,
+    UNDERWATER_FAR_TERRAIN_FADE_END_SUBMERSION,
+    submersion
+  );
+  const farTerrainUniformFade = Math.sqrt(Math.max(0, farTerrainVisibility));
+  if (farTerrainShaderState.shader?.uniforms.uFadeOpacity) {
+    farTerrainShaderState.shader.uniforms.uFadeOpacity.value = farTerrainUniformFade;
+  }
+  if (farTerrainShaderState.shader?.uniforms.uFadeOpacity2) {
+    farTerrainShaderState.shader.uniforms.uFadeOpacity2.value = farTerrainUniformFade;
+  }
+  if (water.material instanceof THREE.MeshPhysicalMaterial) {
+    const daylightAmount = 1 - currentNightAmount;
+    const baseUnderwaterGlow = lerpScalar(0.05, 0.24, daylightAmount);
+    const maxEmissiveBoost = lerpScalar(0.95, 1.65, daylightAmount);
+    const moonEmissiveWeight = lerpScalar(0.2, 0.45, daylightAmount);
+    const emissiveBoost = clampNumber(
+      submersion * (baseUnderwaterGlow + skyUniforms.sunRayStrength.value * 0.55 + skyUniforms.moonRayStrength.value * moonEmissiveWeight),
+      0,
+      maxEmissiveBoost,
+      0
+    );
+    if (water.material.emissive) {
+      const emissiveColorScale = lerpScalar(0.34, 0.78, daylightAmount);
+      water.material.emissive.copy(underwaterState.undersideTint).multiplyScalar(emissiveColorScale + emissiveBoost * 0.45);
+    }
+    water.material.emissiveIntensity = emissiveBoost * lerpScalar(0.7, 1.0, daylightAmount);
+  }
+
+  const blurPx = submersion * lerpScalar(UNDERWATER_BLUR_PX_ENTRY, UNDERWATER_BLUR_PX_ADAPTED, underwaterState.adaptation);
+  const underwaterSaturation = lerpScalar(UNDERWATER_SATURATION_ENTRY, UNDERWATER_SATURATION_ADAPTED, underwaterState.adaptation);
+  const saturation = lerpScalar(1, underwaterSaturation, submersion);
+  const nextFilter = blurPx > 0.02 ? `blur(${blurPx.toFixed(2)}px) saturate(${saturation.toFixed(3)})` : "";
+  if (nextFilter !== underwaterState.canvasFilter) {
+    canvas.style.filter = nextFilter;
+    underwaterState.canvasFilter = nextFilter;
   }
 }
 
@@ -4410,6 +4941,7 @@ function animate() {
   updateBiomeHud();
   updateMinimap();
   updateDayNightCycle(dt);
+  updateUnderwaterVisualEffects(dt);
   updateStatusClock();
   updateStatusFps(dt);
   if (cloudGroup.parent) {
@@ -4420,8 +4952,9 @@ function animate() {
     );
   }
   const targetOpacity = state.world.water.opacity;
+  const underwaterOpacityBoost = lerpScalar(0, 0.22, underwaterState.submersion);
   water.material.opacity = clampNumber(
-    targetOpacity + Math.sin(clock.elapsedTime * 0.6) * 0.04,
+    targetOpacity + underwaterOpacityBoost + Math.sin(clock.elapsedTime * 0.6) * 0.04,
     0.05,
     1,
     targetOpacity
