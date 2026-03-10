@@ -53,7 +53,9 @@ export function createTerrainHeightSampler({
     let weight = 0;
     for (let i = 0; i < blend.count; i += 1) {
       const biome = blend.biomes[i];
-      if (biome?.waterlineMode === "wetland") {
+      // Wetland waterline compression is intended for lowland marshy terrain.
+      // Mountain variants should keep mountain elevation continuity across biome boundaries.
+      if (biome?.waterlineMode === "wetland" && !biome?.isMountainVariant) {
         weight += blend.weights[i];
       }
     }

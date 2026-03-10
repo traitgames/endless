@@ -50,6 +50,12 @@ import {
   OCEAN_BIOME_LAND_BLEND_PRECHECK_HEIGHT,
   OCEAN_BIOME_VARIANTS,
   ROCKY_MOUNTAIN_HUMIDITY_LOOKUP,
+  SIMPLE_MOUNTAIN_HIGH_ALTITUDE_FADE_METERS,
+  SIMPLE_MOUNTAIN_SELECTOR_BLEND_HALF_WIDTH_METERS,
+  SIMPLE_MOUNTAIN_SELECTOR_PRECHECK_MARGIN,
+  SIMPLE_MOUNTAIN_SELECTOR_PRIMARY_SCALE,
+  SIMPLE_MOUNTAIN_SELECTOR_SECONDARY_SCALE,
+  SIMPLE_MOUNTAIN_TARGET_SHARE,
   WETLAND_ELEVATION_FADE_BAND_METERS,
   WETLAND_MOUNTAIN_HEIGHT_MAX_METERS,
 } from "./world/biomes/constants.js";
@@ -2699,6 +2705,83 @@ function getMountainBiomeVariant(biome) {
   return BIOME_DEFS[`${biome.id}${MOUNTAIN_BIOME_SUFFIX}`] || biome;
 }
 
+function getSimpleMountainBiomeVariant(biome) {
+  const baseBiome = getBaseBiomeVariant(biome);
+  if (!baseBiome) return null;
+  return BIOME_DEFS[`${baseBiome.id}${MOUNTAIN_BIOME_SUFFIX}`] || null;
+}
+
+function sampleSimpleMountainSelector(x, z, biomeId) {
+  const offset = biomeSubdivisionSeedOffset(`simple:${biomeId}`);
+  const primary = fastSimplex2(
+    x * SIMPLE_MOUNTAIN_SELECTOR_PRIMARY_SCALE,
+    z * SIMPLE_MOUNTAIN_SELECTOR_PRIMARY_SCALE,
+    noiseSeed + offset + 1207
+  );
+  const secondary = fastSimplex2(
+    x * SIMPLE_MOUNTAIN_SELECTOR_SECONDARY_SCALE,
+    z * SIMPLE_MOUNTAIN_SELECTOR_SECONDARY_SCALE,
+    noiseSeed + offset + 1879
+  );
+  const combined = primary * 0.74 + secondary * 0.26;
+  return clampNumber(combined * 0.5 + 0.5, 0, 1, 0.5);
+}
+
+function getSimpleMountainAltitudeGate(centerMountainHeight) {
+  const height = Number(centerMountainHeight) || 0;
+  if (height >= HIGH_ALTITUDE_BIOME_THRESHOLD_METERS) return 0;
+  const fadeBand = Math.max(1, SIMPLE_MOUNTAIN_HIGH_ALTITUDE_FADE_METERS);
+  const fadeStart = HIGH_ALTITUDE_BIOME_THRESHOLD_METERS - fadeBand;
+  if (height <= fadeStart) return 1;
+  return 1 - smoothstep(fadeStart, HIGH_ALTITUDE_BIOME_THRESHOLD_METERS, height);
+}
+
+function getSimpleMountainShareAt(x, z, biome, centerMountainHeight = null) {
+  const baseBiome = getBaseBiomeVariant(biome);
+  const simpleMountainBiome = getSimpleMountainBiomeVariant(baseBiome);
+  if (!baseBiome || !simpleMountainBiome) return 0;
+
+  const centerHeight = Number.isFinite(centerMountainHeight)
+    ? centerMountainHeight
+    : fillTerrainAdditiveSampleAt(x, z, mountainBiomeAdditiveScratch).mountainAdditiveHeight || 0;
+  const altitudeGate = getSimpleMountainAltitudeGate(centerHeight);
+  if (!(altitudeGate > 0.0001)) return 0;
+
+  const targetShare = clampNumber(SIMPLE_MOUNTAIN_TARGET_SHARE, 0, 1, 0.6);
+  const selector = sampleSimpleMountainSelector(x, z, baseBiome.id);
+  const nearBoundary = Math.abs(selector - targetShare) <= SIMPLE_MOUNTAIN_SELECTOR_PRECHECK_MARGIN;
+  if (!nearBoundary) {
+    return selector <= targetShare ? altitudeGate : 0;
+  }
+
+  const h = BIOME_BLEND_GRADIENT_STEP_METERS;
+  const xp = sampleSimpleMountainSelector(x + h, z, baseBiome.id);
+  const xm = sampleSimpleMountainSelector(x - h, z, baseBiome.id);
+  const zp = sampleSimpleMountainSelector(x, z + h, baseBiome.id);
+  const zm = sampleSimpleMountainSelector(x, z - h, baseBiome.id);
+  const invSpan = 1 / (2 * h);
+  const gradX = (xp - xm) * invSpan;
+  const gradZ = (zp - zm) * invSpan;
+  const gradientPerMeter = Math.hypot(gradX, gradZ);
+  const modernShare = metersBoundaryBlendWithHalfWidth(
+    selector,
+    targetShare,
+    gradientPerMeter,
+    SIMPLE_MOUNTAIN_SELECTOR_BLEND_HALF_WIDTH_METERS
+  );
+  return (1 - modernShare) * altitudeGate;
+}
+
+function pickMountainBiomeVariantAt(x, z, biome, centerMountainHeight = null) {
+  const baseBiome = getBaseBiomeVariant(biome);
+  if (!baseBiome) return biome;
+  const modernMountainBiome = getMountainBiomeVariant(baseBiome);
+  const simpleMountainBiome = getSimpleMountainBiomeVariant(baseBiome);
+  if (!simpleMountainBiome || simpleMountainBiome.id === modernMountainBiome?.id) return modernMountainBiome;
+  const simpleShare = getSimpleMountainShareAt(x, z, baseBiome, centerMountainHeight);
+  return simpleShare >= 0.5 ? simpleMountainBiome : modernMountainBiome;
+}
+
 function getHighAltitudeBiomeVariant(biome, fallbackCategory = "temperate", fallbackHumidityBand = "mesic") {
   if (!biome) return null;
   const category = biome.category || fallbackCategory;
@@ -2741,14 +2824,9 @@ function applyMountainVariantsToBiomeBlend(x, z, target) {
   if (!(mountainWeight > 0)) {
     return target;
   }
-  if (mountainWeight >= 0.999) {
-    for (let i = 0; i < target.count; i += 1) {
-      target.biomes[i] = getMountainBiomeVariant(target.biomes[i]);
-    }
-    target.dominantBiome = getMountainBiomeVariant(target.dominantBiome);
-    return target;
-  }
 
+  const centerMountainSample = fillTerrainAdditiveSampleAt(x, z, mountainBiomeAdditiveScratch);
+  const centerMountainHeight = centerMountainSample.mountainAdditiveHeight || 0;
   const baseWeight = 1 - mountainWeight;
   const originalCount = target.count;
   const originalBiomes = target.biomes.slice(0, originalCount);
@@ -2765,12 +2843,27 @@ function applyMountainVariantsToBiomeBlend(x, z, target) {
     const biome = getBaseBiomeVariant(originalBiomes[i]);
     const weight = originalWeights[i];
     if (!biome || !(weight > 0)) continue;
+
+    const modernMountainBiome = getMountainBiomeVariant(biome);
+    const simpleMountainBiome = getSimpleMountainBiomeVariant(biome);
+    const simpleMountainShare =
+      simpleMountainBiome && simpleMountainBiome.id !== modernMountainBiome?.id
+        ? getSimpleMountainShareAt(x, z, biome, centerMountainHeight)
+        : 0;
+    const modernMountainShare = 1 - simpleMountainShare;
+
     if (baseWeight > 0.0001) upsertBiomeBlendEntry(target, biome, weight * baseWeight);
-    if (mountainWeight > 0.0001) upsertBiomeBlendEntry(target, getMountainBiomeVariant(biome), weight * mountainWeight);
+    if (mountainWeight > 0.0001 && modernMountainShare > 0.0001) {
+      upsertBiomeBlendEntry(target, modernMountainBiome, weight * mountainWeight * modernMountainShare);
+    }
+    if (mountainWeight > 0.0001 && simpleMountainShare > 0.0001) {
+      upsertBiomeBlendEntry(target, simpleMountainBiome, weight * mountainWeight * simpleMountainShare);
+    }
   }
 
   normalizeBiomeBlendResult(target);
-  target.dominantBiome = mountainWeight >= 0.5 ? getMountainBiomeVariant(dominantBaseBiome) : dominantBaseBiome;
+  target.dominantBiome =
+    mountainWeight >= 0.5 ? pickMountainBiomeVariantAt(x, z, dominantBaseBiome, centerMountainHeight) : dominantBaseBiome;
   return target;
 }
 
@@ -2859,7 +2952,7 @@ function finalizeBiomeBlendAt(x, z, target) {
 function getBiomeWithMountainVariantAt(x, z, biome) {
   if (!biome) return biome;
   return getMountainBiomeBlendWeightAt(x, z) >= 0.5
-    ? getMountainBiomeVariant(biome)
+    ? pickMountainBiomeVariantAt(x, z, biome)
     : biome;
 }
 
