@@ -49,7 +49,7 @@ import {
   OCEAN_BIOME_LAND_BLEND_HALF_WIDTH_METERS,
   OCEAN_BIOME_LAND_BLEND_PRECHECK_HEIGHT,
   OCEAN_BIOME_VARIANTS,
-  ROCKY_MOUNTAIN_HUMIDITY_LOOKUP,
+  BASE_MOUNTAIN_HUMIDITY_LOOKUP,
   SIMPLE_MOUNTAIN_HIGH_ALTITUDE_FADE_METERS,
   SIMPLE_MOUNTAIN_SELECTOR_BLEND_HALF_WIDTH_METERS,
   SIMPLE_MOUNTAIN_SELECTOR_PRECHECK_MARGIN,
@@ -2697,7 +2697,7 @@ function getMountainBiomeVariant(biome) {
   if (!biome) return null;
   if (biome.isMountainVariant) return biome;
   const humidityBand = biome.humidityBand || "mesic";
-  const lookup = ROCKY_MOUNTAIN_HUMIDITY_LOOKUP[biome.category];
+  const lookup = BASE_MOUNTAIN_HUMIDITY_LOOKUP[biome.category];
   const climateMountainId = lookup?.[humidityBand];
   if (climateMountainId && BIOME_DEFS[climateMountainId]) {
     return BIOME_DEFS[climateMountainId];
@@ -5626,7 +5626,7 @@ function handleLocalHelpCommand(message) {
 }
 
 function showWorldCommandHelp() {
-  const biomeNames = Array.from(new Set(Object.keys(BIOME_DEFS)))
+  const biomeNames = Array.from(new Set(getPublicBiomeEntries().map(([, biome]) => biome.id)))
     .sort()
     .join(", ");
   addChatEntry({
@@ -6156,7 +6156,7 @@ function resolveBiomeName(name) {
     .toLowerCase()
     .replace(/[^a-z]/g, "");
   if (!normalized) return null;
-  for (const [key, biome] of Object.entries(BIOME_DEFS)) {
+  for (const [key, biome] of getPublicBiomeEntries()) {
     const keyName = String(key).toLowerCase().replace(/[^a-z]/g, "");
     const idKey = biome.id.toLowerCase().replace(/[^a-z]/g, "");
     const labelKey = biome.label.toLowerCase().replace(/[^a-z]/g, "");
@@ -6170,7 +6170,7 @@ function resolveBiomeName(name) {
 function guessBiomeName(name) {
   const query = normalizeWorldCommandToken(name);
   if (!query) return null;
-  const candidates = Object.values(BIOME_DEFS).map((biome) => ({
+  const candidates = getPublicBiomeEntries().map(([, biome]) => ({
     biome,
     keys: [biome.id, biome.label],
   }));
@@ -6195,6 +6195,14 @@ function guessBiomeName(name) {
   if (best.score > maxScore) return null;
   if (!hasClearMargin && best.score > 0) return null;
   return best;
+}
+
+function isInternalOnlyBiome(biome) {
+  return biome?.internalOnly === true;
+}
+
+function getPublicBiomeEntries() {
+  return Object.entries(BIOME_DEFS).filter(([, biome]) => !isInternalOnlyBiome(biome));
 }
 
 function guessWorldTeleportBiomeCommand(parts) {

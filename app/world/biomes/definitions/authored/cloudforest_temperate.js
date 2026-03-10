@@ -27,7 +27,7 @@ const definition = Object.freeze({
   "fogDensityMultiplier": 1.22,
   "humidityBand": "hydric",
   "isMountainVariant": true,
-  "baseBiomeId": "rocky_mountains",
+  "baseBiomeId": "base_mountains",
   "treeStyle": "cloudforest",
   "treeDensityMultiplier": 0.62,
   "detailTextureId": 11

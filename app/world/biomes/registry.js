@@ -68,6 +68,7 @@ function applyBiomeDefinitionFields(THREE, base, definition) {
     "humidityBand",
     "waterlineMode",
     "wetlandRetentionGroup",
+    "internalOnly",
     "isMountainVariant",
     "baseBiomeId",
     "treeStyle",

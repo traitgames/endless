@@ -52,7 +52,7 @@ export const BIOME_HUMIDITY_LOOKUP = Object.freeze({
   desert: Object.freeze({ xeric: "desert", mesic: "shrubland", hydric: "rainforest_hot" }),
 });
 
-export const ROCKY_MOUNTAIN_HUMIDITY_LOOKUP = Object.freeze({
+export const BASE_MOUNTAIN_HUMIDITY_LOOKUP = Object.freeze({
   temperate: Object.freeze({ xeric: "alpine_steppe", mesic: "montane", hydric: "cloudforest_temperate" }),
   cold: Object.freeze({ xeric: "alpine_tundra", mesic: "subalpine", hydric: "alpine_mire" }),
   hot: Object.freeze({ xeric: "rockydesert", mesic: "montane_woodland", hydric: "cloudforest_hot" }),
@@ -101,7 +101,6 @@ export const BUMPY_BIOME_SUBDIVISION_TARGET_IDS = Object.freeze([
   "glacier_mountains",
   "icefield",
   "polar_desert",
-  "rocky_mountains",
   "alpine_steppe",
   "alpine_tundra",
   "alpine_mire",

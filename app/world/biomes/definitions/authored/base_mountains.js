@@ -1,6 +1,6 @@
 const definition = Object.freeze({
-  "id": "rocky_mountains",
-  "label": "Rocky Mountains",
+  "id": "base_mountains",
+  "label": "Base Mountains",
   "category": "temperate",
   "colors": {
     "ground": "#8a8f87",
@@ -22,6 +22,7 @@ const definition = Object.freeze({
   "hasTrees": false,
   "fogDensityMultiplier": 1.1,
   "humidityBand": "mesic",
+  "internalOnly": true,
   "isMountainVariant": true,
   "baseBiomeId": "wetland",
   "detailTextureId": 11

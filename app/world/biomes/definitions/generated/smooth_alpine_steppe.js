@@ -31,7 +31,7 @@ const definition = Object.freeze({
     "fogDensityMultiplier": 0.9384,
     "humidityBand": "xeric",
     "isMountainVariant": true,
-    "baseBiomeId": "rocky_mountains",
+    "baseBiomeId": "base_mountains",
     "detailTextureId": 4
   }
 });

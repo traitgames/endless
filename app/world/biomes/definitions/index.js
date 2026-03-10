@@ -42,7 +42,7 @@ import polarDesert from "./authored/polar_desert.js";
 import polarScree from "./authored/polar_scree.js";
 import rainforestHot from "./authored/rainforest_hot.js";
 import rainforestTemperate from "./authored/rainforest_temperate.js";
-import rockyMountains from "./authored/rocky_mountains.js";
+import baseMountains from "./authored/base_mountains.js";
 import rockyShore from "./authored/rocky_shore.js";
 import rockydesert from "./authored/rockydesert.js";
 import saltMarsh from "./authored/salt_marsh.js";
@@ -92,7 +92,6 @@ import genJaggedMountainGrassland from "./generated/jagged_mountain_grassland.js
 import genJaggedParamo from "./generated/jagged_paramo.js";
 import genJaggedPolarDesert from "./generated/jagged_polar_desert.js";
 import genJaggedPolarScree from "./generated/jagged_polar_scree.js";
-import genJaggedRockyMountains from "./generated/jagged_rocky_mountains.js";
 import genJaggedRockydesert from "./generated/jagged_rockydesert.js";
 import genJaggedSaltflat from "./generated/jagged_saltflat.js";
 import genJaggedScrubland from "./generated/jagged_scrubland.js";
@@ -132,7 +131,6 @@ import genSmoothMountainGrassland from "./generated/smooth_mountain_grassland.js
 import genSmoothParamo from "./generated/smooth_paramo.js";
 import genSmoothPolarDesert from "./generated/smooth_polar_desert.js";
 import genSmoothPolarScree from "./generated/smooth_polar_scree.js";
-import genSmoothRockyMountains from "./generated/smooth_rocky_mountains.js";
 import genSmoothRockydesert from "./generated/smooth_rockydesert.js";
 import genSmoothSaltflat from "./generated/smooth_saltflat.js";
 import genSmoothScrubland from "./generated/smooth_scrubland.js";
@@ -190,7 +188,7 @@ export const AUTHORED_BIOME_DEFINITIONS = Object.freeze([
   polarScree,
   rainforestHot,
   rainforestTemperate,
-  rockyMountains,
+  baseMountains,
   rockyShore,
   rockydesert,
   saltMarsh,
@@ -242,7 +240,6 @@ export const GENERATED_BIOME_DEFINITIONS = Object.freeze([
   genJaggedParamo,
   genJaggedPolarDesert,
   genJaggedPolarScree,
-  genJaggedRockyMountains,
   genJaggedRockydesert,
   genJaggedSaltflat,
   genJaggedScrubland,
@@ -282,7 +279,6 @@ export const GENERATED_BIOME_DEFINITIONS = Object.freeze([
   genSmoothParamo,
   genSmoothPolarDesert,
   genSmoothPolarScree,
-  genSmoothRockyMountains,
   genSmoothRockydesert,
   genSmoothSaltflat,
   genSmoothScrubland,

@@ -34,7 +34,7 @@ const definition = Object.freeze({
     "humidityBand": "hydric",
     "waterlineMode": "wetland",
     "isMountainVariant": true,
-    "baseBiomeId": "rocky_mountains",
+    "baseBiomeId": "base_mountains",
     "treeStyle": "muskeg",
     "treeDensityMultiplier": 0.34,
     "detailTextureId": 6

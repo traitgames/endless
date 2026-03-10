@@ -70,7 +70,7 @@ polar_desert.js
 rainforest_hot.js
 rainforest_temperate.js
 rockydesert.js
-rocky_mountains.js
+base_mountains.js
 saltflat.js
 savanna.js
 savanna_mesic.js
@@ -137,7 +137,6 @@ jagged_glacier_mountains.js
 jagged_icefield.js
 jagged_montane.js
 jagged_polar_desert.js
-jagged_rocky_mountains.js
 jagged_rockydesert.js
 jagged_saltflat.js
 jagged_scrubland.js
@@ -155,7 +154,6 @@ smooth_glacier_mountains.js
 smooth_icefield.js
 smooth_montane.js
 smooth_polar_desert.js
-smooth_rocky_mountains.js
 smooth_rockydesert.js
 smooth_saltflat.js
 smooth_scrubland.js
@@ -180,7 +178,7 @@ smooth_thorn_forest.js
 - Implement `registry.js` to build `BIOME_DEFS` from definitions.
 - Replace runtime biome-ID generation with explicit generated-definition files so each generated ID can carry its own settings.
 - Keep the same final ID set and selection behavior as today.
-- Remove the `wetland_mountains -> rocky_mountains` hard alias once `wetland_mountains` has its own explicit definition.
+- Remove the `wetland_mountains -> base_mountains` hard alias once `wetland_mountains` has its own explicit definition.
 
 5. Extract biome selection/blend logic
 - Move climate sampling, weight blending, humidity mapping, mountain/wetland/subdivision finalization, and `getBiomeAt` helpers from `main.js` into biome modules.
