@@ -47,6 +47,8 @@ export function createTerrainHeightSampler({
   const WETLAND_FLATTEN_END_METERS = 6.5;
   const WETLAND_FLATTEN_DEPTH_SCALE = 0.6;
   const WETLAND_FLATTEN_DEPTH_BIAS = 0.9;
+  const WETLAND_COMPRESSION_MOUNTAIN_FADE_START_METERS = 0;
+  const WETLAND_COMPRESSION_MOUNTAIN_FADE_END_METERS = 10;
 
   function getWetlandWeight(blend) {
     if (!blend || !blend.count) return 0;
@@ -73,6 +75,20 @@ export function createTerrainHeightSampler({
       adjusted = waterLevel - lerp(depth, targetDepth, flatten);
     }
     return lerp(height, adjusted, clamp01(wetlandWeight));
+  }
+
+  function getWetlandCompressionFactorFromMountainAdditiveHeight(mountainAdditiveHeight) {
+    const height = Number.isFinite(mountainAdditiveHeight) ? mountainAdditiveHeight : 0;
+    if (height <= WETLAND_COMPRESSION_MOUNTAIN_FADE_START_METERS) return 1;
+    if (height >= WETLAND_COMPRESSION_MOUNTAIN_FADE_END_METERS) return 0;
+    return (
+      1 -
+      smoothstep(
+        WETLAND_COMPRESSION_MOUNTAIN_FADE_START_METERS,
+        WETLAND_COMPRESSION_MOUNTAIN_FADE_END_METERS,
+        height
+      )
+    );
   }
 
   function valueNoise(x, z) {
@@ -411,7 +427,13 @@ export function createTerrainHeightSampler({
     }
     const wetlandWeight = getWetlandWeight(blend);
     if (wetlandWeight > 0 && typeof getWaterLevel === "function") {
-      blendedHeight = applyWetlandWaterline(blendedHeight, getWaterLevel(), wetlandWeight);
+      const wetlandCompressionFactor = getWetlandCompressionFactorFromMountainAdditiveHeight(
+        additive.mountainAdditiveHeight
+      );
+      const effectiveWetlandWeight = wetlandWeight * wetlandCompressionFactor;
+      if (effectiveWetlandWeight > 0.0001) {
+        blendedHeight = applyWetlandWaterline(blendedHeight, getWaterLevel(), effectiveWetlandWeight);
+      }
     }
     return blendedHeight;
   }
