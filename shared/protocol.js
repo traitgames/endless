@@ -166,6 +166,7 @@ export function normalizeAction(action) {
       maybeNumber(terrainProfileIn, terrainProfile, "warpStrength");
       maybeNumber(terrainProfileIn, terrainProfile, "warpScaleMultiplier");
       maybeNumber(terrainProfileIn, terrainProfile, "secondaryAmount");
+      maybeNumber(terrainProfileIn, terrainProfile, "heightMultiplier");
       maybeNumber(terrainProfileIn, terrainProfile, "heightOffset");
       const algorithm = safeTerrainNoiseAlgorithm(terrainProfileIn.noiseAlgorithm ?? terrainProfileIn.algorithm);
       if (algorithm) terrainProfile.noiseAlgorithm = algorithm;

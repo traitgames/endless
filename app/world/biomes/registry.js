@@ -325,6 +325,7 @@ export function buildBiomeRegistry({ THREE, clampNumber }) {
   for (const biome of Object.values(BIOME_DEFS)) {
     const terrainProfile =
       biome?.terrainProfile && typeof biome.terrainProfile === "object" ? { ...biome.terrainProfile } : {};
+    terrainProfile.heightMultiplier = Number.isFinite(terrainProfile.heightMultiplier) ? terrainProfile.heightMultiplier : 1;
     terrainProfile.heightOffset = Number.isFinite(terrainProfile.heightOffset) ? terrainProfile.heightOffset : 0;
     biome.terrainProfile = terrainProfile;
   }

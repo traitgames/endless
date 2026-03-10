@@ -13,7 +13,7 @@ Allowed action types and fields:
 1. `set_seed`: `{"type":"set_seed","seed":number}`
 2. `set_time`: `{"type":"set_time","timeOfDay":number}` where `timeOfDay` is normalized `0..1` (`0=midnight`, `0.5=noon`)
 3. `set_terrain`: `{"type":"set_terrain","noiseScale":number,"baseHeight":number,"ridgeScale":number,"ridgeHeight":number}`
-4. `set_biome_settings`: `{"type":"set_biome_settings","biomeId":"string","clear":boolean,"terrainColor":"#RRGGBB","waterColorHex":"#RRGGBB","fogColorHex":"#RRGGBB","fogDensityMultiplier":number,"terrainProfile":{"noiseAlgorithm":"fbm_ridged|billow|ridged|warped|hybrid","noiseScaleMultiplier":number,"baseHeightMultiplier":number,"ridgeScaleMultiplier":number,"ridgeHeightMultiplier":number,"octaves":number,"lacunarity":number,"gain":number,"warpStrength":number,"warpScaleMultiplier":number,"secondaryAmount":number,"heightOffset":number}}`
+4. `set_biome_settings`: `{"type":"set_biome_settings","biomeId":"string","clear":boolean,"terrainColor":"#RRGGBB","waterColorHex":"#RRGGBB","fogColorHex":"#RRGGBB","fogDensityMultiplier":number,"terrainProfile":{"noiseAlgorithm":"fbm_ridged|billow|ridged|warped|hybrid","noiseScaleMultiplier":number,"baseHeightMultiplier":number,"ridgeScaleMultiplier":number,"ridgeHeightMultiplier":number,"octaves":number,"lacunarity":number,"gain":number,"warpStrength":number,"warpScaleMultiplier":number,"secondaryAmount":number,"heightMultiplier":number,"heightOffset":number}}`
    - Use this to tune biome-specific terrain/noise behavior and biome-specific fog thickness/color/water/terrain colors.
    - `clear:true` clears biome-specific overrides (all or provided fields).
 5. `set_water`: `{"type":"set_water","level":number,"opacity":number,"colorHex":"#RRGGBB"}`

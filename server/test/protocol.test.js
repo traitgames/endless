@@ -47,6 +47,21 @@ test("normalizeAction accepts biome heightOffset override", () => {
   );
 });
 
+test("normalizeAction accepts biome heightMultiplier override", () => {
+  assert.deepEqual(
+    normalizeAction({
+      type: "set_biome_settings",
+      biomeId: "forest",
+      terrainProfile: { heightMultiplier: -1.25 },
+    }),
+    {
+      type: "set_biome_settings",
+      biomeId: "forest",
+      terrainProfile: { heightMultiplier: -1.25 },
+    }
+  );
+});
+
 test("normalizeUpdate supports legacy keys", () => {
   const out = normalizeUpdate({ seed: 42, terrainColor: "#aabbcc" });
   assert.equal(out.ok, true);

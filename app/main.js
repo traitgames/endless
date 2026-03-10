@@ -5763,6 +5763,13 @@ function applyBiomeSettingsUpdateFromAction(action) {
           terrainProfileTouched = true;
         }
       };
+      const assignFiniteNumber = (key) => {
+        if (typeof incoming[key] !== "number" || !Number.isFinite(incoming[key])) return;
+        if (terrainProfile[key] !== incoming[key]) {
+          terrainProfile[key] = incoming[key];
+          terrainProfileTouched = true;
+        }
+      };
       if (typeof incoming.noiseAlgorithm === "string") {
         const nextAlgorithm = incoming.noiseAlgorithm;
         if (terrainProfile.noiseAlgorithm !== nextAlgorithm) {
@@ -5780,6 +5787,7 @@ function applyBiomeSettingsUpdateFromAction(action) {
       assignNumber("warpStrength", 0, 1.2);
       assignNumber("warpScaleMultiplier", 0.2, 5);
       assignNumber("secondaryAmount", -1, 1);
+      assignFiniteNumber("heightMultiplier");
       assignNumber("heightOffset", -200, 200);
       if (Object.keys(terrainProfile).length > 0) next.terrainProfile = terrainProfile;
       else if (next.terrainProfile) {

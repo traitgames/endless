@@ -217,6 +217,7 @@ function normalizeBiomeSettings(value) {
     copyClampedNumber(terrainCfg, terrainProfile, "warpStrength", 0, 1.2);
     copyClampedNumber(terrainCfg, terrainProfile, "warpScaleMultiplier", 0.2, 5);
     copyClampedNumber(terrainCfg, terrainProfile, "secondaryAmount", -1, 1);
+    copyFiniteNumber(terrainCfg, terrainProfile, "heightMultiplier");
     copyClampedNumber(terrainCfg, terrainProfile, "heightOffset", -200, 200);
     if (Object.keys(terrainProfile).length > 0) {
       next.terrainProfile = terrainProfile;
@@ -232,6 +233,11 @@ function copyClampedNumber(src, target, key, min, max, integer = false) {
   if (typeof src?.[key] !== "number" || !Number.isFinite(src[key])) return;
   const raw = integer ? Math.round(src[key]) : src[key];
   target[key] = clampNumber(raw, min, max, raw);
+}
+
+function copyFiniteNumber(src, target, key) {
+  if (typeof src?.[key] !== "number" || !Number.isFinite(src[key])) return;
+  target[key] = src[key];
 }
 
 export function clampNumber(value, min, max, fallback) {
