@@ -2,8 +2,11 @@
 
 import alpineMire from "./authored/alpine_mire.js";
 import alpineSteppe from "./authored/alpine_steppe.js";
+import alpineSummit from "./authored/alpine_summit.js";
 import alpineTundra from "./authored/alpine_tundra.js";
+import aridSummit from "./authored/arid_summit.js";
 import badlands from "./authored/badlands.js";
+import barrenHighlands from "./authored/barren_highlands.js";
 import cloudforestHot from "./authored/cloudforest_hot.js";
 import cloudforestTemperate from "./authored/cloudforest_temperate.js";
 import coastalTundra from "./authored/coastal_tundra.js";
@@ -14,32 +17,38 @@ import deepOcean from "./authored/deep_ocean.js";
 import deepTropicalOcean from "./authored/deep_tropical_ocean.js";
 import desert from "./authored/desert.js";
 import forest from "./authored/forest.js";
+import frostPeak from "./authored/frost_peak.js";
+import glacialSummit from "./authored/glacial_summit.js";
 import glacier from "./authored/glacier.js";
 import icefield from "./authored/icefield.js";
-import kelpForest from "./authored/kelp_forest.js";
+import icySummit from "./authored/icy_summit.js";
 import kelpForestCold from "./authored/kelp_forest_cold.js";
-import kelpShore from "./authored/kelp_shore.js";
+import kelpForest from "./authored/kelp_forest.js";
 import kelpShoreCold from "./authored/kelp_shore_cold.js";
+import kelpShore from "./authored/kelp_shore.js";
 import mangrove from "./authored/mangrove.js";
 import marsh from "./authored/marsh.js";
 import meadow from "./authored/meadow.js";
 import mire from "./authored/mire.js";
 import monsoonForest from "./authored/monsoon_forest.js";
-import montane from "./authored/montane.js";
 import montaneWoodland from "./authored/montane_woodland.js";
+import montane from "./authored/montane.js";
+import mountainGrassland from "./authored/mountain_grassland.js";
 import mudflat from "./authored/mudflat.js";
 import muskeg from "./authored/muskeg.js";
 import ocean from "./authored/ocean.js";
+import paramo from "./authored/paramo.js";
 import polarDesert from "./authored/polar_desert.js";
+import polarScree from "./authored/polar_scree.js";
 import rainforestHot from "./authored/rainforest_hot.js";
 import rainforestTemperate from "./authored/rainforest_temperate.js";
-import rockyShore from "./authored/rocky_shore.js";
 import rockyMountains from "./authored/rocky_mountains.js";
+import rockyShore from "./authored/rocky_shore.js";
 import rockydesert from "./authored/rockydesert.js";
-import saltflat from "./authored/saltflat.js";
 import saltMarsh from "./authored/salt_marsh.js";
-import savanna from "./authored/savanna.js";
+import saltflat from "./authored/saltflat.js";
 import savannaMesic from "./authored/savanna_mesic.js";
+import savanna from "./authored/savanna.js";
 import scrubland from "./authored/scrubland.js";
 import seagrassMeadow from "./authored/seagrass_meadow.js";
 import shrubland from "./authored/shrubland.js";
@@ -49,10 +58,10 @@ import taiga from "./authored/taiga.js";
 import thornForest from "./authored/thorn_forest.js";
 import tropicalLagoon from "./authored/tropical_lagoon.js";
 import tropicalOcean from "./authored/tropical_ocean.js";
-import tundra from "./authored/tundra.js";
 import tundraMesic from "./authored/tundra_mesic.js";
-import wetland from "./authored/wetland.js";
+import tundra from "./authored/tundra.js";
 import wetlandHydric from "./authored/wetland_hydric.js";
+import wetland from "./authored/wetland.js";
 import woodlandCold from "./authored/woodland_cold.js";
 import woodlandTemperate from "./authored/woodland_temperate.js";
 
@@ -63,17 +72,26 @@ import genGlacierMountains from "./generated/glacier_mountains.js";
 import genIcefieldMountains from "./generated/icefield_mountains.js";
 import genJaggedAlpineMire from "./generated/jagged_alpine_mire.js";
 import genJaggedAlpineSteppe from "./generated/jagged_alpine_steppe.js";
+import genJaggedAlpineSummit from "./generated/jagged_alpine_summit.js";
 import genJaggedAlpineTundra from "./generated/jagged_alpine_tundra.js";
-import genJaggedBadlands from "./generated/jagged_badlands.js";
+import genJaggedAridSummit from "./generated/jagged_arid_summit.js";
 import genJaggedBadlandsMountains from "./generated/jagged_badlands_mountains.js";
+import genJaggedBadlands from "./generated/jagged_badlands.js";
+import genJaggedBarrenHighlands from "./generated/jagged_barren_highlands.js";
 import genJaggedCloudforestHot from "./generated/jagged_cloudforest_hot.js";
 import genJaggedCloudforestTemperate from "./generated/jagged_cloudforest_temperate.js";
 import genJaggedDesert from "./generated/jagged_desert.js";
-import genJaggedGlacier from "./generated/jagged_glacier.js";
+import genJaggedFrostPeak from "./generated/jagged_frost_peak.js";
+import genJaggedGlacialSummit from "./generated/jagged_glacial_summit.js";
 import genJaggedGlacierMountains from "./generated/jagged_glacier_mountains.js";
+import genJaggedGlacier from "./generated/jagged_glacier.js";
 import genJaggedIcefield from "./generated/jagged_icefield.js";
+import genJaggedIcySummit from "./generated/jagged_icy_summit.js";
 import genJaggedMontane from "./generated/jagged_montane.js";
+import genJaggedMountainGrassland from "./generated/jagged_mountain_grassland.js";
+import genJaggedParamo from "./generated/jagged_paramo.js";
 import genJaggedPolarDesert from "./generated/jagged_polar_desert.js";
+import genJaggedPolarScree from "./generated/jagged_polar_scree.js";
 import genJaggedRockyMountains from "./generated/jagged_rocky_mountains.js";
 import genJaggedRockydesert from "./generated/jagged_rockydesert.js";
 import genJaggedSaltflat from "./generated/jagged_saltflat.js";
@@ -94,17 +112,26 @@ import genScrublandMountains from "./generated/scrubland_mountains.js";
 import genShrublandMountains from "./generated/shrubland_mountains.js";
 import genSmoothAlpineMire from "./generated/smooth_alpine_mire.js";
 import genSmoothAlpineSteppe from "./generated/smooth_alpine_steppe.js";
+import genSmoothAlpineSummit from "./generated/smooth_alpine_summit.js";
 import genSmoothAlpineTundra from "./generated/smooth_alpine_tundra.js";
-import genSmoothBadlands from "./generated/smooth_badlands.js";
+import genSmoothAridSummit from "./generated/smooth_arid_summit.js";
 import genSmoothBadlandsMountains from "./generated/smooth_badlands_mountains.js";
+import genSmoothBadlands from "./generated/smooth_badlands.js";
+import genSmoothBarrenHighlands from "./generated/smooth_barren_highlands.js";
 import genSmoothCloudforestHot from "./generated/smooth_cloudforest_hot.js";
 import genSmoothCloudforestTemperate from "./generated/smooth_cloudforest_temperate.js";
 import genSmoothDesert from "./generated/smooth_desert.js";
-import genSmoothGlacier from "./generated/smooth_glacier.js";
+import genSmoothFrostPeak from "./generated/smooth_frost_peak.js";
+import genSmoothGlacialSummit from "./generated/smooth_glacial_summit.js";
 import genSmoothGlacierMountains from "./generated/smooth_glacier_mountains.js";
+import genSmoothGlacier from "./generated/smooth_glacier.js";
 import genSmoothIcefield from "./generated/smooth_icefield.js";
+import genSmoothIcySummit from "./generated/smooth_icy_summit.js";
 import genSmoothMontane from "./generated/smooth_montane.js";
+import genSmoothMountainGrassland from "./generated/smooth_mountain_grassland.js";
+import genSmoothParamo from "./generated/smooth_paramo.js";
 import genSmoothPolarDesert from "./generated/smooth_polar_desert.js";
+import genSmoothPolarScree from "./generated/smooth_polar_scree.js";
 import genSmoothRockyMountains from "./generated/smooth_rocky_mountains.js";
 import genSmoothRockydesert from "./generated/smooth_rockydesert.js";
 import genSmoothSaltflat from "./generated/smooth_saltflat.js";
@@ -123,8 +150,11 @@ import genWoodlandTemperateMountains from "./generated/woodland_temperate_mounta
 export const AUTHORED_BIOME_DEFINITIONS = Object.freeze([
   alpineMire,
   alpineSteppe,
+  alpineSummit,
   alpineTundra,
+  aridSummit,
   badlands,
+  barrenHighlands,
   cloudforestHot,
   cloudforestTemperate,
   coastalTundra,
@@ -135,32 +165,38 @@ export const AUTHORED_BIOME_DEFINITIONS = Object.freeze([
   deepTropicalOcean,
   desert,
   forest,
+  frostPeak,
+  glacialSummit,
   glacier,
   icefield,
-  kelpForest,
+  icySummit,
   kelpForestCold,
-  kelpShore,
+  kelpForest,
   kelpShoreCold,
+  kelpShore,
   mangrove,
   marsh,
   meadow,
   mire,
   monsoonForest,
-  montane,
   montaneWoodland,
+  montane,
+  mountainGrassland,
   mudflat,
   muskeg,
   ocean,
+  paramo,
   polarDesert,
+  polarScree,
   rainforestHot,
   rainforestTemperate,
-  rockyShore,
   rockyMountains,
+  rockyShore,
   rockydesert,
-  saltflat,
   saltMarsh,
-  savanna,
+  saltflat,
   savannaMesic,
+  savanna,
   scrubland,
   seagrassMeadow,
   shrubland,
@@ -170,10 +206,10 @@ export const AUTHORED_BIOME_DEFINITIONS = Object.freeze([
   thornForest,
   tropicalLagoon,
   tropicalOcean,
-  tundra,
   tundraMesic,
-  wetland,
+  tundra,
   wetlandHydric,
+  wetland,
   woodlandCold,
   woodlandTemperate,
 ]);
@@ -186,17 +222,26 @@ export const GENERATED_BIOME_DEFINITIONS = Object.freeze([
   genIcefieldMountains,
   genJaggedAlpineMire,
   genJaggedAlpineSteppe,
+  genJaggedAlpineSummit,
   genJaggedAlpineTundra,
-  genJaggedBadlands,
+  genJaggedAridSummit,
   genJaggedBadlandsMountains,
+  genJaggedBadlands,
+  genJaggedBarrenHighlands,
   genJaggedCloudforestHot,
   genJaggedCloudforestTemperate,
   genJaggedDesert,
-  genJaggedGlacier,
+  genJaggedFrostPeak,
+  genJaggedGlacialSummit,
   genJaggedGlacierMountains,
+  genJaggedGlacier,
   genJaggedIcefield,
+  genJaggedIcySummit,
   genJaggedMontane,
+  genJaggedMountainGrassland,
+  genJaggedParamo,
   genJaggedPolarDesert,
+  genJaggedPolarScree,
   genJaggedRockyMountains,
   genJaggedRockydesert,
   genJaggedSaltflat,
@@ -217,17 +262,26 @@ export const GENERATED_BIOME_DEFINITIONS = Object.freeze([
   genShrublandMountains,
   genSmoothAlpineMire,
   genSmoothAlpineSteppe,
+  genSmoothAlpineSummit,
   genSmoothAlpineTundra,
-  genSmoothBadlands,
+  genSmoothAridSummit,
   genSmoothBadlandsMountains,
+  genSmoothBadlands,
+  genSmoothBarrenHighlands,
   genSmoothCloudforestHot,
   genSmoothCloudforestTemperate,
   genSmoothDesert,
-  genSmoothGlacier,
+  genSmoothFrostPeak,
+  genSmoothGlacialSummit,
   genSmoothGlacierMountains,
+  genSmoothGlacier,
   genSmoothIcefield,
+  genSmoothIcySummit,
   genSmoothMontane,
+  genSmoothMountainGrassland,
+  genSmoothParamo,
   genSmoothPolarDesert,
+  genSmoothPolarScree,
   genSmoothRockyMountains,
   genSmoothRockydesert,
   genSmoothSaltflat,

@@ -58,6 +58,14 @@ export const ROCKY_MOUNTAIN_HUMIDITY_LOOKUP = Object.freeze({
   hot: Object.freeze({ xeric: "rockydesert", mesic: "montane_woodland", hydric: "cloudforest_hot" }),
 });
 
+export const HIGH_ALTITUDE_BIOME_THRESHOLD_METERS = 260;
+
+export const HIGH_ALTITUDE_MOUNTAIN_HUMIDITY_LOOKUP = Object.freeze({
+  hot: Object.freeze({ xeric: "arid_summit", mesic: "mountain_grassland", hydric: "paramo" }),
+  temperate: Object.freeze({ xeric: "barren_highlands", mesic: "alpine_summit", hydric: "icy_summit" }),
+  cold: Object.freeze({ xeric: "polar_scree", mesic: "frost_peak", hydric: "glacial_summit" }),
+});
+
 export const BIOME_BLEND_TRANSITION_WIDTH_METERS = 30;
 export const BIOME_BLEND_HALF_WIDTH_METERS = BIOME_BLEND_TRANSITION_WIDTH_METERS * 0.5;
 export const BIOME_BLEND_GRADIENT_STEP_METERS = 2;
@@ -72,6 +80,7 @@ export const BIOME_EDGE_SMOOTH_START_METERS = 100;
 export const DEFAULT_TRANSITION_BIOME_ID = "forest";
 
 export const MOUNTAIN_BIOME_BORDER_BLEND_HEIGHT_METERS = 24;
+export const HIGH_ALTITUDE_BIOME_BORDER_BLEND_HEIGHT_METERS = MOUNTAIN_BIOME_BORDER_BLEND_HEIGHT_METERS;
 export const WETLAND_MOUNTAIN_HEIGHT_MAX_METERS = 10;
 export const WETLAND_ELEVATION_FADE_BAND_METERS = 8;
 
@@ -100,6 +109,15 @@ export const BUMPY_BIOME_SUBDIVISION_TARGET_IDS = Object.freeze([
   "montane",
   "cloudforest_temperate",
   "cloudforest_hot",
+  "arid_summit",
+  "mountain_grassland",
+  "paramo",
+  "barren_highlands",
+  "alpine_summit",
+  "icy_summit",
+  "polar_scree",
+  "frost_peak",
+  "glacial_summit",
 ]);
 
 export const BUMPY_BIOME_SUBDIVISION_THRESHOLD_SMOOTH = 0.33;

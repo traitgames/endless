@@ -30,6 +30,9 @@ import {
   DEFAULT_TRANSITION_BIOME_ID,
   DETAIL_BIOME_EDGE_DISTANCE_FACTOR,
   DETAIL_BIOME_FADE_OUT_METERS,
+  HIGH_ALTITUDE_BIOME_BORDER_BLEND_HEIGHT_METERS,
+  HIGH_ALTITUDE_BIOME_THRESHOLD_METERS,
+  HIGH_ALTITUDE_MOUNTAIN_HUMIDITY_LOOKUP,
   HUMIDITY_ZONE_THRESHOLD_HIGH,
   HUMIDITY_ZONE_THRESHOLD_LOW,
   HUMIDITY_ZONE_KEYS,
@@ -2696,6 +2699,16 @@ function getMountainBiomeVariant(biome) {
   return BIOME_DEFS[`${biome.id}${MOUNTAIN_BIOME_SUFFIX}`] || biome;
 }
 
+function getHighAltitudeBiomeVariant(biome, fallbackCategory = "temperate", fallbackHumidityBand = "mesic") {
+  if (!biome) return null;
+  const category = biome.category || fallbackCategory;
+  const humidityBand = biome.humidityBand || fallbackHumidityBand;
+  const lookup = HIGH_ALTITUDE_MOUNTAIN_HUMIDITY_LOOKUP[category];
+  const highAltitudeBiomeId = lookup?.[humidityBand] || lookup?.mesic;
+  if (!highAltitudeBiomeId) return biome;
+  return BIOME_DEFS[highAltitudeBiomeId] || biome;
+}
+
 function getBaseBiomeVariant(biome) {
   if (!biome) return null;
   if (!biome.isMountainVariant) return biome;
@@ -2707,6 +2720,16 @@ function getMountainBiomeBlendWeightAt(x, z) {
   const centerHeight = center.mountainAdditiveHeight || 0;
   const threshold = getMountainBiomeThresholdMeters();
   const blendHalfWidth = MOUNTAIN_BIOME_BORDER_BLEND_HEIGHT_METERS;
+  if (centerHeight <= threshold - blendHalfWidth) return 0;
+  if (centerHeight >= threshold + blendHalfWidth) return 1;
+  return smoothstep(threshold - blendHalfWidth, threshold + blendHalfWidth, centerHeight);
+}
+
+function getHighAltitudeBiomeBlendWeightAt(x, z) {
+  const center = fillTerrainAdditiveSampleAt(x, z, mountainBiomeAdditiveScratch);
+  const centerHeight = center.mountainAdditiveHeight || 0;
+  const threshold = HIGH_ALTITUDE_BIOME_THRESHOLD_METERS;
+  const blendHalfWidth = HIGH_ALTITUDE_BIOME_BORDER_BLEND_HEIGHT_METERS;
   if (centerHeight <= threshold - blendHalfWidth) return 0;
   if (centerHeight >= threshold + blendHalfWidth) return 1;
   return smoothstep(threshold - blendHalfWidth, threshold + blendHalfWidth, centerHeight);
@@ -2751,6 +2774,52 @@ function applyMountainVariantsToBiomeBlend(x, z, target) {
   return target;
 }
 
+function applyHighAltitudeVariantsToBiomeBlend(x, z, target) {
+  if (!target) return target;
+  const highAltitudeWeight = getHighAltitudeBiomeBlendWeightAt(x, z);
+  if (!(highAltitudeWeight > 0)) return target;
+
+  const dominantCategory = target.dominantBiome?.category || "temperate";
+  const dominantHumidityBand = target.dominantBiome?.humidityBand || "mesic";
+  if (highAltitudeWeight >= 0.999) {
+    for (let i = 0; i < target.count; i += 1) {
+      target.biomes[i] = getHighAltitudeBiomeVariant(target.biomes[i], dominantCategory, dominantHumidityBand);
+    }
+    target.dominantBiome = getHighAltitudeBiomeVariant(target.dominantBiome, dominantCategory, dominantHumidityBand);
+    return target;
+  }
+
+  const baseWeight = 1 - highAltitudeWeight;
+  const originalCount = target.count;
+  const originalBiomes = target.biomes.slice(0, originalCount);
+  const originalWeights = target.weights.slice(0, originalCount);
+  const dominantBaseBiome = target.dominantBiome || null;
+
+  target.count = 0;
+  for (let i = 0; i < target.biomes.length; i += 1) {
+    target.biomes[i] = null;
+    target.weights[i] = 0;
+  }
+
+  for (let i = 0; i < originalCount; i += 1) {
+    const biome = originalBiomes[i];
+    const weight = originalWeights[i];
+    if (!biome || !(weight > 0)) continue;
+    if (baseWeight > 0.0001) upsertBiomeBlendEntry(target, biome, weight * baseWeight);
+    if (highAltitudeWeight > 0.0001) {
+      const highAltitudeBiome = getHighAltitudeBiomeVariant(biome, dominantCategory, dominantHumidityBand);
+      upsertBiomeBlendEntry(target, highAltitudeBiome, weight * highAltitudeWeight);
+    }
+  }
+
+  normalizeBiomeBlendResult(target);
+  target.dominantBiome =
+    highAltitudeWeight >= 0.5
+      ? getHighAltitudeBiomeVariant(dominantBaseBiome, dominantCategory, dominantHumidityBand)
+      : dominantBaseBiome;
+  return target;
+}
+
 function applyBumpySubdivisionsToBiomeBlend(x, z, target) {
   if (!target || target.count <= 0) return target;
   const originalCount = target.count;
@@ -2783,6 +2852,7 @@ function applyBumpySubdivisionsToBiomeBlend(x, z, target) {
 function finalizeBiomeBlendAt(x, z, target) {
   applyMountainVariantsToBiomeBlend(x, z, target);
   applyWetlandHeightOverride(x, z, target);
+  applyHighAltitudeVariantsToBiomeBlend(x, z, target);
   return applyBumpySubdivisionsToBiomeBlend(x, z, target);
 }
 
@@ -2790,6 +2860,13 @@ function getBiomeWithMountainVariantAt(x, z, biome) {
   if (!biome) return biome;
   return getMountainBiomeBlendWeightAt(x, z) >= 0.5
     ? getMountainBiomeVariant(biome)
+    : biome;
+}
+
+function getBiomeWithHighAltitudeVariantAt(x, z, biome, category = "temperate", humidityBand = "mesic") {
+  if (!biome) return biome;
+  return getHighAltitudeBiomeBlendWeightAt(x, z) >= 0.5
+    ? getHighAltitudeBiomeVariant(biome, category, humidityBand)
     : biome;
 }
 
@@ -3036,7 +3113,8 @@ function getBiomeAt(x, z) {
     const fallbackId = BIOME_HUMIDITY_LOOKUP.meadow?.[fallbackHumidityBand] || "meadow";
     wetlandAdjusted = BIOME_DEFS[fallbackId] || BIOME_DEFS.meadow;
   }
-  return getBumpySubdividedBiomeForPoint(x, z, wetlandAdjusted);
+  const highAltitudeAdjusted = getBiomeWithHighAltitudeVariantAt(x, z, wetlandAdjusted, category, humidityBand);
+  return getBumpySubdividedBiomeForPoint(x, z, highAltitudeAdjusted);
 }
 
 function getGroundPointInfo(x, z) {
