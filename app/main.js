@@ -10,6 +10,13 @@ import { createTraceLogger } from "./trace/traceLog.js";
 import { configureTerrainMaterial } from "./world/terrainShader.js";
 import { mapMinimapClickToWorld } from "./minimap/clickTeleport.js";
 import {
+  buildSpawnRingPositions,
+  buildSpawnSearchRadii,
+  DEFAULT_SPAWN_SEARCH_MAX_DISTANCE,
+  DEFAULT_SPAWN_SEARCH_STEP,
+  isWithinSpawnSearchDistance,
+} from "./world/spawnSearch.js";
+import {
   BIOME_BLEND_GRADIENT_STEP_METERS,
   BIOME_BLEND_HALF_WIDTH_METERS,
   BIOME_BLEND_MAX_SLOTS,
@@ -330,9 +337,8 @@ const BIOME_TP_MAX_ATTEMPTS = 5000;
 const BIOME_TP_EXTRA_RINGS_AFTER_FIRST_MATCH = 6;
 const BIOME_CENTER_TARGET_SCORE = 12;
 const BIOME_TP_SUNFLOWER_GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
-const SPAWN_SEARCH_MAX_ATTEMPTS = 700;
-const SPAWN_SEARCH_MAX_RADIUS = 1536;
-const SPAWN_SEARCH_STEP = 24;
+const SPAWN_SEARCH_MAX_DISTANCE = DEFAULT_SPAWN_SEARCH_MAX_DISTANCE;
+const SPAWN_SEARCH_STEP = DEFAULT_SPAWN_SEARCH_STEP;
 const SPAWN_MAX_SLOPE_SCORE = 3.4;
 
 const state = loadPersistedState({
@@ -3281,56 +3287,34 @@ function pickBetterSpawnCandidate(best, next) {
 }
 
 function tryFindLandSpawnNearOrigin() {
-  let attempts = 0;
   let best = null;
+  const searchRadii = buildSpawnSearchRadii(SPAWN_SEARCH_MAX_DISTANCE, SPAWN_SEARCH_STEP);
 
   const inspect = (x, z, radius) => {
-    if (attempts >= SPAWN_SEARCH_MAX_ATTEMPTS) return "stop";
-    attempts += 1;
     const info = getGroundPointInfo(x, z);
-    const candidate = { x, z, radius, ...info };
+    const placement = toPlayerPlacementTarget(x, z, info.groundY);
+    const candidate = { x, z, radius, placement, ...info };
     best = pickBetterSpawnCandidate(best, candidate);
     if (info.isDryLand && info.slope <= SPAWN_MAX_SLOPE_SCORE) {
-      return toPlayerPlacementTarget(x, z, info.groundY);
+      return candidate;
     }
     return null;
   };
 
-  for (let radius = 0; radius <= SPAWN_SEARCH_MAX_RADIUS; radius += SPAWN_SEARCH_STEP) {
-    if (radius === 0) {
-      const result = inspect(0, 0, 0);
-      if (result === "stop") break;
-      if (result) return result;
-      continue;
-    }
+  for (const radius of searchRadii) {
     let ringBestDry = null;
-    for (let offset = -radius; offset <= radius; offset += SPAWN_SEARCH_STEP) {
-      const candidates = [
-        [offset, -radius],
-        [radius, offset],
-        [offset, radius],
-        [-radius, offset],
-      ];
-      for (const [x, z] of candidates) {
-        const result = inspect(x, z, radius);
-        if (result === "stop") {
-          if (ringBestDry) return ringBestDry.placement;
-          return best?.isDryLand ? toPlayerPlacementTarget(best.x, best.z, best.groundY) : null;
-        }
-        if (result) {
-          const info = getGroundPointInfo(x, z);
-          const placement = toPlayerPlacementTarget(x, z, info.groundY);
-          ringBestDry = ringBestDry
-            ? pickBetterSpawnCandidate(ringBestDry, { x, z, radius, ...info, placement })
-            : { x, z, radius, ...info, placement };
-        }
-      }
+    for (const [x, z] of buildSpawnRingPositions(radius, SPAWN_SEARCH_STEP)) {
+      // Rings are sampled on square edges; clamp them to the requested radial limit.
+      if (!isWithinSpawnSearchDistance(x, z, SPAWN_SEARCH_MAX_DISTANCE)) continue;
+      const result = inspect(x, z, radius);
+      if (!result) continue;
+      ringBestDry = ringBestDry ? pickBetterSpawnCandidate(ringBestDry, result) : result;
     }
     if (ringBestDry) return ringBestDry.placement;
   }
 
   if (best?.isDryLand) {
-    return toPlayerPlacementTarget(best.x, best.z, best.groundY);
+    return best.placement;
   }
   return null;
 }
