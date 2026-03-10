@@ -41,9 +41,11 @@
         <div class="metrics">
           <div>Seed: <span id="seed">—</span></div>
           <div>XYZ: <span id="xyz">0.0, 0.0, 0.0</span></div>
+          <div>Grounded: <span id="grounded">false</span></div>
           <div>Chunk: <span id="chunk">0,0</span></div>
           <div>Biome: <span id="biome">—</span></div>
           <div>Temperature: <span id="temperature-type">—</span></div>
+          <div>Humidity: <span id="humidity-type">—</span></div>
           <div>FPS: <span id="fps">--</span></div>
           <div>Time: <span id="clock-time">--:-- --</span></div>
           <div>Backend: <span id="backend-mode">connecting</span></div>
@@ -98,8 +100,11 @@
       </div>
     </div>
     <div id="help">
-      <div>WASD: move · Space: jump · Mouse: look · Shift: sprint · R: reset position</div>
+      <div>WASD: move · Space: jump · Mouse: look · Shift: sprint · R: reset position · +/- keys: minimap zoom · Click minimap: teleport</div>
       <div>Enter: focus chat · Esc: toggle create/pause</div>
+    </div>
+    <div id="minimap" aria-hidden="true">
+      <canvas id="minimap-canvas"></canvas>
     </div>
     <canvas id="scene"></canvas>
 

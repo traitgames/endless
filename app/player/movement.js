@@ -1,14 +1,34 @@
+export const MOVEMENT_VERSION = "2026-02-27-1";
+
+export function getFeetY(player) {
+  return player.position.y;
+}
+
+export function getEyeY(player, playerHeight) {
+  return player.position.y + playerHeight;
+}
+
+export function getGroundYAt(x, z, sampleGroundHeight, heightAt) {
+  if (typeof sampleGroundHeight === "function") {
+    return sampleGroundHeight(x, z);
+  }
+  if (typeof heightAt === "function") {
+    return heightAt(x, z);
+  }
+  return NaN;
+}
+
 export function updatePlayerRuntime({
   dt,
   keys,
   player,
+  playerHeight,
   heightAt,
   sampleGroundHeight,
   ensureChunks,
   chunkSize,
   xyzEl,
   chunkEl,
-  camera,
   Vector3,
 }) {
   const speed = keys.has("ShiftLeft") ? 10 : 6;
@@ -39,23 +59,29 @@ export function updatePlayerRuntime({
 
   player.position.addScaledVector(player.velocity, dt);
 
-  const groundHeight =
-    typeof sampleGroundHeight === "function"
-      ? sampleGroundHeight(player.position.x, player.position.z)
-      : heightAt(player.position.x, player.position.z);
-  const ground = groundHeight + 2.2;
-  if (player.position.y <= ground) {
+  const groundHeight = getGroundYAt(
+    player.position.x,
+    player.position.z,
+    sampleGroundHeight,
+    heightAt
+  );
+  const ground = groundHeight;
+  player._lastGroundHeight = groundHeight;
+  const groundEpsilon = 0.02;
+  if (player.position.y <= ground + groundEpsilon) {
     player.position.y = ground;
-    player.velocity.y = 0;
+    if (player.velocity.y < 0) player.velocity.y = 0;
     player.grounded = true;
+  } else {
+    player.grounded = false;
   }
 
+  const formatCoord = (value) => {
+    const rounded = Math.round(value * 10) / 10;
+    return Object.is(rounded, -0) ? "0.0" : rounded.toFixed(1);
+  };
   if (xyzEl) {
-    const formatCoord = (value) => {
-      const rounded = Math.round(value * 10) / 10;
-      return Object.is(rounded, -0) ? "0.0" : rounded.toFixed(1);
-    };
-    xyzEl.textContent = `${formatCoord(player.position.x)}, ${formatCoord(player.position.y)}, ${formatCoord(player.position.z)}`;
+    xyzEl.textContent = `${formatCoord(player.position.x)}, ${formatCoord(groundHeight)}, ${formatCoord(player.position.z)}`;
   }
 
   const cx = Math.floor(player.position.x / chunkSize);
@@ -67,6 +93,4 @@ export function updatePlayerRuntime({
     chunkEl.textContent = `${cx},${cz}`;
   }
 
-  camera.position.copy(player.position);
-  camera.rotation.set(player.pitch, player.yaw, 0, "YXZ");
 }

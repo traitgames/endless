@@ -1,26 +1,34 @@
 export function loadPersistedState({ storageKey, defaultState, stateVersion, defaultWorld, legacyWorld }) {
   const raw = localStorage.getItem(storageKey);
-  if (!raw) return structuredClone(defaultState);
+  const attachFlag = (state, loadedFromStorage) => {
+    state.__loadedFromStorage = loadedFromStorage;
+    return state;
+  };
+
+  if (!raw) return attachFlag(structuredClone(defaultState), false);
 
   try {
     const parsed = migrateState(JSON.parse(raw), { defaultState, stateVersion });
-    return {
-      seed: typeof parsed.seed === "number" ? parsed.seed : defaultState.seed,
-      world: normalizeWorld(parsed.world, { defaultWorld, legacyWorld }),
-      timeOfDay: clampNumber(parsed.timeOfDay, 0, 1, defaultState.timeOfDay),
-      ui: {
-        chatOpen: Boolean(parsed.ui?.chatOpen),
-        actionTraceVisible: parsed.ui?.actionTraceVisible !== false,
+    return attachFlag(
+      {
+        seed: typeof parsed.seed === "number" ? parsed.seed : defaultState.seed,
+        world: normalizeWorld(parsed.world, { defaultWorld, legacyWorld }),
+        timeOfDay: clampNumber(parsed.timeOfDay, 0, 1, defaultState.timeOfDay),
+        ui: {
+          chatOpen: Boolean(parsed.ui?.chatOpen),
+          actionTraceVisible: parsed.ui?.actionTraceVisible !== false,
+        },
+        player: {
+          position: parsed.player?.position || defaultState.player.position,
+          yaw: parsed.player?.yaw || 0,
+          pitch: parsed.player?.pitch || 0,
+        },
+        chat: Array.isArray(parsed.chat) ? parsed.chat : [],
       },
-      player: {
-        position: parsed.player?.position || defaultState.player.position,
-        yaw: parsed.player?.yaw || 0,
-        pitch: parsed.player?.pitch || 0,
-      },
-      chat: Array.isArray(parsed.chat) ? parsed.chat : [],
-    };
+      true
+    );
   } catch {
-    return structuredClone(defaultState);
+    return attachFlag(structuredClone(defaultState), false);
   }
 }
 
@@ -209,6 +217,8 @@ function normalizeBiomeSettings(value) {
     copyClampedNumber(terrainCfg, terrainProfile, "warpStrength", 0, 1.2);
     copyClampedNumber(terrainCfg, terrainProfile, "warpScaleMultiplier", 0.2, 5);
     copyClampedNumber(terrainCfg, terrainProfile, "secondaryAmount", -1, 1);
+    copyFiniteNumber(terrainCfg, terrainProfile, "heightMultiplier");
+    copyClampedNumber(terrainCfg, terrainProfile, "heightOffset", -200, 200);
     if (Object.keys(terrainProfile).length > 0) {
       next.terrainProfile = terrainProfile;
     }
@@ -223,6 +233,11 @@ function copyClampedNumber(src, target, key, min, max, integer = false) {
   if (typeof src?.[key] !== "number" || !Number.isFinite(src[key])) return;
   const raw = integer ? Math.round(src[key]) : src[key];
   target[key] = clampNumber(raw, min, max, raw);
+}
+
+function copyFiniteNumber(src, target, key) {
+  if (typeof src?.[key] !== "number" || !Number.isFinite(src[key])) return;
+  target[key] = src[key];
 }
 
 export function clampNumber(value, min, max, fallback) {

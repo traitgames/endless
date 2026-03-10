@@ -2,21 +2,89 @@ import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
 import { createBridgeClient } from "./bridgeClient.js";
 import { createUpdateEngine } from "./updateEngine.js";
 import { createChatStore } from "./chat/chatStore.js";
-import { updatePlayerRuntime } from "./player/movement.js";
+import { updatePlayerRuntime, MOVEMENT_VERSION, getFeetY, getEyeY, getGroundYAt } from "./player/movement.js?v=20260301";
 import { loadPersistedState, savePersistedState, clampNumber, toColorHex } from "./state/persistence.js";
 import { createTerrainHeightSampler } from "./world/terrainNoise.js";
 import { createRuntimeActionExecutor } from "./actions/runtimeActions.js";
 import { createTraceLogger } from "./trace/traceLog.js";
 import { configureTerrainMaterial } from "./world/terrainShader.js";
+import { mapMinimapClickToWorld } from "./minimap/clickTeleport.js";
+import {
+  buildSpawnRingPositions,
+  buildSpawnSearchRadii,
+  DEFAULT_SPAWN_SEARCH_MAX_DISTANCE,
+  DEFAULT_SPAWN_SEARCH_STEP,
+  isWithinSpawnSearchDistance,
+} from "./world/spawnSearch.js";
+import {
+  BIOME_BLEND_GRADIENT_STEP_METERS,
+  BIOME_BLEND_HALF_WIDTH_METERS,
+  BIOME_BLEND_MAX_SLOTS,
+  BIOME_BLEND_PRECHECK_MARGIN,
+  BIOME_EDGE_SMOOTH_MAX_METERS,
+  BIOME_EDGE_SMOOTH_START_METERS,
+  BIOME_HUMIDITY_LOOKUP,
+  BIOME_SUBDIVISION_PREFIX_JAGGED,
+  BIOME_SUBDIVISION_PREFIX_SMOOTH,
+  BIOME_VARIANTS,
+  BUMPY_BIOME_SUBDIVISION_PRECHECK_MARGIN,
+  BUMPY_BIOME_SUBDIVISION_PRIMARY_SCALE,
+  BUMPY_BIOME_SUBDIVISION_SECONDARY_SCALE,
+  BUMPY_BIOME_SUBDIVISION_THRESHOLD_JAGGED,
+  BUMPY_BIOME_SUBDIVISION_THRESHOLD_SMOOTH,
+  CLIMATE_ZONE_THRESHOLD_HIGH,
+  CLIMATE_ZONE_THRESHOLD_LOW,
+  DEFAULT_TRANSITION_BIOME_ID,
+  DETAIL_BIOME_EDGE_DISTANCE_FACTOR,
+  DETAIL_BIOME_FADE_OUT_METERS,
+  HIGH_ALTITUDE_BIOME_BORDER_BLEND_HEIGHT_METERS,
+  HIGH_ALTITUDE_BIOME_THRESHOLD_METERS,
+  HIGH_ALTITUDE_MOUNTAIN_HUMIDITY_LOOKUP,
+  HUMIDITY_ZONE_THRESHOLD_HIGH,
+  HUMIDITY_ZONE_THRESHOLD_LOW,
+  HUMIDITY_ZONE_KEYS,
+  HUMIDITY_ZONE_LABELS,
+  MOUNTAIN_BIOME_BORDER_BLEND_HEIGHT_METERS,
+  MOUNTAIN_BIOME_SUFFIX,
+  OCEAN_BIOME_COASTAL_MAX_MOUNTAIN_ADDITIVE_HEIGHT,
+  OCEAN_DEEP_BIOME_COAST_SIGNAL_END,
+  OCEAN_DEEP_BIOME_COAST_RANGE_MASK_SCALE,
+  OCEAN_DEEP_BIOME_COAST_SIGNAL_START,
+  OCEAN_BIOME_OPEN_BLEND_PRECHECK_HEIGHT,
+  OCEAN_BIOME_OPEN_COASTAL_BLEND_HALF_WIDTH_METERS,
+  OCEAN_BIOME_OPEN_MAX_MOUNTAIN_ADDITIVE_HEIGHT,
+  OCEAN_BIOME_LAND_BLEND_HALF_WIDTH_METERS,
+  OCEAN_BIOME_LAND_BLEND_PRECHECK_HEIGHT,
+  OCEAN_BIOME_VARIANTS,
+  BASE_MOUNTAIN_HUMIDITY_LOOKUP,
+  SIMPLE_MOUNTAIN_HIGH_ALTITUDE_FADE_METERS,
+  SIMPLE_MOUNTAIN_SELECTOR_BLEND_HALF_WIDTH_METERS,
+  SIMPLE_MOUNTAIN_SELECTOR_PRECHECK_MARGIN,
+  SIMPLE_MOUNTAIN_SELECTOR_PRIMARY_SCALE,
+  SIMPLE_MOUNTAIN_SELECTOR_SECONDARY_SCALE,
+  SIMPLE_MOUNTAIN_TARGET_SHARE,
+  WETLAND_ELEVATION_FADE_BAND_METERS,
+  WETLAND_MOUNTAIN_HEIGHT_MAX_METERS,
+} from "./world/biomes/constants.js";
+import { buildBiomeRegistry } from "./world/biomes/registry.js";
 import { PROTOCOL_VERSION } from "../shared/protocol.js";
 
 const canvas = document.getElementById("scene");
 const seedEl = document.getElementById("seed");
 const xyzEl = document.getElementById("xyz");
+const feetYEl = document.getElementById("feet-y");
+const eyeYEl = document.getElementById("eye-y");
+const waterYEl = document.getElementById("water-y");
+const playerYEl = document.getElementById("player-y");
+const cameraYEl = document.getElementById("camera-y");
+const velYEl = document.getElementById("vel-y");
+const groundedEl = document.getElementById("grounded");
+const moveVersionEl = document.getElementById("move-version");
 const chunkEl = document.getElementById("chunk");
 
 const biomeEl = document.getElementById("biome");
 const temperatureTypeEl = document.getElementById("temperature-type");
+const humidityTypeEl = document.getElementById("humidity-type");
 const fpsEl = document.getElementById("fps");
 const clockTimeEl = document.getElementById("clock-time");
 const startupLoadingEl = document.getElementById("startup-loading");
@@ -38,6 +106,8 @@ const traceLog = document.getElementById("trace-log");
 const traceToggleBtn = document.getElementById("trace-toggle");
 const traceClearBtn = document.getElementById("trace-clear");
 const traceOpenBtn = document.getElementById("action-trace-open");
+const minimapCanvas = document.getElementById("minimap-canvas");
+const minimapCtx = minimapCanvas?.getContext("2d");
 const LOCAL_COMMAND_HELP_URL = new URL("./commandHelp.json", import.meta.url);
 const FALLBACK_FRONTEND_COMMAND_HELP_LINES = [
   "/help <command>",
@@ -47,6 +117,8 @@ const FALLBACK_FRONTEND_COMMAND_HELP_LINES = [
   "/commit <message hint>",
   "/tp <biome-name>",
   "tp <biome-name>",
+  "/tp <x> <z>",
+  "tp <x> <z>",
 ];
 const FALLBACK_WORLD_COMMAND_HELP_LINES = [
   "/world help",
@@ -71,6 +143,16 @@ let startupLoadingDismissed = false;
 let lastVisualSampleAtMs = -Infinity;
 let lastVisualSampleX = Number.NaN;
 let lastVisualSampleZ = Number.NaN;
+let minimapImageData = null;
+let minimapPixelWidth = 0;
+let minimapPixelHeight = 0;
+let minimapPixelData = null;
+let lastMinimapUpdateAt = -Infinity;
+let lastMinimapSampleX = Number.NaN;
+let lastMinimapSampleZ = Number.NaN;
+let lastMinimapSampleYaw = Number.NaN;
+let lastMinimapSampleZoomIndex = Number.NaN;
+let minimapNeedsRender = true;
 let activeChunkBuildJobId = 0;
 let chunkBuildInProgress = false;
 let chunkBuildContext = null;
@@ -218,7 +300,7 @@ const DEFAULT_WORLD = {
     canopyColor: "#4a8953",
   },
   water: {
-    level: 1.5,
+    level: 0.0,
     colorHex: "#4a93c7",
     opacity: 0.6,
   },
@@ -229,286 +311,7 @@ const DEFAULT_WORLD = {
   landmarks: [],
 };
 
-const BIOME_VARIANTS = {
-  cold: ["glacier", "tundra", "taiga"],
-  temperate: ["meadow", "forest", "wetland"],
-  hot: ["desert", "savanna", "badlands"],
-};
-
-const BIOME_BLEND_TRANSITION_WIDTH_METERS = 30;
-const BIOME_BLEND_HALF_WIDTH_METERS = BIOME_BLEND_TRANSITION_WIDTH_METERS * 0.5;
-const BIOME_BLEND_GRADIENT_STEP_METERS = 2;
-const BIOME_BLEND_PRECHECK_MARGIN = 0.05;
-const MOUNTAIN_BIOME_BORDER_BLEND_HEIGHT_METERS = 24;
-const BIOME_BLEND_MAX_SLOTS = 8;
-const MOUNTAIN_BIOME_SUFFIX = "_mountains";
-
-const BIOME_DEFS = {
-  glacier: {
-    id: "glacier",
-    label: "Glacier",
-    category: "cold",
-    groundColor: new THREE.Color("#ecf6ff"),
-    waterColor: new THREE.Color("#8fc5eb"),
-    fogColor: new THREE.Color("#dceefe"),
-    fogDensityMultiplier: 1.2,
-    terrainProfile: {
-      noiseAlgorithm: "ridged",
-      noiseScaleMultiplier: 0.82,
-      baseHeightMultiplier: 1.18,
-      ridgeScaleMultiplier: 1.35,
-      ridgeHeightMultiplier: 1.55,
-      octaves: 4,
-      lacunarity: 2.0,
-      gain: 0.5,
-      secondaryAmount: 0.06,
-    },
-    hasTrees: false,
-  },
-  tundra: {
-    id: "tundra",
-    label: "Tundra",
-    category: "cold",
-    groundColor: new THREE.Color("#b7b7a3"),
-    waterColor: new THREE.Color("#6e8fa1"),
-    fogColor: new THREE.Color("#c7ccd0"),
-    fogDensityMultiplier: 1.08,
-    terrainProfile: {
-      noiseAlgorithm: "hybrid",
-      noiseScaleMultiplier: 0.95,
-      baseHeightMultiplier: 0.88,
-      ridgeScaleMultiplier: 1.05,
-      ridgeHeightMultiplier: 0.62,
-      octaves: 4,
-      lacunarity: 1.9,
-      gain: 0.52,
-      secondaryAmount: 0.08,
-    },
-    hasTrees: false,
-  },
-  taiga: {
-    id: "taiga",
-    label: "Taiga",
-    category: "cold",
-    groundColor: new THREE.Color("#718292"),
-    waterColor: new THREE.Color("#567e9b"),
-    fogColor: new THREE.Color("#9db5c5"),
-    fogDensityMultiplier: 1.12,
-    terrainProfile: {
-      noiseAlgorithm: "fbm_ridged",
-      noiseScaleMultiplier: 1.08,
-      baseHeightMultiplier: 1.02,
-      ridgeScaleMultiplier: 1.2,
-      ridgeHeightMultiplier: 0.9,
-      octaves: 5,
-      lacunarity: 1.95,
-      gain: 0.49,
-      secondaryAmount: 0.05,
-    },
-    hasTrees: true,
-    treeStyle: "conifer",
-    treeDensityMultiplier: 0.8,
-    trunkTint: new THREE.Color("#6d5844"),
-    canopyTint: new THREE.Color("#6aa296"),
-  },
-  meadow: {
-    id: "meadow",
-    label: "Meadow",
-    category: "temperate",
-    groundColor: new THREE.Color("#bfd05a"),
-    waterColor: new THREE.Color("#5fa7d4"),
-    fogColor: new THREE.Color("#d3ecd5"),
-    fogDensityMultiplier: 0.92,
-    terrainProfile: {
-      noiseAlgorithm: "billow",
-      noiseScaleMultiplier: 1.18,
-      baseHeightMultiplier: 0.76,
-      ridgeScaleMultiplier: 0.9,
-      ridgeHeightMultiplier: 0.36,
-      octaves: 4,
-      lacunarity: 1.85,
-      gain: 0.55,
-      secondaryAmount: 0.1,
-    },
-    hasTrees: true,
-    treeStyle: "broadleaf",
-    treeDensityMultiplier: 0.38,
-    trunkTint: new THREE.Color("#6b5138"),
-    canopyTint: new THREE.Color("#8dba59"),
-  },
-  forest: {
-    id: "forest",
-    label: "Forest",
-    category: "temperate",
-    groundColor: new THREE.Color("#5b7e4d"),
-    waterColor: new THREE.Color("#4d88b7"),
-    fogColor: new THREE.Color("#b9d2b1"),
-    fogDensityMultiplier: 1.05,
-    terrainProfile: {
-      noiseAlgorithm: "hybrid",
-      noiseScaleMultiplier: 1.04,
-      baseHeightMultiplier: 0.98,
-      ridgeScaleMultiplier: 1.08,
-      ridgeHeightMultiplier: 0.72,
-      octaves: 5,
-      lacunarity: 1.92,
-      gain: 0.5,
-      secondaryAmount: 0.12,
-    },
-    hasTrees: true,
-    treeStyle: "broadleaf",
-    treeDensityMultiplier: 1.1,
-    trunkTint: new THREE.Color("#664c34"),
-    canopyTint: new THREE.Color("#3f8144"),
-  },
-  wetland: {
-    id: "wetland",
-    label: "Wetland",
-    category: "temperate",
-    groundColor: new THREE.Color("#4f7f74"),
-    waterColor: new THREE.Color("#3f796b"),
-    fogColor: new THREE.Color("#a9c6b8"),
-    fogDensityMultiplier: 1.35,
-    terrainProfile: {
-      noiseAlgorithm: "warped",
-      noiseScaleMultiplier: 1.34,
-      baseHeightMultiplier: 0.58,
-      ridgeScaleMultiplier: 0.84,
-      ridgeHeightMultiplier: 0.24,
-      octaves: 4,
-      lacunarity: 1.78,
-      gain: 0.58,
-      warpStrength: 0.28,
-      warpScaleMultiplier: 1.5,
-      secondaryAmount: 0.06,
-    },
-    hasTrees: true,
-    treeStyle: "wetland",
-    treeDensityMultiplier: 0.72,
-    trunkTint: new THREE.Color("#5a4637"),
-    canopyTint: new THREE.Color("#5f8f58"),
-  },
-  desert: {
-    id: "desert",
-    label: "Desert",
-    category: "hot",
-    groundColor: new THREE.Color("#efd48e"),
-    waterColor: new THREE.Color("#64b3c7"),
-    fogColor: new THREE.Color("#f0d7ab"),
-    fogDensityMultiplier: 0.86,
-    terrainProfile: {
-      noiseAlgorithm: "billow",
-      noiseScaleMultiplier: 0.86,
-      baseHeightMultiplier: 0.82,
-      ridgeScaleMultiplier: 1.26,
-      ridgeHeightMultiplier: 0.42,
-      octaves: 4,
-      lacunarity: 2.04,
-      gain: 0.47,
-      secondaryAmount: 0.16,
-    },
-    hasTrees: false,
-  },
-  savanna: {
-    id: "savanna",
-    label: "Savanna",
-    category: "hot",
-    groundColor: new THREE.Color("#b99b4a"),
-    waterColor: new THREE.Color("#5f9db5"),
-    fogColor: new THREE.Color("#e2cb8f"),
-    fogDensityMultiplier: 0.95,
-    terrainProfile: {
-      noiseAlgorithm: "fbm_ridged",
-      noiseScaleMultiplier: 0.98,
-      baseHeightMultiplier: 0.9,
-      ridgeScaleMultiplier: 1.0,
-      ridgeHeightMultiplier: 0.5,
-      octaves: 4,
-      lacunarity: 1.9,
-      gain: 0.5,
-      secondaryAmount: 0.1,
-    },
-    hasTrees: true,
-    treeStyle: "savanna",
-    treeDensityMultiplier: 0.48,
-    trunkTint: new THREE.Color("#73523a"),
-    canopyTint: new THREE.Color("#9ab248"),
-  },
-  badlands: {
-    id: "badlands",
-    label: "Badlands",
-    category: "hot",
-    groundColor: new THREE.Color("#b7654c"),
-    waterColor: new THREE.Color("#8f6d58"),
-    fogColor: new THREE.Color("#d0a282"),
-    fogDensityMultiplier: 1.02,
-    terrainProfile: {
-      noiseAlgorithm: "ridged",
-      noiseScaleMultiplier: 1.12,
-      baseHeightMultiplier: 1.08,
-      ridgeScaleMultiplier: 1.42,
-      ridgeHeightMultiplier: 1.18,
-      octaves: 4,
-      lacunarity: 2.08,
-      gain: 0.48,
-      secondaryAmount: 0.08,
-    },
-    hasTrees: false,
-  },
-};
-
-function blendBiomeColorToMountain(baseColor, amount, lift = 0) {
-  const target = new THREE.Color(baseColor);
-  target.lerp(new THREE.Color("#7d8790"), amount);
-  if (lift !== 0) {
-    target.r = clampNumber(target.r + lift, 0, 1, target.r);
-    target.g = clampNumber(target.g + lift, 0, 1, target.g);
-    target.b = clampNumber(target.b + lift, 0, 1, target.b);
-  }
-  return target;
-}
-
-function createMountainTerrainProfile(baseProfile) {
-  const profile = { ...(baseProfile || {}) };
-  const baseOctaves = Math.max(1, Math.floor(profile.octaves ?? 4));
-  return {
-    ...profile,
-    noiseAlgorithm: profile.noiseAlgorithm === "billow" ? "hybrid" : profile.noiseAlgorithm ?? "fbm_ridged",
-    noiseScaleMultiplier: (profile.noiseScaleMultiplier ?? 1) * 0.9,
-    baseHeightMultiplier: (profile.baseHeightMultiplier ?? 1) * 1.16,
-    ridgeScaleMultiplier: (profile.ridgeScaleMultiplier ?? 1) * 1.18,
-    ridgeHeightMultiplier: (profile.ridgeHeightMultiplier ?? 1) * 1.35,
-    octaves: Math.min(6, baseOctaves + 1),
-    lacunarity: Number.isFinite(profile.lacunarity) ? profile.lacunarity : 1.95,
-    gain: Number.isFinite(profile.gain) ? profile.gain : 0.5,
-    warpStrength: Math.max(0.12, Number(profile.warpStrength) || 0),
-    warpScaleMultiplier: Number.isFinite(profile.warpScaleMultiplier) ? profile.warpScaleMultiplier : 1.7,
-    secondaryAmount: (profile.secondaryAmount ?? 0) + 0.05,
-  };
-}
-
-function createMountainBiomeVariant(baseBiome) {
-  const mountainId = `${baseBiome.id}${MOUNTAIN_BIOME_SUFFIX}`;
-  return {
-    ...baseBiome,
-    id: mountainId,
-    baseBiomeId: baseBiome.id,
-    isMountainVariant: true,
-    label: `${baseBiome.label} Mountains`,
-    groundColor: blendBiomeColorToMountain(baseBiome.groundColor, 0.28, 0.015),
-    waterColor: blendBiomeColorToMountain(baseBiome.waterColor, 0.12, 0.02),
-    fogColor: blendBiomeColorToMountain(baseBiome.fogColor, 0.16, 0.025),
-    fogDensityMultiplier: (baseBiome.fogDensityMultiplier ?? 1) * 1.08,
-    terrainProfile: createMountainTerrainProfile(baseBiome.terrainProfile),
-    treeDensityMultiplier: (baseBiome.treeDensityMultiplier ?? 1) * 0.7,
-    trunkTint: baseBiome.trunkTint ? blendBiomeColorToMountain(baseBiome.trunkTint, 0.1) : baseBiome.trunkTint,
-    canopyTint: baseBiome.canopyTint ? blendBiomeColorToMountain(baseBiome.canopyTint, 0.2) : baseBiome.canopyTint,
-  };
-}
-
-for (const biome of Object.values({ ...BIOME_DEFS })) {
-  BIOME_DEFS[`${biome.id}${MOUNTAIN_BIOME_SUFFIX}`] = createMountainBiomeVariant(biome);
-}
+const { BIOME_DEFS, BUMPY_BIOME_SUBDIVISIONS } = buildBiomeRegistry({ THREE, clampNumber });
 
 const DEFAULT_STATE = {
   seed: BOOT_SEED,
@@ -527,14 +330,13 @@ const DEFAULT_STATE = {
 };
 
 const LAND_TARGET_CLEARANCE_Y = 0.4;
-const PLAYER_TARGET_HEIGHT_OFFSET = 3;
+const PLAYER_HEIGHT = 1.7;
 const BIOME_TP_MAX_ATTEMPTS = 5000;
 const BIOME_TP_EXTRA_RINGS_AFTER_FIRST_MATCH = 6;
 const BIOME_CENTER_TARGET_SCORE = 12;
 const BIOME_TP_SUNFLOWER_GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
-const SPAWN_SEARCH_MAX_ATTEMPTS = 700;
-const SPAWN_SEARCH_MAX_RADIUS = 1536;
-const SPAWN_SEARCH_STEP = 24;
+const SPAWN_SEARCH_MAX_DISTANCE = DEFAULT_SPAWN_SEARCH_MAX_DISTANCE;
+const SPAWN_SEARCH_STEP = DEFAULT_SPAWN_SEARCH_STEP;
 const SPAWN_MAX_SLOPE_SCORE = 3.4;
 
 const state = loadPersistedState({
@@ -560,8 +362,19 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(state.world.fog.colorHex, state.world.fog.density);
 scene.background = new THREE.Color("#8fc4ff");
+const originOffset = new THREE.Vector3();
+const worldGroup = new THREE.Group();
+scene.add(worldGroup);
+const ORIGIN_RECENTER_GRID_METERS = 4096;
+const ORIGIN_RECENTER_THRESHOLD_METERS = Math.floor(ORIGIN_RECENTER_GRID_METERS * 0.75);
+const renderPlayerPosition = new THREE.Vector3();
+const renderCameraPosition = new THREE.Vector3();
+const renderTargetPosition = new THREE.Vector3();
+worldGroup.position.set(-originOffset.x, -originOffset.y, -originOffset.z);
 
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
+const CAMERA_NEAR_METERS = 0.1;
+const CAMERA_FAR_BASE_METERS = 10000;
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, CAMERA_NEAR_METERS, CAMERA_FAR_BASE_METERS);
 
 const hemiLight = new THREE.HemisphereLight(0xc6e0ff, 0x7f9974, 0.62);
 scene.add(hemiLight);
@@ -605,6 +418,20 @@ const skyUniforms = {
   groundColor: { value: new THREE.Color("#e6f2ff") },
   sunColor: { value: new THREE.Color("#fff6d9") },
   sunDirection: { value: new THREE.Vector3(0.6, 0.8, 0.2).normalize() },
+  moonColor: { value: new THREE.Color("#b2c8f4") },
+  moonDirection: { value: new THREE.Vector3(-0.6, 0.35, -0.2).normalize() },
+  sunDiscPower: { value: 256 },
+  sunGlowPower: { value: 10 },
+  sunGlowStrength: { value: 0.34 },
+  moonDiscPower: { value: 280 },
+  moonStrength: { value: 0.8 },
+  sunRayStrength: { value: 0 },
+  moonRayStrength: { value: 0 },
+  skyTime: { value: 0 },
+  waterLevel: { value: state.world.water.level },
+  cameraWorldPos: { value: new THREE.Vector3(0, PLAYER_HEIGHT, 0) },
+  underwaterSkyMix: { value: 0 },
+  underwaterFogTint: { value: new THREE.Color(state.world.fog.colorHex) },
 };
 const sky = new THREE.Mesh(
   new THREE.SphereGeometry(6000, 48, 24),
@@ -626,17 +453,151 @@ const sky = new THREE.Mesh(
       uniform vec3 groundColor;
       uniform vec3 sunColor;
       uniform vec3 sunDirection;
+      uniform vec3 moonColor;
+      uniform vec3 moonDirection;
+      uniform float sunDiscPower;
+      uniform float sunGlowPower;
+      uniform float sunGlowStrength;
+      uniform float moonDiscPower;
+      uniform float moonStrength;
+      uniform float sunRayStrength;
+      uniform float moonRayStrength;
+      uniform float skyTime;
+      uniform float waterLevel;
+      uniform vec3 cameraWorldPos;
+      uniform float underwaterSkyMix;
+      uniform vec3 underwaterFogTint;
       varying vec3 vWorldPosition;
+
+      vec2 sampleWaveGradient(vec2 p, float t) {
+        float phaseA = dot(p, vec2(0.19, 0.12));
+        float phaseB = dot(p, vec2(-0.15, 0.17));
+        float phaseC = dot(p, vec2(0.31, -0.13));
+        vec2 grad = vec2(0.0);
+        grad += vec2(0.19, 0.12) * (cos(phaseA) * cos(t * 0.55)) * 0.42;
+        grad += vec2(-0.15, 0.17) * (cos(phaseB) * sin(t * 0.73)) * 0.36;
+        grad += vec2(0.31, -0.13) * (cos(phaseC + sin(t * 0.34) * 0.35) * cos(t * 0.91)) * 0.22;
+        return grad * 2.35;
+      }
+
+      vec3 sampleWaveNormal(vec2 p, float t) {
+        vec2 g = sampleWaveGradient(p, t);
+        return normalize(vec3(-g.x, 1.0, -g.y));
+      }
+
+      float sampleCausticPulse(vec2 p, float t) {
+        float c1 = sin(dot(p, vec2(0.73, -0.51))) * cos(t * 0.78);
+        float c2 = sin(dot(p, vec2(-0.94, 0.79)) + sin(t * 0.31) * 0.42) * sin(t * 0.63);
+        float c3 = sin(dot(p, vec2(0.47, 1.03))) * cos(t * 0.95);
+        float mixVal = c1 * 0.45 + c2 * 0.35 + c3 * 0.2;
+        return smoothstep(0.3, 1.0, 0.5 + 0.5 * mixVal);
+      }
+
+      float sampleRefractedBeam(vec3 viewDir, vec3 lightDir, vec2 hit, float t, float tightPower, float softPower) {
+        vec2 drift = vec2(sin(t * 0.37), cos(t * 0.29));
+        vec3 nA = sampleWaveNormal(hit, t);
+        vec3 nB = sampleWaveNormal(hit + drift * 6.0, t + 1.7);
+        vec3 nC = sampleWaveNormal(hit + vec2(-drift.y, drift.x) * 9.0, t + 3.4);
+        vec3 refrA = refract(-lightDir, nA, 1.0 / 1.333);
+        vec3 refrB = refract(-lightDir, nB, 1.0 / 1.333);
+        vec3 refrC = refract(-lightDir, nC, 1.0 / 1.333);
+        float alignA = max(dot(viewDir, normalize(-refrA)), 0.0);
+        float alignB = max(dot(viewDir, normalize(-refrB)), 0.0);
+        float alignC = max(dot(viewDir, normalize(-refrC)), 0.0);
+        float tight = pow(alignA, tightPower) * 0.72 + pow(alignB, tightPower * 0.96) * 0.2 + pow(alignC, tightPower * 0.92) * 0.08;
+        float soft = pow(max(alignA, alignB), softPower) * 0.06 + pow(alignC, softPower * 0.92) * 0.035;
+        float sheet = pow(max(dot(sampleWaveNormal(hit, t), -lightDir), 0.0), 8.0) * 0.05;
+        float pulse = sampleCausticPulse(hit * 0.18, t);
+        return (tight + soft + sheet) * mix(0.82, 1.62, pulse);
+      }
+
+      vec2 orbitOffset(vec2 origin, float radius, float angle, float wobbleFreq, float wobbleAmount) {
+        vec2 dir = vec2(cos(angle), sin(angle));
+        vec2 wobble = vec2(
+          sin(angle * wobbleFreq + origin.x * 0.09),
+          cos(angle * (wobbleFreq * 0.87) + origin.y * 0.07)
+        ) * wobbleAmount;
+        return origin + dir * radius + wobble;
+      }
+
       void main() {
-        vec3 dir = normalize(vWorldPosition);
+        vec3 dir = normalize(vWorldPosition - cameraWorldPos);
         float heightMix = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
         float nearHorizon = 1.0 - abs(dir.y);
         float horizonBoost = smoothstep(0.0, 0.7, nearHorizon);
         vec3 col = mix(groundColor, horizonColor, smoothstep(0.04, 0.56, heightMix));
         col = mix(col, topColor, smoothstep(0.5, 1.0, heightMix));
-        float sunAmount = pow(max(dot(dir, normalize(sunDirection)), 0.0), 256.0);
-        float sunGlow = pow(max(dot(dir, normalize(sunDirection)), 0.0), 10.0) * 0.34;
+        vec3 sunDir = normalize(sunDirection);
+        vec3 moonDir = normalize(moonDirection);
+        float sunDot = max(dot(dir, sunDir), 0.0);
+        float sunAmount = pow(sunDot, sunDiscPower);
+        float sunGlow = pow(sunDot, sunGlowPower) * sunGlowStrength;
         col += sunColor * (sunAmount + sunGlow);
+        float moonDot = max(dot(dir, moonDir), 0.0);
+        float moonDisc = pow(moonDot, moonDiscPower) * moonStrength;
+        col += moonColor * moonDisc;
+
+        bool raysActive = (sunRayStrength > 0.0001 || moonRayStrength > 0.0001);
+        bool cameraUnderwater = cameraWorldPos.y < waterLevel - 0.01;
+        if (raysActive && cameraUnderwater && dir.y > 0.0005) {
+          float travelToSurface = (waterLevel - cameraWorldPos.y) / max(dir.y, 0.0005);
+          vec2 surfaceHit = cameraWorldPos.xz + dir.xz * travelToSurface;
+          vec2 rayUv = surfaceHit * 3.05;
+          float waveTime = skyTime * 0.72;
+          float mediumFade = exp(-travelToSurface * 0.018);
+          if (sunRayStrength > 0.0001) {
+            vec2 sunOriginA = vec2(8.0, -6.0);
+            vec2 sunOriginB = vec2(-10.0, 7.0);
+            vec2 sunOriginC = vec2(13.0, 10.0);
+            vec2 sunOriginD = vec2(-4.0, -13.0);
+            vec2 sunOriginE = vec2(18.0, 2.0);
+            vec2 rayJitterA = orbitOffset(sunOriginA, 4.2, waveTime * 0.41, 2.8, 1.0);
+            vec2 rayJitterB = orbitOffset(sunOriginB, 3.9, -waveTime * 0.34 + 1.2, 2.2, 0.88);
+            vec2 rayJitterC = orbitOffset(sunOriginC, 3.7, waveTime * 0.48 - 0.8, 3.1, 0.96);
+            vec2 rayJitterD = orbitOffset(sunOriginD, 3.5, -waveTime * 0.37 + 0.4, 2.5, 0.84);
+            vec2 rayJitterE = orbitOffset(sunOriginE, 3.3, waveTime * 0.44 + 2.3, 2.9, 0.82);
+            float sunMaskA = smoothstep(0.88, 0.994, sampleCausticPulse((rayUv + rayJitterA) * 0.14, waveTime));
+            float sunMaskB = smoothstep(0.88, 0.994, sampleCausticPulse((rayUv + rayJitterB) * 0.14, waveTime + 1.8));
+            float sunMaskC = smoothstep(0.88, 0.994, sampleCausticPulse((rayUv + rayJitterC) * 0.14, waveTime + 3.3));
+            float sunMaskD = smoothstep(0.88, 0.994, sampleCausticPulse((rayUv + rayJitterD) * 0.14, waveTime + 4.9));
+            float sunMaskE = smoothstep(0.88, 0.994, sampleCausticPulse((rayUv + rayJitterE) * 0.14, waveTime + 6.2));
+            float sunBeam =
+              sampleRefractedBeam(dir, sunDir, rayUv + rayJitterA, waveTime + 0.9, 24.0, 5.9) * sunMaskA * 0.31 +
+              sampleRefractedBeam(dir, sunDir, rayUv + rayJitterB, waveTime + 2.1, 22.8, 5.5) * sunMaskB * 0.22 +
+              sampleRefractedBeam(dir, sunDir, rayUv + rayJitterC, waveTime + 3.4, 24.7, 6.1) * sunMaskC * 0.18 +
+              sampleRefractedBeam(dir, sunDir, rayUv + rayJitterD, waveTime + 4.8, 23.4, 5.7) * sunMaskD * 0.16 +
+              sampleRefractedBeam(dir, sunDir, rayUv + rayJitterE, waveTime + 6.0, 25.1, 6.3) * sunMaskE * 0.13;
+            float sunShaftField =
+              smoothstep(0.91, 0.997, sampleCausticPulse((rayUv + orbitOffset(vec2(0.0), 2.6, waveTime * 0.39, 2.4, 0.52)) * 0.18, waveTime + 2.7)) *
+              pow(max(dot(sampleWaveNormal(rayUv + orbitOffset(vec2(0.0), 2.2, -waveTime * 0.31, 2.1, 0.4), waveTime), -sunDir), 0.0), 5.0);
+            sunBeam += sunShaftField * (0.025 + 0.07 * pow(max(dir.y, 0.0), 1.4));
+            col += sunColor * (sunBeam * sunRayStrength * mediumFade);
+          }
+          if (moonRayStrength > 0.0001) {
+            vec2 moonOrigin = vec2(38.0, -22.0);
+            vec2 moonBase = rayUv + orbitOffset(moonOrigin, 3.7, -waveTime * 0.26 + 0.6, 2.0, 0.8);
+            vec2 moonJitterA = orbitOffset(vec2(0.0), 2.8, waveTime * 0.35 + 0.7, 2.6, 0.64);
+            vec2 moonJitterB = orbitOffset(vec2(9.0, -8.0), 2.6, -waveTime * 0.31 + 1.4, 2.3, 0.6);
+            vec2 moonJitterC = orbitOffset(vec2(-11.0, 10.0), 2.5, waveTime * 0.41 - 0.9, 2.9, 0.62);
+            vec2 moonJitterD = orbitOffset(vec2(4.0, 13.0), 2.3, -waveTime * 0.29 + 2.2, 2.4, 0.58);
+            float moonMaskA = smoothstep(0.89, 0.995, sampleCausticPulse((moonBase + moonJitterA) * 0.14, waveTime + 5.0));
+            float moonMaskB = smoothstep(0.89, 0.995, sampleCausticPulse((moonBase + moonJitterB) * 0.14, waveTime + 6.4));
+            float moonMaskC = smoothstep(0.89, 0.995, sampleCausticPulse((moonBase + moonJitterC) * 0.14, waveTime + 7.8));
+            float moonMaskD = smoothstep(0.89, 0.995, sampleCausticPulse((moonBase + moonJitterD) * 0.14, waveTime + 9.1));
+            float moonBeam =
+              sampleRefractedBeam(dir, moonDir, moonBase + moonJitterA, waveTime + 11.0, 23.0, 5.6) * moonMaskA * 0.33 +
+              sampleRefractedBeam(dir, moonDir, moonBase + moonJitterB, waveTime + 12.6, 21.8, 5.2) * moonMaskB * 0.25 +
+              sampleRefractedBeam(dir, moonDir, moonBase + moonJitterC, waveTime + 14.1, 20.9, 4.9) * moonMaskC * 0.22 +
+              sampleRefractedBeam(dir, moonDir, moonBase + moonJitterD, waveTime + 15.4, 22.2, 5.35) * moonMaskD * 0.18;
+            float moonShaftField =
+              smoothstep(0.92, 0.997, sampleCausticPulse((moonBase + orbitOffset(vec2(0.0), 2.0, -waveTime * 0.36, 2.2, 0.45)) * 0.17, waveTime + 6.2)) *
+              pow(max(dot(sampleWaveNormal(moonBase + orbitOffset(vec2(0.0), 1.8, waveTime * 0.32, 2.0, 0.36), waveTime + 2.0), -moonDir), 0.0), 5.1);
+            moonBeam += moonShaftField * (0.02 + 0.06 * pow(max(dir.y, 0.0), 1.2));
+            col += moonColor * (moonBeam * moonRayStrength * mediumFade);
+          }
+        }
+        col = mix(col, underwaterFogTint, clamp(underwaterSkyMix, 0.0, 1.0));
+        col *= mix(1.0, 0.42, clamp(underwaterSkyMix, 0.0, 1.0));
         col += vec3(0.09, 0.12, 0.16) * horizonBoost * 0.12;
         gl_FragColor = vec4(col, 1.0);
       }
@@ -704,7 +665,7 @@ if (cloudTexture) {
     sprite.scale.set(size * 1.7, size, 1);
     cloudGroup.add(sprite);
   }
-  scene.add(cloudGroup);
+  worldGroup.add(cloudGroup);
 }
 
 const NIGHT_TINT_COLOR = new THREE.Color("#000000");
@@ -720,6 +681,7 @@ const water = new THREE.Mesh(
     metalness: 0.03,
     clearcoat: 0.6,
     clearcoatRoughness: 0.25,
+    side: THREE.DoubleSide,
   })
 );
 const WATER_FADE_START_METERS = 1600;
@@ -727,6 +689,49 @@ const WATER_FADE_END_METERS = 5200;
 const WATER_NIGHT_DARKEN_STRENGTH = 0.95;
 const WATER_NIGHT_DARKEN_START_METERS = 0;
 const WATER_NIGHT_DARKEN_END_METERS = WATER_FADE_END_METERS;
+const UNDERWATER_SURFACE_BLEND_START_METERS = -0.18;
+const UNDERWATER_SURFACE_BLEND_FULL_METERS = 1.05;
+const UNDERWATER_ENTRY_SUBMERSION = 0.18;
+const UNDERWATER_EXIT_SUBMERSION = 0.08;
+const UNDERWATER_ADAPT_SECONDS = 4.6;
+const UNDERWATER_FOG_DENSITY_MULTIPLIER_ENTRY = 7.2;
+const UNDERWATER_FOG_DENSITY_MULTIPLIER_ADAPTED = 4.1;
+const UNDERWATER_FOG_DARKEN_ENTRY = 0.68;
+const UNDERWATER_FOG_DARKEN_ADAPTED = 0.92;
+const UNDERWATER_FOG_WATER_COLOR_MIX = 0.82;
+const UNDERWATER_FOG_WATER_COLOR_MIX_NIGHT = 0.2;
+const UNDERWATER_FOG_NIGHT_SKY_MIX = 0.92;
+const UNDERWATER_FOG_NIGHT_DARKEN = 0.06;
+const UNDERWATER_FOG_NIGHT_BLACKOUT_START_CYCLE = 18.5 / 24;
+const UNDERWATER_FOG_NIGHT_BLACKOUT_FULL_CYCLE = 20 / 24;
+const UNDERWATER_FOG_DAWN_RECOVER_START_CYCLE = 5 / 24;
+const UNDERWATER_FOG_DAWN_RECOVER_END_CYCLE = 6.5 / 24;
+const UNDERWATER_FOG_NIGHT_SURFACE_BLEND_BOOST = 0.9;
+const UNDERWATER_FOG_NIGHT_INSTANT_ENTRY_START_METERS = -0.02;
+const UNDERWATER_FOG_NIGHT_INSTANT_ENTRY_END_METERS = 0.02;
+const UNDERWATER_TERRAIN_NIGHT_ENTRY_BLEND_FLOOR = 0.9;
+const UNDERWATER_BLUR_PX_ENTRY = 3.4;
+const UNDERWATER_BLUR_PX_ADAPTED = 0.55;
+const UNDERWATER_SATURATION_ENTRY = 0.72;
+const UNDERWATER_SATURATION_ADAPTED = 0.92;
+const UNDERWATER_MIN_FOG_DENSITY = 0.004;
+const UNDERWATER_MAX_FOG_DENSITY = 0.26;
+const UNDERWATER_SURFACE_LIGHT_CUTOFF_DEPTH_METERS = 100;
+const UNDERWATER_DEPTH_FOG_MULTIPLIER_MAX = 2.2;
+const UNDERWATER_DEPTH_DARKEN_AT_CUTOFF = 0.18;
+const UNDERWATER_DEPTH_DARKEN_AT_ABYSS = 0.08;
+const UNDERWATER_SUN_DISC_POWER_AT_CUTOFF = 1600;
+const UNDERWATER_SUN_GLOW_STRENGTH_AT_CUTOFF = 0.015;
+const UNDERWATER_MOON_SCALE_AT_CUTOFF = 0.5;
+const UNDERWATER_FAR_TERRAIN_FADE_START_SUBMERSION = 0.08;
+const UNDERWATER_FAR_TERRAIN_FADE_END_SUBMERSION = 0.7;
+const UNDERWATER_SUN_RAY_STRENGTH_MAX = 0.95;
+const UNDERWATER_MOON_RAY_STRENGTH_MAX = 0.72;
+const UNDERWATER_RAY_RAMP_START_DEPTH_METERS = 0.02;
+const UNDERWATER_RAY_RAMP_FULL_DEPTH_METERS = 0.2;
+const UNDERWATER_TERRAIN_TINT_ADAPT_SECONDS = 1.0;
+const UNDERWATER_TERRAIN_TINT_BLEND_NEAR_MAX = 0.9;
+const UNDERWATER_TERRAIN_TINT_BLEND_MID_MAX = 0.72;
 const waterShaderState = { shader: null };
 if (water.material) {
   water.material.onBeforeCompile = (shader) => {
@@ -737,6 +742,9 @@ if (water.material) {
     shader.uniforms.uWaterNightStart = { value: WATER_NIGHT_DARKEN_START_METERS };
     shader.uniforms.uWaterNightEnd = { value: WATER_NIGHT_DARKEN_END_METERS };
     shader.uniforms.uWaterNightTint = { value: NIGHT_TINT_COLOR };
+    shader.uniforms.uWaterUnderwaterMix = { value: 0 };
+    shader.uniforms.uWaterUndersideTint = { value: new THREE.Color(state.world.water.colorHex) };
+    shader.uniforms.uWaterTime = { value: 0 };
     waterShaderState.shader = shader;
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -762,6 +770,9 @@ if (water.material) {
       uniform float uWaterNightStart;
       uniform float uWaterNightEnd;
       uniform vec3 uWaterNightTint;
+      uniform float uWaterUnderwaterMix;
+      uniform vec3 uWaterUndersideTint;
+      uniform float uWaterTime;
       varying vec3 vWorldPos;
       `
       )
@@ -770,10 +781,35 @@ if (water.material) {
         `
       vec4 diffuseColor = vec4( diffuse, opacity );
       float waterFade = smoothstep(uWaterFadeStart, uWaterFadeEnd, length(vWorldPos.xz - cameraPosition.xz));
-      diffuseColor.a *= clamp(1.0 - waterFade, 0.0, 1.0);
       float waterNightFade = smoothstep(uWaterNightStart, uWaterNightEnd, length(vWorldPos.xz - cameraPosition.xz));
       float waterNightMix = clamp(uWaterNightAmount * uWaterNightStrength * mix(0.35, 1.0, waterNightFade), 0.0, 1.0);
+      float nightAmount = clamp(uWaterNightAmount, 0.0, 1.0);
+      float undersideNightDarken = mix(1.0, 0.24, nightAmount);
+      float undersideNightTint = mix(0.0, 0.72, nightAmount);
+      float causticNightScale = mix(1.0, 0.24, nightAmount);
       diffuseColor.rgb = mix(diffuseColor.rgb, uWaterNightTint, waterNightMix);
+      float backface = gl_FrontFacing ? 0.0 : 1.0;
+      float surfaceAlpha = clamp(1.0 - waterFade, 0.0, 1.0);
+      float undersideMix = backface * clamp(0.46 + uWaterUnderwaterMix * 0.44, 0.0, 1.0);
+      diffuseColor.a *= mix(surfaceAlpha, 1.0, undersideMix);
+      vec3 undersideColor = mix(diffuseColor.rgb * 0.38, uWaterUndersideTint, 0.62);
+      undersideColor = mix(undersideColor, uWaterNightTint * 0.58, undersideNightTint);
+      undersideColor *= undersideNightDarken;
+      vec2 shimmerUv = vWorldPos.xz * 0.22 + vec2(uWaterTime * 0.31, -uWaterTime * 0.23);
+      vec2 shimmerUv2 = vWorldPos.xz * 0.38 + vec2(-uWaterTime * 0.42, uWaterTime * 0.28);
+      float rippleA = sin(shimmerUv.x * 6.2 + sin(shimmerUv.y * 2.3));
+      float rippleB = sin(shimmerUv.y * 5.7 - uWaterTime * 2.1 + sin(shimmerUv.x * 2.6));
+      float rippleC = sin((shimmerUv2.x + shimmerUv2.y) * 7.1 + uWaterTime * 1.2);
+      float ripple = rippleA * 0.42 + rippleB * 0.36 + rippleC * 0.22;
+      float causticSpark = pow(clamp(0.5 + 0.5 * ripple, 0.0, 1.0), 5.0);
+      float causticLines = abs(sin((shimmerUv2.x - shimmerUv2.y) * 8.4)) * abs(sin((shimmerUv.x + shimmerUv.y) * 9.1));
+      float caustic = clamp(causticSpark * 0.72 + pow(causticLines, 2.8) * 0.85, 0.0, 1.0);
+      vec3 causticColor = mix(vec3(0.2, 0.46, 0.58), vec3(0.78, 0.98, 1.0), caustic) * mix(1.0, 0.42, nightAmount);
+      diffuseColor.rgb = mix(diffuseColor.rgb, undersideColor, undersideMix);
+      diffuseColor.rgb += causticColor * undersideMix * (0.55 + uWaterUnderwaterMix * 1.2) * causticNightScale;
+      diffuseColor.rgb = mix(diffuseColor.rgb, uWaterUndersideTint * mix(0.75, 0.42, nightAmount), (1.0 - caustic) * undersideMix * 0.2);
+      diffuseColor.a = mix(diffuseColor.a, max(diffuseColor.a, mix(0.9, 0.72, nightAmount)), undersideMix);
+      diffuseColor.a = mix(diffuseColor.a, min(1.0, diffuseColor.a + caustic * 0.2 * causticNightScale), undersideMix);
       `
       );
   };
@@ -783,7 +819,7 @@ water.rotation.x = -Math.PI / 2;
 water.position.y = state.world.water.level;
 water.receiveShadow = true;
 water.renderOrder = 2;
-scene.add(water);
+worldGroup.add(water);
 
 const atmosphereBase = {
   fogColor: new THREE.Color(state.world.fog.colorHex),
@@ -817,10 +853,23 @@ const atmosphereTemp = {
   sunPos: new THREE.Vector3(),
   moonPos: new THREE.Vector3(),
   fillPos: new THREE.Vector3(),
+  playerEyePos: new THREE.Vector3(),
   skyTop: new THREE.Color(),
   skyHorizon: new THREE.Color(),
   skyGround: new THREE.Color(),
   fogMix: new THREE.Color(),
+};
+const underwaterState = {
+  submersion: 0,
+  adaptation: 1,
+  isUnderwater: false,
+  surfaceFogDensity: state.world.fog.density,
+  surfaceFogColor: new THREE.Color(state.world.fog.colorHex),
+  surfaceWaterColor: new THREE.Color(state.world.water.colorHex),
+  frameSurfaceFogColor: new THREE.Color(),
+  underwaterFogColor: new THREE.Color(),
+  undersideTint: new THREE.Color(state.world.water.colorHex),
+  canvasFilter: "",
 };
 const dynamicLightColors = {
   warmSun: new THREE.Color("#ff8f52"),
@@ -950,6 +999,9 @@ const FAR_TILE_RES = 8;
 const FAR_TILE_RADIUS = Math.ceil(FAR_RADIUS_METERS / FAR_TILE_SIZE);
 const FAR_BLEND_START_METERS = 2000;
 const FAR_BLEND_END_METERS = 3000;
+const FAR_EDGE_FADE_RANGE_METERS = 1200;
+const FAR_EDGE_FADE_END_METERS = FAR_RADIUS_METERS;
+const FAR_EDGE_FADE_START_METERS = Math.max(0, FAR_EDGE_FADE_END_METERS - FAR_EDGE_FADE_RANGE_METERS);
 const FAR_NIGHT_DARKEN_STRENGTH = 1;
 const FAR_NIGHT_FOG_STRENGTH = 1;
 const FAR_NIGHT_DARKEN_START = FAR_BLEND_START_METERS;
@@ -959,6 +1011,64 @@ const FAR_TILE_HALF_DIAGONAL = FAR_TILE_SIZE * Math.SQRT2 * 0.5;
 const FAR_TILE_CULL_RADIUS = FAR_RADIUS_METERS + FAR_TILE_HALF_DIAGONAL;
 const FAR_TILE_KEEP_RADIUS = FAR_TILE_CULL_RADIUS + FAR_TILE_SIZE;
 const FAR_TILE_INNER_CULL_RADIUS = Math.max(0, FAR_BLEND_START_METERS - FAR_TILE_HALF_DIAGONAL);
+const CAMERA_FAR_EXTRA_METERS = 400;
+const CAMERA_FAR_METERS = Math.max(CAMERA_FAR_BASE_METERS, FAR_EDGE_FADE_END_METERS + CAMERA_FAR_EXTRA_METERS);
+camera.far = CAMERA_FAR_METERS;
+camera.updateProjectionMatrix();
+const MINIMAP_ZOOM_PRESETS_METERS = [
+  100, 150, 250, 350, 550, 850, 1300, 1950, 2950, 4450, 6650, 10000, 15000, 22500, 25000,
+];
+const DEFAULT_MINIMAP_SPAN_METERS = 10000;
+const MINIMAP_MIN_UPDATE_INTERVAL_MS = 180;
+const MINIMAP_STALE_UPDATE_MS = 1000;
+const MINIMAP_MOVE_THRESHOLD_SQ = 9;
+const MINIMAP_YAW_THRESHOLD = 0.05;
+const MINIMAP_FALLBACK_COLOR = { r: 0.06, g: 0.08, b: 0.1 };
+const MINIMAP_WATER_SHALLOW_TINT = new THREE.Color("#3f86a5");
+const MINIMAP_WATER_MID_TINT = new THREE.Color("#215275");
+const MINIMAP_WATER_DEEP_TINT = new THREE.Color("#0b2433");
+const MINIMAP_WATER_ABYSS_TINT = new THREE.Color("#05131e");
+const MINIMAP_WATER_DEPTH_MID = 36;
+const MINIMAP_WATER_DEPTH_ABYSS_START = 88;
+const MINIMAP_WATER_DEPTH_MAX = 130;
+const MINIMAP_SLOPE_MIN_RADIANS = Math.PI * (5 / 180);
+const MINIMAP_SLOPE_MAX_RADIANS = Math.PI * 0.25;
+const MINIMAP_SLOPE_BLEND_MAX = 0.9;
+const MINIMAP_SLOPE_LIGHT_BLEND_MAX = 0.4;
+const MINIMAP_SLOPE_DIR_X = -Math.SQRT1_2;
+const MINIMAP_SLOPE_DIR_Z = -Math.SQRT1_2;
+
+function findClosestMinimapZoomIndex(targetMeters) {
+  let bestIndex = 0;
+  let bestDistance = Infinity;
+  for (let i = 0; i < MINIMAP_ZOOM_PRESETS_METERS.length; i += 1) {
+    const distance = Math.abs(MINIMAP_ZOOM_PRESETS_METERS[i] - targetMeters);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = i;
+    }
+  }
+  return bestIndex;
+}
+
+let minimapZoomIndex = (() => {
+  const exact = MINIMAP_ZOOM_PRESETS_METERS.indexOf(DEFAULT_MINIMAP_SPAN_METERS);
+  return exact >= 0 ? exact : findClosestMinimapZoomIndex(DEFAULT_MINIMAP_SPAN_METERS);
+})();
+let minimapWorldRadius = MINIMAP_ZOOM_PRESETS_METERS[minimapZoomIndex] * 0.5;
+
+function setMinimapZoomIndex(nextIndex, { force = false } = {}) {
+  const clamped = clampNumber(
+    Math.round(nextIndex),
+    0,
+    MINIMAP_ZOOM_PRESETS_METERS.length - 1,
+    minimapZoomIndex
+  );
+  if (!force && clamped === minimapZoomIndex) return;
+  minimapZoomIndex = clamped;
+  minimapWorldRadius = MINIMAP_ZOOM_PRESETS_METERS[minimapZoomIndex] * 0.5;
+  minimapNeedsRender = true;
+}
 const farTerrainMaterial = new THREE.MeshStandardMaterial({
   color: state.world.terrainColor,
   vertexColors: true,
@@ -979,6 +1089,12 @@ const farTerrainShaderState = configureTerrainMaterial({
     start: FAR_BLEND_START_METERS,
     end: FAR_BLEND_END_METERS,
     opacity: 1,
+  },
+  fadeSecondary: {
+    start: FAR_EDGE_FADE_START_METERS,
+    end: FAR_EDGE_FADE_END_METERS,
+    opacity: 1,
+    invert: true,
   },
   night: {
     amount: () => currentNightAmount,
@@ -1009,7 +1125,7 @@ let runtimeMidBuildRunning = false;
 let runtimeMidBuildQueuedTarget = null;
 let runtimeMidBuildAppliedTarget = null;
 const landmarkGroup = new THREE.Group();
-scene.add(landmarkGroup);
+worldGroup.add(landmarkGroup);
 const treeTrunkGeometry = new THREE.CylinderGeometry(0.18, 0.28, 5.2, 8);
 const treeCanopyConeGeometry = new THREE.ConeGeometry(1.05, 5.2, 10);
 const treeCanopySphereGeometry = new THREE.SphereGeometry(1.45, 10, 8);
@@ -1129,7 +1245,13 @@ function setTerrainDetailIntensity(intensity) {
 }
 
 function getTerrainDetailBiomeId(biome) {
-  const biomeId = typeof biome?.baseBiomeId === "string" ? biome.baseBiomeId : biome?.id;
+  if (Number.isFinite(biome?.detailTextureId)) return biome.detailTextureId;
+  const rawBiomeId = typeof biome?.id === "string" ? biome.id : biome?.baseBiomeId;
+  const biomeId = String(rawBiomeId || "")
+    .replace(new RegExp(`^${BIOME_SUBDIVISION_PREFIX_JAGGED}`), "")
+    .replace(new RegExp(`^${BIOME_SUBDIVISION_PREFIX_SMOOTH}`), "");
+  const def = BIOME_DEFS[biomeId];
+  if (Number.isFinite(def?.detailTextureId)) return def.detailTextureId;
   switch (biomeId) {
     case "glacier":
       return 1; // crystalline ice facets
@@ -1252,7 +1374,11 @@ function getBiomeBlendDominantWeight(blend) {
 
 function getTerrainDetailBiomeFadeFromBlend(blend) {
   const dominantWeight = getBiomeBlendDominantWeight(blend);
-  return smoothstep(0.58, 0.92, dominantWeight);
+  if (!(dominantWeight > 0)) return 0;
+  // Approximate signed distance from the biome edge using the smoothstep slope near the boundary.
+  const distanceFromEdgeMeters = (dominantWeight - 0.5) * DETAIL_BIOME_EDGE_DISTANCE_FACTOR;
+  // Fade from 0 at the edge to full strength a couple meters inside the biome.
+  return smoothstep(0, DETAIL_BIOME_FADE_OUT_METERS, distanceFromEdgeMeters);
 }
 
 function fillBlendedVisualSampleAt(x, z, target = blendedVisualStateScratch) {
@@ -1333,6 +1459,7 @@ function syncTreeMaterials() {
 syncTreeMaterials();
 
 function syncTerrainShaderUniforms() {
+  skyUniforms.waterLevel.value = state.world.water.level - originOffset.y;
   if (terrainShaderState.shader) {
     terrainShaderState.shader.uniforms.uWaterLevel.value = state.world.water.level;
     terrainShaderState.shader.uniforms.uTint.value.set(state.world.terrainColor);
@@ -1370,6 +1497,12 @@ function syncTerrainShaderUniforms() {
     if (terrainShaderState.shader.uniforms.uNightTint) {
       terrainShaderState.shader.uniforms.uNightTint.value.copy(TERRAIN_NIGHT_TINT);
     }
+    if (terrainShaderState.shader.uniforms.uUnderwaterTint) {
+      terrainShaderState.shader.uniforms.uUnderwaterTint.value.copy(underwaterState.surfaceWaterColor);
+    }
+    if (terrainShaderState.shader.uniforms.uUnderwaterBlend) {
+      terrainShaderState.shader.uniforms.uUnderwaterBlend.value = 0;
+    }
   }
   if (waterShaderState.shader) {
     if (waterShaderState.shader.uniforms.uWaterFadeStart) {
@@ -1391,7 +1524,16 @@ function syncTerrainShaderUniforms() {
       waterShaderState.shader.uniforms.uWaterNightEnd.value = WATER_NIGHT_DARKEN_END_METERS;
     }
     if (waterShaderState.shader.uniforms.uWaterNightTint) {
-      waterShaderState.shader.uniforms.uWaterNightTint.value.copy(NIGHT_TINT_COLOR);
+      waterShaderState.shader.uniforms.uWaterNightTint.value.copy(scene.fog.color);
+    }
+    if (waterShaderState.shader.uniforms.uWaterUnderwaterMix) {
+      waterShaderState.shader.uniforms.uWaterUnderwaterMix.value = underwaterState.submersion;
+    }
+    if (waterShaderState.shader.uniforms.uWaterUndersideTint) {
+      waterShaderState.shader.uniforms.uWaterUndersideTint.value.copy(underwaterState.undersideTint);
+    }
+    if (waterShaderState.shader.uniforms.uWaterTime) {
+      waterShaderState.shader.uniforms.uWaterTime.value = 0;
     }
   }
   if (midTerrainShaderState.shader) {
@@ -1448,6 +1590,12 @@ function syncTerrainShaderUniforms() {
     if (midTerrainShaderState.shader.uniforms.uFogIntensity) {
       midTerrainShaderState.shader.uniforms.uFogIntensity.value = MID_FOG_INTENSITY;
     }
+    if (midTerrainShaderState.shader.uniforms.uUnderwaterTint) {
+      midTerrainShaderState.shader.uniforms.uUnderwaterTint.value.copy(underwaterState.surfaceWaterColor);
+    }
+    if (midTerrainShaderState.shader.uniforms.uUnderwaterBlend) {
+      midTerrainShaderState.shader.uniforms.uUnderwaterBlend.value = 0;
+    }
   }
   if (farTerrainShaderState.shader) {
     farTerrainShaderState.shader.uniforms.uWaterLevel.value = state.world.water.level;
@@ -1466,6 +1614,18 @@ function syncTerrainShaderUniforms() {
     }
     if (farTerrainShaderState.shader.uniforms.uFadeOpacity) {
       farTerrainShaderState.shader.uniforms.uFadeOpacity.value = 1;
+    }
+    if (farTerrainShaderState.shader.uniforms.uFadeStart2) {
+      farTerrainShaderState.shader.uniforms.uFadeStart2.value = FAR_EDGE_FADE_START_METERS;
+    }
+    if (farTerrainShaderState.shader.uniforms.uFadeEnd2) {
+      farTerrainShaderState.shader.uniforms.uFadeEnd2.value = FAR_EDGE_FADE_END_METERS;
+    }
+    if (farTerrainShaderState.shader.uniforms.uFadeOpacity2) {
+      farTerrainShaderState.shader.uniforms.uFadeOpacity2.value = 1;
+    }
+    if (farTerrainShaderState.shader.uniforms.uFadeInvert2) {
+      farTerrainShaderState.shader.uniforms.uFadeInvert2.value = 1;
     }
     if (farTerrainShaderState.shader.uniforms.uNightAmount) {
       farTerrainShaderState.shader.uniforms.uNightAmount.value = currentNightAmount;
@@ -1487,6 +1647,12 @@ function syncTerrainShaderUniforms() {
     }
     if (farTerrainShaderState.shader.uniforms.uFogIntensity) {
       farTerrainShaderState.shader.uniforms.uFogIntensity.value = FAR_FOG_INTENSITY;
+    }
+    if (farTerrainShaderState.shader.uniforms.uUnderwaterTint) {
+      farTerrainShaderState.shader.uniforms.uUnderwaterTint.value.copy(underwaterState.surfaceWaterColor);
+    }
+    if (farTerrainShaderState.shader.uniforms.uUnderwaterBlend) {
+      farTerrainShaderState.shader.uniforms.uUnderwaterBlend.value = 0;
     }
   }
   if (treeFadeMaterials.size > 0) {
@@ -1522,6 +1688,9 @@ function syncWaterColorFromState() {
 
 function applyVisualSampleToAtmosphereAndWater(visual, options = {}) {
   if (!visual) return;
+  underwaterState.surfaceFogDensity = visual.fogDensity;
+  underwaterState.surfaceFogColor.copy(visual.fogColor);
+  underwaterState.surfaceWaterColor.copy(visual.waterColor);
   if (options.updateAtmosphere !== false) {
     atmosphereBase.fogColor.copy(visual.fogColor);
     scene.fog.color.set(atmosphereBase.fogColor);
@@ -1538,12 +1707,18 @@ function smoothstep(edge0, edge1, x) {
   return t * t * (3 - 2 * t);
 }
 
+function lerpScalar(a, b, t) {
+  return a + (b - a) * clampNumber(t, 0, 1, 0);
+}
+
 function updateDayNightCycle(dt) {
   worldTime = (worldTime + dt) % DAY_NIGHT.dayLengthSeconds;
   const cycle = worldTime / DAY_NIGHT.dayLengthSeconds;
   state.timeOfDay = cycle;
   const sunAngle = cycle * Math.PI * 2 - Math.PI / 2;
   const moonAngle = sunAngle + Math.PI;
+  const playerEyeY = player.position.y + PLAYER_HEIGHT;
+  const playerEyePos = atmosphereTemp.playerEyePos.set(player.position.x, playerEyeY, player.position.z);
 
   const sunVector = atmosphereTemp.sunVector.set(
     Math.cos(sunAngle),
@@ -1562,22 +1737,21 @@ function updateDayNightCycle(dt) {
   const twilightBand = 1 - clampNumber(Math.abs(sunVector.y) / 0.28, 0, 1, 1);
   const twilight = twilightBand * (0.35 + 0.65 * nightAmount);
 
-  const sunPos = atmosphereTemp.sunPos.copy(sunVector).multiplyScalar(DAY_NIGHT.sunDistance).add(player.position);
-  const moonPos = atmosphereTemp.moonPos.copy(moonVector).multiplyScalar(DAY_NIGHT.moonDistance).add(player.position);
+  const sunPos = atmosphereTemp.sunPos.copy(sunVector).multiplyScalar(DAY_NIGHT.sunDistance).add(playerEyePos);
+  const moonPos = atmosphereTemp.moonPos.copy(moonVector).multiplyScalar(DAY_NIGHT.moonDistance).add(playerEyePos);
   const fillVector = atmosphereTemp.fillVector
     .set(-sunVector.x * 0.85, Math.max(0.2, 0.28 + nightAmount * 0.52), -sunVector.z * 0.85)
     .normalize();
-  const fillPos = atmosphereTemp.fillPos.copy(fillVector).multiplyScalar(DAY_NIGHT.sunDistance * 0.78).add(player.position);
+  const fillPos = atmosphereTemp.fillPos.copy(fillVector).multiplyScalar(DAY_NIGHT.sunDistance * 0.78).add(playerEyePos);
   sunLight.position.copy(sunPos);
   moonLight.position.copy(moonPos);
   shadowFillLight.position.copy(fillPos);
   moon.position.copy(moonPos);
   // Hide the moon mesh once it drops below the horizon instead of clamping it above the ground.
   moon.visible = moonVector.y > 0;
-  sunLight.target.position.set(player.position.x, 0, player.position.z);
-  moonLight.target.position.set(player.position.x, 0, player.position.z);
-  shadowFillLight.target.position.set(player.position.x, 0, player.position.z);
   skyUniforms.sunDirection.value.copy(sunVector);
+  skyUniforms.moonDirection.value.copy(moonVector);
+  skyUniforms.skyTime.value = worldTime;
 
   const skyTop = atmosphereTemp.skyTop
     .copy(atmosphericColors.nightTop)
@@ -1606,6 +1780,18 @@ function updateDayNightCycle(dt) {
     .copy(dynamicLightColors.warmSun)
     .lerp(dynamicLightColors.daySun, dayAmount)
     .lerp(dynamicLightColors.softSunset, twilight * 0.8);
+  skyUniforms.moonColor.value
+    .copy(atmosphericColors.moonTint)
+    .lerp(dynamicLightColors.moonWarm, twilight * 0.22);
+  skyUniforms.sunDiscPower.value = 256;
+  skyUniforms.sunGlowPower.value = 10;
+  skyUniforms.sunGlowStrength.value = 0.34;
+  skyUniforms.moonDiscPower.value = 280;
+  skyUniforms.moonStrength.value = clampNumber(0.12 + nightAmount * 0.9, 0.1, 1, 0.5);
+  skyUniforms.sunRayStrength.value = 0;
+  skyUniforms.moonRayStrength.value = 0;
+  skyUniforms.underwaterSkyMix.value = 0;
+  skyUniforms.underwaterFogTint.value.copy(fogMix);
   scene.fog.color.copy(fogMix);
   scene.background.copy(skyHorizon);
 
@@ -1631,11 +1817,8 @@ function updateDayNightCycle(dt) {
   ambientLight.intensity = 0.045 + dayAmount * 0.17 + twilight * 0.05;
   ambientLight.color.copy(dynamicLightColors.nightAmbient).lerp(dynamicLightColors.dayAmbient, dayAmount);
   const nightGlow = smoothstep(0.2, 1, nightAmount);
-  playerGlowLight.position.set(player.position.x, player.position.y + 1.4, player.position.z);
   playerGlowLight.intensity = 0.06 + twilight * 0.08 + nightGlow * 1.15;
   playerGroundFill.color.copy(dynamicLightColors.nightShadowFill).lerp(dynamicLightColors.dayShadowFill, dayAmount * 0.45);
-  playerGroundFill.position.set(player.position.x, player.position.y + 8.8, player.position.z);
-  playerGroundFill.target.position.set(player.position.x, player.position.y - 1.6, player.position.z);
   playerGroundFill.intensity = 0.08 + twilight * 0.11 + nightGlow * 1.05;
 
   moon.material.opacity = clampNumber(0.08 + nightAmount * 0.9, 0.08, 0.95, 0.4);
@@ -1654,6 +1837,253 @@ function updateDayNightCycle(dt) {
   }
   if (waterShaderState.shader?.uniforms.uWaterNightAmount) {
     waterShaderState.shader.uniforms.uWaterNightAmount.value = nightAmount;
+  }
+  if (waterShaderState.shader?.uniforms.uWaterNightTint) {
+    waterShaderState.shader.uniforms.uWaterNightTint.value.copy(fogMix);
+  }
+}
+
+function updateUnderwaterVisualEffects(dt) {
+  skyUniforms.waterLevel.value = state.world.water.level - originOffset.y;
+  skyUniforms.cameraWorldPos.value.set(
+    player.position.x - originOffset.x,
+    player.position.y - originOffset.y + PLAYER_HEIGHT,
+    player.position.z - originOffset.z
+  );
+  const eyeY = getEyeY(player, PLAYER_HEIGHT);
+  const eyeDepthBelowWater = state.world.water.level - eyeY;
+  const submersion = smoothstep(
+    UNDERWATER_SURFACE_BLEND_START_METERS,
+    UNDERWATER_SURFACE_BLEND_FULL_METERS,
+    eyeDepthBelowWater
+  );
+  const depthToLightCutoff = smoothstep(0, UNDERWATER_SURFACE_LIGHT_CUTOFF_DEPTH_METERS, eyeDepthBelowWater);
+  const abyssDepth = smoothstep(
+    UNDERWATER_SURFACE_LIGHT_CUTOFF_DEPTH_METERS,
+    UNDERWATER_SURFACE_LIGHT_CUTOFF_DEPTH_METERS * 2,
+    eyeDepthBelowWater
+  );
+  underwaterState.submersion = submersion;
+
+  if (underwaterState.isUnderwater) {
+    if (submersion <= UNDERWATER_EXIT_SUBMERSION) {
+      underwaterState.isUnderwater = false;
+    }
+  } else if (submersion >= UNDERWATER_ENTRY_SUBMERSION) {
+    underwaterState.isUnderwater = true;
+    underwaterState.adaptation = 0;
+  }
+
+  if (underwaterState.isUnderwater) {
+    underwaterState.adaptation = clampNumber(
+      underwaterState.adaptation + dt / UNDERWATER_ADAPT_SECONDS,
+      0,
+      1,
+      underwaterState.adaptation
+    );
+  } else if (submersion <= 0.001) {
+    underwaterState.adaptation = 1;
+  }
+
+  const surfaceFogDensity = clampNumber(
+    underwaterState.surfaceFogDensity,
+    0.001,
+    UNDERWATER_MAX_FOG_DENSITY,
+    state.world.fog.density
+  );
+  const underwaterDensityMultiplier = lerpScalar(
+    UNDERWATER_FOG_DENSITY_MULTIPLIER_ENTRY,
+    UNDERWATER_FOG_DENSITY_MULTIPLIER_ADAPTED,
+    underwaterState.adaptation
+  );
+  const underwaterFogDensity = clampNumber(
+    surfaceFogDensity *
+      underwaterDensityMultiplier *
+      lerpScalar(1, UNDERWATER_DEPTH_FOG_MULTIPLIER_MAX, depthToLightCutoff),
+    UNDERWATER_MIN_FOG_DENSITY,
+    UNDERWATER_MAX_FOG_DENSITY,
+    surfaceFogDensity
+  );
+  scene.fog.density = lerpScalar(surfaceFogDensity, underwaterFogDensity, submersion);
+
+  const frameFogColor = underwaterState.frameSurfaceFogColor.copy(scene.fog.color).lerp(underwaterState.surfaceFogColor, 0.35);
+  const nightFogAmount = smoothstep(0.18, 1.0, currentNightAmount);
+  const timeCycle = normalizeTimeCycle(state.timeOfDay);
+  const eveningBlackout = timeCycle == null ? 0 : smoothstep(
+    UNDERWATER_FOG_NIGHT_BLACKOUT_START_CYCLE,
+    UNDERWATER_FOG_NIGHT_BLACKOUT_FULL_CYCLE,
+    timeCycle
+  );
+  const dawnRecovery = timeCycle == null ? 1 : smoothstep(
+    UNDERWATER_FOG_DAWN_RECOVER_START_CYCLE,
+    UNDERWATER_FOG_DAWN_RECOVER_END_CYCLE,
+    timeCycle
+  );
+  const overnightBlackout = 1 - dawnRecovery;
+  const clockNightFogAmount = Math.max(eveningBlackout, overnightBlackout);
+  const underwaterNightFogAmount = Math.max(nightFogAmount, clockNightFogAmount);
+  const fogDarken = lerpScalar(UNDERWATER_FOG_DARKEN_ENTRY, UNDERWATER_FOG_DARKEN_ADAPTED, underwaterState.adaptation);
+  const depthDarkenTarget = lerpScalar(
+    UNDERWATER_DEPTH_DARKEN_AT_CUTOFF,
+    UNDERWATER_DEPTH_DARKEN_AT_ABYSS,
+    abyssDepth
+  );
+  const depthDarken = lerpScalar(1, depthDarkenTarget, depthToLightCutoff);
+  const underwaterWaterColorMix = lerpScalar(
+    UNDERWATER_FOG_WATER_COLOR_MIX,
+    UNDERWATER_FOG_WATER_COLOR_MIX_NIGHT,
+    underwaterNightFogAmount
+  );
+  const nightFogSkyMix = lerpScalar(0, UNDERWATER_FOG_NIGHT_SKY_MIX, underwaterNightFogAmount);
+  const nightFogDarken = lerpScalar(1, UNDERWATER_FOG_NIGHT_DARKEN, underwaterNightFogAmount);
+  const nightInstantFogBlend = underwaterNightFogAmount * smoothstep(
+    UNDERWATER_FOG_NIGHT_INSTANT_ENTRY_START_METERS,
+    UNDERWATER_FOG_NIGHT_INSTANT_ENTRY_END_METERS,
+    eyeDepthBelowWater
+  );
+  const underwaterFogColorBlend = clampNumber(
+    Math.max(
+      lerpScalar(
+        submersion,
+        Math.sqrt(Math.max(0, submersion)),
+        underwaterNightFogAmount * UNDERWATER_FOG_NIGHT_SURFACE_BLEND_BOOST
+      ),
+      nightInstantFogBlend
+    ),
+    0,
+    1,
+    submersion
+  );
+  underwaterState.underwaterFogColor
+    .copy(frameFogColor)
+    .lerp(underwaterState.surfaceWaterColor, underwaterWaterColorMix)
+    .lerp(atmosphereTemp.fogMix, nightFogSkyMix)
+    .multiplyScalar(fogDarken * depthDarken * nightFogDarken);
+  scene.fog.color.lerp(underwaterState.underwaterFogColor, underwaterFogColorBlend);
+  scene.background.lerp(scene.fog.color, underwaterFogColorBlend * 0.94);
+  renderer.setClearColor(scene.fog.color, 1);
+
+  const depthLightVisibility = 1 - depthToLightCutoff;
+  const celestialFadeDepth = smoothstep(0.22, 1.0, depthToLightCutoff);
+  const celestialVisibility = 1 - submersion * celestialFadeDepth * 0.72;
+  const sunShrink = submersion * depthToLightCutoff;
+  const rayDepthRise = smoothstep(
+    UNDERWATER_RAY_RAMP_START_DEPTH_METERS,
+    UNDERWATER_RAY_RAMP_FULL_DEPTH_METERS,
+    eyeDepthBelowWater
+  );
+  const rayDepthFall = 1 - smoothstep(0.78, 1.0, depthToLightCutoff);
+  const rayStrength =
+    (0.3 + 0.7 * submersion) *
+    rayDepthRise *
+    rayDepthFall *
+    Math.max(0.14, 1 - abyssDepth * 0.65);
+  const dayRayWeight = clampNumber(1 - currentNightAmount * 1.15, 0, 1, 1);
+  const nightRayWeight = clampNumber(currentNightAmount * 1.25, 0, 1, 0);
+  skyUniforms.sunColor.value.multiplyScalar(celestialVisibility);
+  skyUniforms.sunDiscPower.value = lerpScalar(256, UNDERWATER_SUN_DISC_POWER_AT_CUTOFF, sunShrink);
+  skyUniforms.sunGlowPower.value = lerpScalar(10, 30, sunShrink);
+  skyUniforms.sunGlowStrength.value = lerpScalar(0.34, UNDERWATER_SUN_GLOW_STRENGTH_AT_CUTOFF, sunShrink);
+  skyUniforms.sunRayStrength.value = rayStrength * dayRayWeight * (UNDERWATER_SUN_RAY_STRENGTH_MAX * 3.2);
+  skyUniforms.moonRayStrength.value = rayStrength * nightRayWeight * (UNDERWATER_MOON_RAY_STRENGTH_MAX * 2.8);
+  const underwaterSkyMix = submersion * smoothstep(0.12, 1.0, depthToLightCutoff) * lerpScalar(0.75, 1.15, abyssDepth);
+  skyUniforms.underwaterSkyMix.value = clampNumber(underwaterSkyMix, 0, 1, 0);
+  skyUniforms.underwaterFogTint.value.copy(scene.fog.color);
+  moon.material.opacity *= celestialVisibility;
+  moon.scale.setScalar(lerpScalar(1, UNDERWATER_MOON_SCALE_AT_CUTOFF, sunShrink));
+
+  const nightSurfaceDarken = smoothstep(0.18, 1.0, currentNightAmount);
+  underwaterState.undersideTint
+    .copy(underwaterState.surfaceWaterColor)
+    .multiplyScalar(lerpScalar(0.52, 0.23, nightSurfaceDarken))
+    .lerp(scene.fog.color, lerpScalar(0.48, 0.82, nightSurfaceDarken));
+  if (waterShaderState.shader?.uniforms.uWaterUnderwaterMix) {
+    waterShaderState.shader.uniforms.uWaterUnderwaterMix.value = submersion;
+  }
+  if (waterShaderState.shader?.uniforms.uWaterUndersideTint) {
+    waterShaderState.shader.uniforms.uWaterUndersideTint.value.copy(underwaterState.undersideTint);
+  }
+  if (waterShaderState.shader?.uniforms.uWaterTime) {
+    waterShaderState.shader.uniforms.uWaterTime.value = clock.elapsedTime;
+  }
+  const terrainUnderwaterAdaptBlend = underwaterState.isUnderwater
+    ? Math.max(
+        clampNumber(
+          underwaterState.adaptation * (UNDERWATER_ADAPT_SECONDS / UNDERWATER_TERRAIN_TINT_ADAPT_SECONDS),
+          0,
+          1,
+          0
+        ),
+        underwaterNightFogAmount * UNDERWATER_TERRAIN_NIGHT_ENTRY_BLEND_FLOOR
+      )
+    : 0;
+  const nearTerrainUnderwaterBlend = clampNumber(
+    terrainUnderwaterAdaptBlend * UNDERWATER_TERRAIN_TINT_BLEND_NEAR_MAX,
+    0,
+    UNDERWATER_TERRAIN_TINT_BLEND_NEAR_MAX,
+    0
+  );
+  const midTerrainUnderwaterBlend = clampNumber(
+    terrainUnderwaterAdaptBlend * UNDERWATER_TERRAIN_TINT_BLEND_MID_MAX,
+    0,
+    UNDERWATER_TERRAIN_TINT_BLEND_MID_MAX,
+    0
+  );
+  if (terrainShaderState.shader?.uniforms.uUnderwaterTint) {
+    terrainShaderState.shader.uniforms.uUnderwaterTint.value.copy(underwaterState.surfaceWaterColor);
+  }
+  if (terrainShaderState.shader?.uniforms.uUnderwaterBlend) {
+    terrainShaderState.shader.uniforms.uUnderwaterBlend.value = nearTerrainUnderwaterBlend;
+  }
+  if (midTerrainShaderState.shader?.uniforms.uUnderwaterTint) {
+    midTerrainShaderState.shader.uniforms.uUnderwaterTint.value.copy(underwaterState.surfaceWaterColor);
+  }
+  if (midTerrainShaderState.shader?.uniforms.uUnderwaterBlend) {
+    midTerrainShaderState.shader.uniforms.uUnderwaterBlend.value = midTerrainUnderwaterBlend;
+  }
+  if (farTerrainShaderState.shader?.uniforms.uUnderwaterTint) {
+    farTerrainShaderState.shader.uniforms.uUnderwaterTint.value.copy(underwaterState.surfaceWaterColor);
+  }
+  if (farTerrainShaderState.shader?.uniforms.uUnderwaterBlend) {
+    farTerrainShaderState.shader.uniforms.uUnderwaterBlend.value = 0;
+  }
+  const farTerrainVisibility = 1 - smoothstep(
+    UNDERWATER_FAR_TERRAIN_FADE_START_SUBMERSION,
+    UNDERWATER_FAR_TERRAIN_FADE_END_SUBMERSION,
+    submersion
+  );
+  const farTerrainUniformFade = Math.sqrt(Math.max(0, farTerrainVisibility));
+  if (farTerrainShaderState.shader?.uniforms.uFadeOpacity) {
+    farTerrainShaderState.shader.uniforms.uFadeOpacity.value = farTerrainUniformFade;
+  }
+  if (farTerrainShaderState.shader?.uniforms.uFadeOpacity2) {
+    farTerrainShaderState.shader.uniforms.uFadeOpacity2.value = farTerrainUniformFade;
+  }
+  if (water.material instanceof THREE.MeshPhysicalMaterial) {
+    const daylightAmount = 1 - currentNightAmount;
+    const baseUnderwaterGlow = lerpScalar(0.05, 0.24, daylightAmount);
+    const maxEmissiveBoost = lerpScalar(0.95, 1.65, daylightAmount);
+    const moonEmissiveWeight = lerpScalar(0.2, 0.45, daylightAmount);
+    const emissiveBoost = clampNumber(
+      submersion * (baseUnderwaterGlow + skyUniforms.sunRayStrength.value * 0.55 + skyUniforms.moonRayStrength.value * moonEmissiveWeight),
+      0,
+      maxEmissiveBoost,
+      0
+    );
+    if (water.material.emissive) {
+      const emissiveColorScale = lerpScalar(0.34, 0.78, daylightAmount);
+      water.material.emissive.copy(underwaterState.undersideTint).multiplyScalar(emissiveColorScale + emissiveBoost * 0.45);
+    }
+    water.material.emissiveIntensity = emissiveBoost * lerpScalar(0.7, 1.0, daylightAmount);
+  }
+
+  const blurPx = submersion * lerpScalar(UNDERWATER_BLUR_PX_ENTRY, UNDERWATER_BLUR_PX_ADAPTED, underwaterState.adaptation);
+  const underwaterSaturation = lerpScalar(UNDERWATER_SATURATION_ENTRY, UNDERWATER_SATURATION_ADAPTED, underwaterState.adaptation);
+  const saturation = lerpScalar(1, underwaterSaturation, submersion);
+  const nextFilter = blurPx > 0.02 ? `blur(${blurPx.toFixed(2)}px) saturate(${saturation.toFixed(3)})` : "";
+  if (nextFilter !== underwaterState.canvasFilter) {
+    canvas.style.filter = nextFilter;
+    underwaterState.canvasFilter = nextFilter;
   }
 }
 
@@ -1793,38 +2223,215 @@ function seededHash2(x, z, seed) {
   return h - Math.floor(h);
 }
 
+const SIMPLEX_GRAD_2D = [
+  [1, 1],
+  [-1, 1],
+  [1, -1],
+  [-1, -1],
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1],
+];
+const SIMPLEX_F2 = 0.5 * (Math.sqrt(3) - 1);
+const SIMPLEX_G2 = (3 - Math.sqrt(3)) / 6;
+
+function fastSimplex2(x, z, seed) {
+  const s = (x + z) * SIMPLEX_F2;
+  const i = Math.floor(x + s);
+  const j = Math.floor(z + s);
+  const t = (i + j) * SIMPLEX_G2;
+  const x0 = x - (i - t);
+  const z0 = z - (j - t);
+  const i1 = x0 > z0 ? 1 : 0;
+  const j1 = x0 > z0 ? 0 : 1;
+  const x1 = x0 - i1 + SIMPLEX_G2;
+  const z1 = z0 - j1 + SIMPLEX_G2;
+  const x2 = x0 - 1 + 2 * SIMPLEX_G2;
+  const z2 = z0 - 1 + 2 * SIMPLEX_G2;
+
+  let n0 = 0;
+  let n1 = 0;
+  let n2 = 0;
+  let t0 = 0.5 - x0 * x0 - z0 * z0;
+  if (t0 > 0) {
+    t0 *= t0;
+    const grad = SIMPLEX_GRAD_2D[Math.floor(seededHash2(i, j, seed) * 8)];
+    n0 = t0 * t0 * (grad[0] * x0 + grad[1] * z0);
+  }
+  let t1 = 0.5 - x1 * x1 - z1 * z1;
+  if (t1 > 0) {
+    t1 *= t1;
+    const grad = SIMPLEX_GRAD_2D[Math.floor(seededHash2(i + i1, j + j1, seed) * 8)];
+    n1 = t1 * t1 * (grad[0] * x1 + grad[1] * z1);
+  }
+  let t2 = 0.5 - x2 * x2 - z2 * z2;
+  if (t2 > 0) {
+    t2 *= t2;
+    const grad = SIMPLEX_GRAD_2D[Math.floor(seededHash2(i + 1, j + 1, seed) * 8)];
+    n2 = t2 * t2 * (grad[0] * x2 + grad[1] * z2);
+  }
+
+  return 70 * (n0 + n1 + n2);
+}
+
+function sampleClimateBandNoise(x, z, seedOffset = 0, zoneScaleMultiplier = 1) {
+  const axisSeed = noiseSeed + seedOffset;
+  const phase = axisSeed * 0.000017;
+  // Larger climate zones (~9x area) without changing local biome granularity.
+  const CLIMATE_ZONE_SCALE = 2 / 3;
+  const zoneScale = CLIMATE_ZONE_SCALE / Math.max(0.01, zoneScaleMultiplier);
+  const sx = x * 0.00115 * zoneScale;
+  const sz = z * 0.00105 * zoneScale;
+  const jitter = fastSimplex2(x * 0.00042 * zoneScale, z * 0.00042 * zoneScale, axisSeed + 7);
+  const raw =
+    0.5 +
+    Math.sin(sx + phase) * 0.22 +
+    Math.sin(sz * 1.18 - phase * 1.4) * 0.18 +
+    Math.sin((sx + sz) * 0.72 + phase * 0.7) * 0.14 +
+    jitter * 0.14;
+  return clampNumber(raw, 0, 1, 0.5);
+}
+
 function sampleBiomeClimate(x, z) {
-  const phaseA = noiseSeed * 0.000017;
-  const phaseB = noiseSeed * 0.000023;
-  const sx = x * 0.00115;
-  const sz = z * 0.00105;
-  const tempRaw =
+  const temperature = sampleClimateBandNoise(x, z, 0);
+  const humidity = sampleClimateBandNoise(x, z, 9137, 1.3);
+  const selectorSeed = noiseSeed + 317;
+  const phaseA = selectorSeed * 0.000017;
+  const phaseB = selectorSeed * 0.000023;
+  const warpBaseX = x * 0.00032;
+  const warpBaseZ = z * 0.00028;
+  const warpA = Math.sin(warpBaseX + phaseA * 2.1);
+  const warpB = Math.sin(warpBaseZ - phaseB * 1.7);
+  const warpC = Math.sin((warpBaseX + warpBaseZ) * 0.85 + phaseA * 1.3);
+  const warpX = (warpA + warpC) * 120;
+  const warpZ = (warpB - warpC) * 120;
+  const mx = (x + warpX) * 0.0011;
+  const mz = (z + warpZ) * 0.00102;
+  const dx = x + warpX * 0.6;
+  const dz = z + warpZ * 0.6;
+  const selectorMacroRaw =
     0.5 +
-    Math.sin(sx + phaseA) * 0.22 +
-    Math.sin(sz * 1.18 - phaseA * 1.4) * 0.18 +
-    Math.sin((sx + sz) * 0.72 + phaseA * 0.7) * 0.14;
-  const moistureRaw =
-    0.5 +
-    Math.sin((sx * 0.84 - sz * 0.34) + phaseB) * 0.23 +
-    Math.sin((sz * 1.31 + sx * 0.22) - phaseB * 0.9) * 0.16 +
-    Math.sin((sx - sz) * 0.59 + phaseB * 0.4) * 0.11;
+    Math.sin((mx * 0.84 - mz * 0.34) + phaseB) * 0.23 +
+    Math.sin((mz * 1.31 + mx * 0.22) - phaseB * 0.9) * 0.16 +
+    Math.sin((mx - mz) * 0.59 + phaseB * 0.4) * 0.11;
+  const DETAIL_WAVELENGTH_SCALE = 0.6;
+  const detailJitter = fastSimplex2(dx * 0.0011, dz * 0.0011, noiseSeed + 19) * 1.6;
   const detailRaw =
     0.5 +
-    Math.sin(x * 0.0069 + z * 0.0042 + noiseSeed * 0.00019) * 0.22 +
-    Math.sin(x * -0.0044 + z * 0.0076 - noiseSeed * 0.00013) * 0.12;
+    Math.sin(
+      dx * 0.0069 * DETAIL_WAVELENGTH_SCALE +
+        dz * 0.0042 * DETAIL_WAVELENGTH_SCALE +
+        noiseSeed * 0.00019 +
+        detailJitter * 1.3
+    ) * 0.22 +
+    Math.sin(
+      dx * -0.0044 * DETAIL_WAVELENGTH_SCALE +
+        dz * 0.0076 * DETAIL_WAVELENGTH_SCALE -
+        noiseSeed * 0.00013 +
+        detailJitter * -1.05
+    ) * 0.12;
   return {
-    temperature: clampNumber(tempRaw, 0, 1, 0.5),
-    moisture: clampNumber(moistureRaw, 0, 1, 0.5),
+    temperature,
+    humidity,
+    selectorMacro: clampNumber(selectorMacroRaw, 0, 1, 0.5),
     detail: clampNumber(detailRaw, 0, 1, 0.5),
   };
 }
 
 function sampleBiomeClimateFields(x, z) {
   const climate = sampleBiomeClimate(x, z);
+  const mixBias = clampNumber(0.25 + climate.detail * 0.5, 0.2, 0.75, 0.45);
+  const rawSelector = climate.selectorMacro * (1 - mixBias) + climate.detail * mixBias;
+  const ridge = 1 - Math.abs(rawSelector * 2 - 1);
+  const shapedSelector = clampNumber(rawSelector + (ridge - 0.5) * 0.08, 0, 1, 0.5);
   return {
     ...climate,
-    selector: clampNumber(climate.moisture * 0.72 + climate.detail * 0.28, 0, 1, 0.5),
+    selector: smoothstep(0.08, 0.92, shapedSelector),
   };
+}
+
+function biomeSubdivisionSeedOffset(biomeId) {
+  let hash = 0;
+  const id = String(biomeId || "");
+  for (let i = 0; i < id.length; i += 1) {
+    hash = (hash * 31 + id.charCodeAt(i)) % 100000;
+  }
+  return hash;
+}
+
+function sampleBumpyBiomeSubdivisionSelector(x, z, biomeId) {
+  const offset = biomeSubdivisionSeedOffset(biomeId);
+  const primary = fastSimplex2(
+    x * BUMPY_BIOME_SUBDIVISION_PRIMARY_SCALE,
+    z * BUMPY_BIOME_SUBDIVISION_PRIMARY_SCALE,
+    noiseSeed + offset + 401
+  );
+  const secondary = fastSimplex2(
+    x * BUMPY_BIOME_SUBDIVISION_SECONDARY_SCALE,
+    z * BUMPY_BIOME_SUBDIVISION_SECONDARY_SCALE,
+    noiseSeed + offset + 809
+  );
+  const combined = primary * 0.72 + secondary * 0.28;
+  return clampNumber(combined * 0.5 + 0.5, 0, 1, 0.5);
+}
+
+function getBumpySubdividedBiomeForPoint(x, z, biome) {
+  if (!biome) return biome;
+  const biomeId = String(biome.id || "");
+  if (biomeId.startsWith(BIOME_SUBDIVISION_PREFIX_JAGGED) || biomeId.startsWith(BIOME_SUBDIVISION_PREFIX_SMOOTH)) {
+    return biome;
+  }
+  const variants = BUMPY_BIOME_SUBDIVISIONS[biomeId];
+  if (!variants) return biome;
+  const selector = sampleBumpyBiomeSubdivisionSelector(x, z, biomeId);
+  if (selector <= BUMPY_BIOME_SUBDIVISION_THRESHOLD_SMOOTH) {
+    return BIOME_DEFS[variants.smoothId] || biome;
+  }
+  if (selector >= BUMPY_BIOME_SUBDIVISION_THRESHOLD_JAGGED) {
+    return BIOME_DEFS[variants.jaggedId] || biome;
+  }
+  return BIOME_DEFS[variants.normalId] || biome;
+}
+
+function getBumpySubdivisionVariantWeights(selector, selectorGradientPerMeter) {
+  const smoothToNormal = metersBoundaryBlend(
+    selector,
+    BUMPY_BIOME_SUBDIVISION_THRESHOLD_SMOOTH,
+    selectorGradientPerMeter
+  );
+  const normalToJagged = metersBoundaryBlend(
+    selector,
+    BUMPY_BIOME_SUBDIVISION_THRESHOLD_JAGGED,
+    selectorGradientPerMeter
+  );
+  return normalizeWeightTriplet(
+    1 - smoothToNormal,
+    smoothToNormal * (1 - normalToJagged),
+    normalToJagged
+  );
+}
+
+function getBumpySubdivisionVariantWeightsAt(x, z, biomeId) {
+  const selector = sampleBumpyBiomeSubdivisionSelector(x, z, biomeId);
+  const nearSmoothBoundary = Math.abs(selector - BUMPY_BIOME_SUBDIVISION_THRESHOLD_SMOOTH) <= BUMPY_BIOME_SUBDIVISION_PRECHECK_MARGIN;
+  const nearJaggedBoundary = Math.abs(selector - BUMPY_BIOME_SUBDIVISION_THRESHOLD_JAGGED) <= BUMPY_BIOME_SUBDIVISION_PRECHECK_MARGIN;
+  if (!nearSmoothBoundary && !nearJaggedBoundary) {
+    if (selector <= BUMPY_BIOME_SUBDIVISION_THRESHOLD_SMOOTH) return [1, 0, 0];
+    if (selector >= BUMPY_BIOME_SUBDIVISION_THRESHOLD_JAGGED) return [0, 0, 1];
+    return [0, 1, 0];
+  }
+
+  const h = BIOME_BLEND_GRADIENT_STEP_METERS;
+  const xp = sampleBumpyBiomeSubdivisionSelector(x + h, z, biomeId);
+  const xm = sampleBumpyBiomeSubdivisionSelector(x - h, z, biomeId);
+  const zp = sampleBumpyBiomeSubdivisionSelector(x, z + h, biomeId);
+  const zm = sampleBumpyBiomeSubdivisionSelector(x, z - h, biomeId);
+  const invSpan = 1 / (2 * h);
+  const gradX = (xp - xm) * invSpan;
+  const gradZ = (zp - zm) * invSpan;
+  const gradientPerMeter = Math.hypot(gradX, gradZ);
+  return getBumpySubdivisionVariantWeights(selector, gradientPerMeter);
 }
 
 function normalizeWeightTriplet(a, b, c) {
@@ -1833,19 +2440,74 @@ function normalizeWeightTriplet(a, b, c) {
   return [a / total, b / total, c / total];
 }
 
-function metersBoundaryBlend(value, threshold, gradientPerMeter) {
+function metersBoundaryBlendWithHalfWidth(value, threshold, gradientPerMeter, halfWidthMeters = BIOME_BLEND_HALF_WIDTH_METERS) {
   const safeGradient = Math.max(Math.abs(gradientPerMeter), 1e-4);
   const signedMeters = (value - threshold) / safeGradient;
-  return smoothstep(-BIOME_BLEND_HALF_WIDTH_METERS, BIOME_BLEND_HALF_WIDTH_METERS, signedMeters);
+  const halfWidth = Math.max(0.5, Number(halfWidthMeters) || BIOME_BLEND_HALF_WIDTH_METERS);
+  return smoothstep(-halfWidth, halfWidth, signedMeters);
+}
+
+function metersBoundaryBlend(value, threshold, gradientPerMeter) {
+  return metersBoundaryBlendWithHalfWidth(value, threshold, gradientPerMeter, BIOME_BLEND_HALF_WIDTH_METERS);
+}
+
+function getTemperatureCategoryFromValue(temperature) {
+  if (temperature < CLIMATE_ZONE_THRESHOLD_LOW) return "cold";
+  if (temperature > CLIMATE_ZONE_THRESHOLD_HIGH) return "hot";
+  return "temperate";
+}
+
+function getHumidityBandKey(value) {
+  if (value < HUMIDITY_ZONE_THRESHOLD_LOW) return "xeric";
+  if (value > HUMIDITY_ZONE_THRESHOLD_HIGH) return "hydric";
+  return "mesic";
+}
+
+function getHumidityMappedBiome(baseBiome, humidityBand) {
+  if (!baseBiome) return null;
+  const lookup = BIOME_HUMIDITY_LOOKUP[baseBiome.id];
+  if (!lookup) return baseBiome;
+  const mappedId = lookup[humidityBand];
+  return BIOME_DEFS[mappedId] || baseBiome;
+}
+
+function getOceanBiome(regime, temperatureCategory, variantIndex) {
+  const regimeVariants = OCEAN_BIOME_VARIANTS[regime];
+  if (!regimeVariants) return null;
+  const categoryVariants = regimeVariants[temperatureCategory];
+  if (!Array.isArray(categoryVariants) || categoryVariants.length === 0) return null;
+  const clampedIndex = clampNumber(Math.floor(variantIndex), 0, categoryVariants.length - 1, 0);
+  const biomeId = categoryVariants[clampedIndex];
+  return BIOME_DEFS[biomeId] || null;
+}
+
+function getOceanRegimeFromMountainAdditiveHeight(heightMeters) {
+  if (heightMeters < OCEAN_BIOME_OPEN_MAX_MOUNTAIN_ADDITIVE_HEIGHT) return "open";
+  if (heightMeters < OCEAN_BIOME_COASTAL_MAX_MOUNTAIN_ADDITIVE_HEIGHT) return "coastal";
+  return "land";
+}
+
+function isDeepOpenOceanBiome(biome) {
+  return typeof biome?.id === "string" && biome.id.startsWith("deep_");
 }
 
 function getBiomeCategoryWeights(temperature, temperatureGradientPerMeter) {
-  const coldToTemperate = metersBoundaryBlend(temperature, 0.37, temperatureGradientPerMeter);
-  const temperateToHot = metersBoundaryBlend(temperature, 0.63, temperatureGradientPerMeter);
+  const coldToTemperate = metersBoundaryBlend(temperature, CLIMATE_ZONE_THRESHOLD_LOW, temperatureGradientPerMeter);
+  const temperateToHot = metersBoundaryBlend(temperature, CLIMATE_ZONE_THRESHOLD_HIGH, temperatureGradientPerMeter);
   return normalizeWeightTriplet(
     1 - coldToTemperate,
     coldToTemperate * (1 - temperateToHot),
     temperateToHot
+  );
+}
+
+function getHumidityZoneWeights(humidity, humidityGradientPerMeter) {
+  const xericToMesic = metersBoundaryBlend(humidity, HUMIDITY_ZONE_THRESHOLD_LOW, humidityGradientPerMeter);
+  const mesicToHydric = metersBoundaryBlend(humidity, HUMIDITY_ZONE_THRESHOLD_HIGH, humidityGradientPerMeter);
+  return normalizeWeightTriplet(
+    1 - xericToMesic,
+    xericToMesic * (1 - mesicToHydric),
+    mesicToHydric
   );
 }
 
@@ -1929,6 +2591,48 @@ function normalizeBiomeBlendResult(target) {
   return target;
 }
 
+function applyWetlandHeightOverride(x, z, target) {
+  if (!target) return target;
+  const wetlandRetainWeight = getWetlandRetentionWeightAt(x, z);
+  if (wetlandRetainWeight >= 0.999) return target;
+  const originalCount = target.count;
+  if (originalCount <= 0) return target;
+  const originalBiomes = target.biomes.slice(0, originalCount);
+  const originalWeights = target.weights.slice(0, originalCount);
+
+  target.count = 0;
+  for (let i = 0; i < target.biomes.length; i += 1) {
+    target.biomes[i] = null;
+    target.weights[i] = 0;
+  }
+
+  for (let i = 0; i < originalCount; i += 1) {
+    const biome = originalBiomes[i];
+    const weight = originalWeights[i];
+    if (!(weight > 0)) continue;
+    if (biome?.wetlandRetentionGroup === "wetland") {
+      const humidityBand = biome.humidityBand || "mesic";
+      const fallbackId = BIOME_HUMIDITY_LOOKUP.meadow?.[humidityBand] || "meadow";
+      const fallbackBiome = BIOME_DEFS[fallbackId] || BIOME_DEFS.meadow;
+      const fallbackWeight = weight * (1 - wetlandRetainWeight);
+      const wetlandWeight = weight * wetlandRetainWeight;
+      if (fallbackWeight > 0.0001) upsertBiomeBlendEntry(target, fallbackBiome, fallbackWeight);
+      if (wetlandWeight > 0.0001) upsertBiomeBlendEntry(target, biome, wetlandWeight);
+      continue;
+    }
+    upsertBiomeBlendEntry(target, biome, weight);
+  }
+
+  if (target.dominantBiome?.wetlandRetentionGroup === "wetland") {
+    const dominantHumidityBand = target.dominantBiome.humidityBand || "mesic";
+    const fallbackId = BIOME_HUMIDITY_LOOKUP.meadow?.[dominantHumidityBand] || "meadow";
+    const fallbackBiome = BIOME_DEFS[fallbackId] || BIOME_DEFS.meadow;
+    target.dominantBiome = wetlandRetainWeight >= 0.5 ? target.dominantBiome : fallbackBiome;
+  }
+
+  return normalizeBiomeBlendResult(target);
+}
+
 const mountainBiomeAdditiveScratch = {
   gentleAdditiveHeight: 0,
   mountainAdditiveHeight: 0,
@@ -1939,7 +2643,7 @@ const mountainBiomeAdditiveScratch = {
 };
 
 function getMountainBiomeThresholdMeters() {
-  return Number.isFinite(heightAt?.mountainBiomeThresholdMeters) ? heightAt.mountainBiomeThresholdMeters : 50;
+  return Number.isFinite(heightAt?.mountainBiomeThresholdMeters) ? heightAt.mountainBiomeThresholdMeters : 100;
 }
 
 function fillTerrainAdditiveSampleAt(x, z, target = mountainBiomeAdditiveScratch) {
@@ -1955,10 +2659,129 @@ function fillTerrainAdditiveSampleAt(x, z, target = mountainBiomeAdditiveScratch
   return target;
 }
 
+function getDeepOceanAllowance(mountainAdditiveHeight, rangeMask) {
+  const centerMountainSignal = Math.max(0, mountainAdditiveHeight || 0);
+  const centerRangeSignal = Math.max(0, rangeMask || 0) * OCEAN_DEEP_BIOME_COAST_RANGE_MASK_SCALE;
+  const coastSignal = Math.max(centerMountainSignal, centerRangeSignal);
+  const nearCoastWeight = smoothstep(
+    OCEAN_DEEP_BIOME_COAST_SIGNAL_START,
+    OCEAN_DEEP_BIOME_COAST_SIGNAL_END,
+    coastSignal
+  );
+  return 1 - nearCoastWeight;
+}
+
+function shouldDemoteWetlandAt(x, z) {
+  return getWetlandRetentionWeightAt(x, z) < 0.5;
+}
+
+function getWetlandRetentionWeightAt(x, z) {
+  const center = fillTerrainAdditiveSampleAt(x, z, mountainBiomeAdditiveScratch);
+  const centerHeight = center.mountainAdditiveHeight || 0;
+  const fadeBand = Math.max(0.5, WETLAND_ELEVATION_FADE_BAND_METERS);
+  const fadeStart = WETLAND_MOUNTAIN_HEIGHT_MAX_METERS - fadeBand;
+  if (centerHeight <= fadeStart) return 1;
+  if (centerHeight >= WETLAND_MOUNTAIN_HEIGHT_MAX_METERS) return 0;
+  return 1 - smoothstep(fadeStart, WETLAND_MOUNTAIN_HEIGHT_MAX_METERS, centerHeight);
+}
+
 function getMountainBiomeVariant(biome) {
   if (!biome) return null;
   if (biome.isMountainVariant) return biome;
+  const humidityBand = biome.humidityBand || "mesic";
+  const lookup = BASE_MOUNTAIN_HUMIDITY_LOOKUP[biome.category];
+  const climateMountainId = lookup?.[humidityBand];
+  if (climateMountainId && BIOME_DEFS[climateMountainId]) {
+    return BIOME_DEFS[climateMountainId];
+  }
   return BIOME_DEFS[`${biome.id}${MOUNTAIN_BIOME_SUFFIX}`] || biome;
+}
+
+function getSimpleMountainBiomeVariant(biome) {
+  const baseBiome = getBaseBiomeVariant(biome);
+  if (!baseBiome) return null;
+  return BIOME_DEFS[`${baseBiome.id}${MOUNTAIN_BIOME_SUFFIX}`] || null;
+}
+
+function sampleSimpleMountainSelector(x, z, biomeId) {
+  const offset = biomeSubdivisionSeedOffset(`simple:${biomeId}`);
+  const primary = fastSimplex2(
+    x * SIMPLE_MOUNTAIN_SELECTOR_PRIMARY_SCALE,
+    z * SIMPLE_MOUNTAIN_SELECTOR_PRIMARY_SCALE,
+    noiseSeed + offset + 1207
+  );
+  const secondary = fastSimplex2(
+    x * SIMPLE_MOUNTAIN_SELECTOR_SECONDARY_SCALE,
+    z * SIMPLE_MOUNTAIN_SELECTOR_SECONDARY_SCALE,
+    noiseSeed + offset + 1879
+  );
+  const combined = primary * 0.74 + secondary * 0.26;
+  return clampNumber(combined * 0.5 + 0.5, 0, 1, 0.5);
+}
+
+function getSimpleMountainAltitudeGate(centerMountainHeight) {
+  const height = Number(centerMountainHeight) || 0;
+  if (height >= HIGH_ALTITUDE_BIOME_THRESHOLD_METERS) return 0;
+  const fadeBand = Math.max(1, SIMPLE_MOUNTAIN_HIGH_ALTITUDE_FADE_METERS);
+  const fadeStart = HIGH_ALTITUDE_BIOME_THRESHOLD_METERS - fadeBand;
+  if (height <= fadeStart) return 1;
+  return 1 - smoothstep(fadeStart, HIGH_ALTITUDE_BIOME_THRESHOLD_METERS, height);
+}
+
+function getSimpleMountainShareAt(x, z, biome, centerMountainHeight = null) {
+  const baseBiome = getBaseBiomeVariant(biome);
+  const simpleMountainBiome = getSimpleMountainBiomeVariant(baseBiome);
+  if (!baseBiome || !simpleMountainBiome) return 0;
+
+  const centerHeight = Number.isFinite(centerMountainHeight)
+    ? centerMountainHeight
+    : fillTerrainAdditiveSampleAt(x, z, mountainBiomeAdditiveScratch).mountainAdditiveHeight || 0;
+  const altitudeGate = getSimpleMountainAltitudeGate(centerHeight);
+  if (!(altitudeGate > 0.0001)) return 0;
+
+  const targetShare = clampNumber(SIMPLE_MOUNTAIN_TARGET_SHARE, 0, 1, 0.6);
+  const selector = sampleSimpleMountainSelector(x, z, baseBiome.id);
+  const nearBoundary = Math.abs(selector - targetShare) <= SIMPLE_MOUNTAIN_SELECTOR_PRECHECK_MARGIN;
+  if (!nearBoundary) {
+    return selector <= targetShare ? altitudeGate : 0;
+  }
+
+  const h = BIOME_BLEND_GRADIENT_STEP_METERS;
+  const xp = sampleSimpleMountainSelector(x + h, z, baseBiome.id);
+  const xm = sampleSimpleMountainSelector(x - h, z, baseBiome.id);
+  const zp = sampleSimpleMountainSelector(x, z + h, baseBiome.id);
+  const zm = sampleSimpleMountainSelector(x, z - h, baseBiome.id);
+  const invSpan = 1 / (2 * h);
+  const gradX = (xp - xm) * invSpan;
+  const gradZ = (zp - zm) * invSpan;
+  const gradientPerMeter = Math.hypot(gradX, gradZ);
+  const modernShare = metersBoundaryBlendWithHalfWidth(
+    selector,
+    targetShare,
+    gradientPerMeter,
+    SIMPLE_MOUNTAIN_SELECTOR_BLEND_HALF_WIDTH_METERS
+  );
+  return (1 - modernShare) * altitudeGate;
+}
+
+function pickMountainBiomeVariantAt(x, z, biome, centerMountainHeight = null) {
+  const baseBiome = getBaseBiomeVariant(biome);
+  if (!baseBiome) return biome;
+  const modernMountainBiome = getMountainBiomeVariant(baseBiome);
+  const simpleMountainBiome = getSimpleMountainBiomeVariant(baseBiome);
+  if (!simpleMountainBiome || simpleMountainBiome.id === modernMountainBiome?.id) return modernMountainBiome;
+  const simpleShare = getSimpleMountainShareAt(x, z, baseBiome, centerMountainHeight);
+  return simpleShare >= 0.5 ? simpleMountainBiome : modernMountainBiome;
+}
+
+function getHighAltitudeBiomeVariant(biome, fallbackCategory = "temperate", fallbackHumidityBand = "mesic") {
+  if (!biome) return null;
+  const category = biome.category || fallbackCategory;
+  const humidityBand = biome.humidityBand || fallbackHumidityBand;
+  const lookup = HIGH_ALTITUDE_MOUNTAIN_HUMIDITY_LOOKUP[category];
+  const highAltitudeBiomeId = lookup?.[humidityBand] || lookup?.mesic;
+  if (!highAltitudeBiomeId) return biome;
+  return BIOME_DEFS[highAltitudeBiomeId] || biome;
 }
 
 function getBaseBiomeVariant(biome) {
@@ -1977,20 +2800,25 @@ function getMountainBiomeBlendWeightAt(x, z) {
   return smoothstep(threshold - blendHalfWidth, threshold + blendHalfWidth, centerHeight);
 }
 
+function getHighAltitudeBiomeBlendWeightAt(x, z) {
+  const center = fillTerrainAdditiveSampleAt(x, z, mountainBiomeAdditiveScratch);
+  const centerHeight = center.mountainAdditiveHeight || 0;
+  const threshold = HIGH_ALTITUDE_BIOME_THRESHOLD_METERS;
+  const blendHalfWidth = HIGH_ALTITUDE_BIOME_BORDER_BLEND_HEIGHT_METERS;
+  if (centerHeight <= threshold - blendHalfWidth) return 0;
+  if (centerHeight >= threshold + blendHalfWidth) return 1;
+  return smoothstep(threshold - blendHalfWidth, threshold + blendHalfWidth, centerHeight);
+}
+
 function applyMountainVariantsToBiomeBlend(x, z, target) {
   if (!target) return target;
   const mountainWeight = getMountainBiomeBlendWeightAt(x, z);
   if (!(mountainWeight > 0)) {
     return target;
   }
-  if (mountainWeight >= 0.999) {
-    for (let i = 0; i < target.count; i += 1) {
-      target.biomes[i] = getMountainBiomeVariant(target.biomes[i]);
-    }
-    target.dominantBiome = getMountainBiomeVariant(target.dominantBiome);
-    return target;
-  }
 
+  const centerMountainSample = fillTerrainAdditiveSampleAt(x, z, mountainBiomeAdditiveScratch);
+  const centerMountainHeight = centerMountainSample.mountainAdditiveHeight || 0;
   const baseWeight = 1 - mountainWeight;
   const originalCount = target.count;
   const originalBiomes = target.biomes.slice(0, originalCount);
@@ -2007,40 +2835,195 @@ function applyMountainVariantsToBiomeBlend(x, z, target) {
     const biome = getBaseBiomeVariant(originalBiomes[i]);
     const weight = originalWeights[i];
     if (!biome || !(weight > 0)) continue;
+
+    const modernMountainBiome = getMountainBiomeVariant(biome);
+    const simpleMountainBiome = getSimpleMountainBiomeVariant(biome);
+    const simpleMountainShare =
+      simpleMountainBiome && simpleMountainBiome.id !== modernMountainBiome?.id
+        ? getSimpleMountainShareAt(x, z, biome, centerMountainHeight)
+        : 0;
+    const modernMountainShare = 1 - simpleMountainShare;
+
     if (baseWeight > 0.0001) upsertBiomeBlendEntry(target, biome, weight * baseWeight);
-    if (mountainWeight > 0.0001) upsertBiomeBlendEntry(target, getMountainBiomeVariant(biome), weight * mountainWeight);
+    if (mountainWeight > 0.0001 && modernMountainShare > 0.0001) {
+      upsertBiomeBlendEntry(target, modernMountainBiome, weight * mountainWeight * modernMountainShare);
+    }
+    if (mountainWeight > 0.0001 && simpleMountainShare > 0.0001) {
+      upsertBiomeBlendEntry(target, simpleMountainBiome, weight * mountainWeight * simpleMountainShare);
+    }
   }
 
   normalizeBiomeBlendResult(target);
-  target.dominantBiome = mountainWeight >= 0.5 ? getMountainBiomeVariant(dominantBaseBiome) : dominantBaseBiome;
+  target.dominantBiome =
+    mountainWeight >= 0.5 ? pickMountainBiomeVariantAt(x, z, dominantBaseBiome, centerMountainHeight) : dominantBaseBiome;
   return target;
+}
+
+function applyHighAltitudeVariantsToBiomeBlend(x, z, target) {
+  if (!target) return target;
+  const highAltitudeWeight = getHighAltitudeBiomeBlendWeightAt(x, z);
+  if (!(highAltitudeWeight > 0)) return target;
+
+  const dominantCategory = target.dominantBiome?.category || "temperate";
+  const dominantHumidityBand = target.dominantBiome?.humidityBand || "mesic";
+  if (highAltitudeWeight >= 0.999) {
+    for (let i = 0; i < target.count; i += 1) {
+      target.biomes[i] = getHighAltitudeBiomeVariant(target.biomes[i], dominantCategory, dominantHumidityBand);
+    }
+    target.dominantBiome = getHighAltitudeBiomeVariant(target.dominantBiome, dominantCategory, dominantHumidityBand);
+    return target;
+  }
+
+  const baseWeight = 1 - highAltitudeWeight;
+  const originalCount = target.count;
+  const originalBiomes = target.biomes.slice(0, originalCount);
+  const originalWeights = target.weights.slice(0, originalCount);
+  const dominantBaseBiome = target.dominantBiome || null;
+
+  target.count = 0;
+  for (let i = 0; i < target.biomes.length; i += 1) {
+    target.biomes[i] = null;
+    target.weights[i] = 0;
+  }
+
+  for (let i = 0; i < originalCount; i += 1) {
+    const biome = originalBiomes[i];
+    const weight = originalWeights[i];
+    if (!biome || !(weight > 0)) continue;
+    if (baseWeight > 0.0001) upsertBiomeBlendEntry(target, biome, weight * baseWeight);
+    if (highAltitudeWeight > 0.0001) {
+      const highAltitudeBiome = getHighAltitudeBiomeVariant(biome, dominantCategory, dominantHumidityBand);
+      upsertBiomeBlendEntry(target, highAltitudeBiome, weight * highAltitudeWeight);
+    }
+  }
+
+  normalizeBiomeBlendResult(target);
+  target.dominantBiome =
+    highAltitudeWeight >= 0.5
+      ? getHighAltitudeBiomeVariant(dominantBaseBiome, dominantCategory, dominantHumidityBand)
+      : dominantBaseBiome;
+  return target;
+}
+
+function applyBumpySubdivisionsToBiomeBlend(x, z, target) {
+  if (!target || target.count <= 0) return target;
+  const originalCount = target.count;
+  const originalBiomes = target.biomes.slice(0, originalCount);
+  const originalWeights = target.weights.slice(0, originalCount);
+  target.count = 0;
+  for (let i = 0; i < target.biomes.length; i += 1) {
+    target.biomes[i] = null;
+    target.weights[i] = 0;
+  }
+
+  for (let i = 0; i < originalCount; i += 1) {
+    const biome = originalBiomes[i];
+    const weight = originalWeights[i];
+    if (!biome || !(weight > 0)) continue;
+    const variants = BUMPY_BIOME_SUBDIVISIONS[biome.id];
+    if (!variants) {
+      upsertBiomeBlendEntry(target, biome, weight);
+      continue;
+    }
+    const [smoothW, normalW, jaggedW] = getBumpySubdivisionVariantWeightsAt(x, z, biome.id);
+    if (smoothW > 0.0001) upsertBiomeBlendEntry(target, BIOME_DEFS[variants.smoothId] || biome, weight * smoothW);
+    if (normalW > 0.0001) upsertBiomeBlendEntry(target, BIOME_DEFS[variants.normalId] || biome, weight * normalW);
+    if (jaggedW > 0.0001) upsertBiomeBlendEntry(target, BIOME_DEFS[variants.jaggedId] || biome, weight * jaggedW);
+  }
+  target.dominantBiome = null;
+  return normalizeBiomeBlendResult(target);
+}
+
+function finalizeBiomeBlendAt(x, z, target) {
+  applyMountainVariantsToBiomeBlend(x, z, target);
+  applyWetlandHeightOverride(x, z, target);
+  applyHighAltitudeVariantsToBiomeBlend(x, z, target);
+  return applyBumpySubdivisionsToBiomeBlend(x, z, target);
 }
 
 function getBiomeWithMountainVariantAt(x, z, biome) {
   if (!biome) return biome;
   return getMountainBiomeBlendWeightAt(x, z) >= 0.5
-    ? getMountainBiomeVariant(biome)
+    ? pickMountainBiomeVariantAt(x, z, biome)
+    : biome;
+}
+
+function getBiomeWithHighAltitudeVariantAt(x, z, biome, category = "temperate", humidityBand = "mesic") {
+  if (!biome) return biome;
+  return getHighAltitudeBiomeBlendWeightAt(x, z) >= 0.5
+    ? getHighAltitudeBiomeVariant(biome, category, humidityBand)
     : biome;
 }
 
 function fillBiomeBlendSample(x, z, target = createBiomeBlendSampleResult()) {
   const center = sampleBiomeClimateFields(x, z);
-  const categoryIndex = center.temperature < 0.37 ? 0 : center.temperature > 0.63 ? 2 : 1;
+  const dominantCategory = getTemperatureCategoryFromValue(center.temperature);
   const variantIndex = Math.min(2, Math.floor(center.selector * 3));
-  const dominantCategory = categoryIndex === 0 ? "cold" : categoryIndex === 2 ? "hot" : "temperate";
-  const dominantBiome = BIOME_DEFS[BIOME_VARIANTS[dominantCategory][variantIndex]];
+  const dominantHumidityBand = getHumidityBandKey(center.humidity);
+  const dominantBaseBiome = BIOME_DEFS[BIOME_VARIANTS[dominantCategory][variantIndex]];
+  const dominantLandBiome = getHumidityMappedBiome(dominantBaseBiome, dominantHumidityBand);
+  const centerMountainSample = fillTerrainAdditiveSampleAt(x, z, mountainBiomeAdditiveScratch);
+  const centerMountainAdditiveHeight = centerMountainSample.mountainAdditiveHeight || 0;
+  const centerMountainRangeMask = centerMountainSample.rangeMask || 0;
+  const dominantOceanRegime = getOceanRegimeFromMountainAdditiveHeight(centerMountainAdditiveHeight);
+  const dominantOceanBiome =
+    dominantOceanRegime === "land" ? null : getOceanBiome(dominantOceanRegime, dominantCategory, variantIndex);
+  const dominantBiome = dominantOceanBiome || dominantLandBiome;
   target.dominantBiome = dominantBiome;
+  const needsDeepOceanGapCheck = dominantOceanRegime === "open" && isDeepOpenOceanBiome(dominantOceanBiome);
 
+  const nearOceanOpenBoundary =
+    Math.abs(centerMountainAdditiveHeight - OCEAN_BIOME_OPEN_MAX_MOUNTAIN_ADDITIVE_HEIGHT) <=
+    OCEAN_BIOME_OPEN_BLEND_PRECHECK_HEIGHT;
+  const nearOceanLandBoundary =
+    Math.abs(centerMountainAdditiveHeight - OCEAN_BIOME_COASTAL_MAX_MOUNTAIN_ADDITIVE_HEIGHT) <=
+      OCEAN_BIOME_LAND_BLEND_PRECHECK_HEIGHT;
   const nearTempBoundary =
-    Math.abs(center.temperature - 0.37) <= BIOME_BLEND_PRECHECK_MARGIN ||
-    Math.abs(center.temperature - 0.63) <= BIOME_BLEND_PRECHECK_MARGIN;
+    Math.abs(center.temperature - CLIMATE_ZONE_THRESHOLD_LOW) <= BIOME_BLEND_PRECHECK_MARGIN ||
+    Math.abs(center.temperature - CLIMATE_ZONE_THRESHOLD_HIGH) <= BIOME_BLEND_PRECHECK_MARGIN;
   const nearSelectorBoundary =
     Math.abs(center.selector - 1 / 3) <= BIOME_BLEND_PRECHECK_MARGIN ||
     Math.abs(center.selector - 2 / 3) <= BIOME_BLEND_PRECHECK_MARGIN;
+  const shouldBlendHumidity = dominantOceanRegime === "land" || nearOceanLandBoundary;
+  const nearHumidityBoundary =
+    shouldBlendHumidity &&
+    (Math.abs(center.humidity - HUMIDITY_ZONE_THRESHOLD_LOW) <= BIOME_BLEND_PRECHECK_MARGIN ||
+      Math.abs(center.humidity - HUMIDITY_ZONE_THRESHOLD_HIGH) <= BIOME_BLEND_PRECHECK_MARGIN);
 
-  if (!nearTempBoundary && !nearSelectorBoundary) {
+  if (
+    !nearTempBoundary &&
+    !nearSelectorBoundary &&
+    !nearHumidityBoundary &&
+    !nearOceanOpenBoundary &&
+    !nearOceanLandBoundary &&
+    !needsDeepOceanGapCheck
+  ) {
     setSingleBiomeBlendResult(target, dominantBiome);
-    return applyMountainVariantsToBiomeBlend(x, z, target);
+    return finalizeBiomeBlendAt(x, z, target);
+  }
+
+  if (!nearTempBoundary && !nearSelectorBoundary && !nearHumidityBoundary && !nearOceanOpenBoundary && !nearOceanLandBoundary && needsDeepOceanGapCheck) {
+    const deepAllowance = getDeepOceanAllowance(centerMountainAdditiveHeight, centerMountainRangeMask);
+    const deepBiome = dominantOceanBiome;
+    const bufferedOceanBiome = getOceanBiome("open", dominantCategory, 0) || deepBiome;
+    if (!(deepAllowance > 0.0001) || !deepBiome || !bufferedOceanBiome || deepBiome.id === bufferedOceanBiome.id) {
+      setSingleBiomeBlendResult(target, bufferedOceanBiome || dominantBiome);
+      return finalizeBiomeBlendAt(x, z, target);
+    }
+    if (deepAllowance >= 0.9999) {
+      setSingleBiomeBlendResult(target, deepBiome);
+      return finalizeBiomeBlendAt(x, z, target);
+    }
+    target.count = 0;
+    target.dominantBiome = deepAllowance >= 0.5 ? deepBiome : bufferedOceanBiome;
+    for (let i = 0; i < target.biomes.length; i += 1) {
+      target.biomes[i] = null;
+      target.weights[i] = 0;
+    }
+    upsertBiomeBlendEntry(target, bufferedOceanBiome, 1 - deepAllowance);
+    upsertBiomeBlendEntry(target, deepBiome, deepAllowance);
+    normalizeBiomeBlendResult(target);
+    return finalizeBiomeBlendAt(x, z, target);
   }
 
   const h = BIOME_BLEND_GRADIENT_STEP_METERS;
@@ -2053,32 +3036,111 @@ function fillBiomeBlendSample(x, z, target = createBiomeBlendSampleResult()) {
   const tempGradZ = (zp.temperature - zm.temperature) * invSpan;
   const selectorGradX = (xp.selector - xm.selector) * invSpan;
   const selectorGradZ = (zp.selector - zm.selector) * invSpan;
+  const humidityGradX = (xp.humidity - xm.humidity) * invSpan;
+  const humidityGradZ = (zp.humidity - zm.humidity) * invSpan;
   const tempGradientPerMeter = Math.hypot(tempGradX, tempGradZ);
   const selectorGradientPerMeter = Math.hypot(selectorGradX, selectorGradZ);
+  const humidityGradientPerMeter = Math.hypot(humidityGradX, humidityGradZ);
 
   const [coldW, temperateW, hotW] = getBiomeCategoryWeights(center.temperature, tempGradientPerMeter);
   const [lowW, midW, highW] = getBiomeVariantWeights(center.selector, selectorGradientPerMeter);
+  const [xericW, mesicW, hydricW] = getHumidityZoneWeights(center.humidity, humidityGradientPerMeter);
+
+  let oceanOpenWeight = 0;
+  let oceanCoastalWeight = 0;
+  let landWeight = 1;
+  if (dominantOceanRegime === "open") {
+    oceanOpenWeight = 1;
+    landWeight = 0;
+  } else if (dominantOceanRegime === "coastal") {
+    oceanCoastalWeight = 1;
+    landWeight = 0;
+  }
+
+  if (nearOceanOpenBoundary || nearOceanLandBoundary) {
+    const openToCoastal = smoothstep(
+      OCEAN_BIOME_OPEN_MAX_MOUNTAIN_ADDITIVE_HEIGHT - OCEAN_BIOME_OPEN_COASTAL_BLEND_HALF_WIDTH_METERS,
+      OCEAN_BIOME_OPEN_MAX_MOUNTAIN_ADDITIVE_HEIGHT + OCEAN_BIOME_OPEN_COASTAL_BLEND_HALF_WIDTH_METERS,
+      centerMountainAdditiveHeight
+    );
+    const coastalToLand = smoothstep(
+      OCEAN_BIOME_COASTAL_MAX_MOUNTAIN_ADDITIVE_HEIGHT - OCEAN_BIOME_LAND_BLEND_HALF_WIDTH_METERS,
+      OCEAN_BIOME_COASTAL_MAX_MOUNTAIN_ADDITIVE_HEIGHT + OCEAN_BIOME_LAND_BLEND_HALF_WIDTH_METERS,
+      centerMountainAdditiveHeight
+    );
+    oceanOpenWeight = 1 - openToCoastal;
+    oceanCoastalWeight = openToCoastal * (1 - coastalToLand);
+    landWeight = openToCoastal * coastalToLand;
+  }
+  [oceanOpenWeight, oceanCoastalWeight, landWeight] = normalizeWeightTriplet(
+    oceanOpenWeight,
+    oceanCoastalWeight,
+    landWeight
+  );
+  const deepOceanAllowance =
+    oceanOpenWeight > 0.0001 && midW > 0.0001
+      ? getDeepOceanAllowance(centerMountainAdditiveHeight, centerMountainRangeMask)
+      : 1;
 
   target.count = 0;
   const categoryWeights = [coldW, temperateW, hotW];
   const categoryKeys = ["cold", "temperate", "hot"];
   const variantWeights = [lowW, midW, highW];
+  const humidityWeights = [xericW, mesicW, hydricW];
   for (let ci = 0; ci < categoryKeys.length; ci += 1) {
     const cWeight = categoryWeights[ci];
     if (!(cWeight > 0.0001)) continue;
     const variants = BIOME_VARIANTS[categoryKeys[ci]];
     for (let vi = 0; vi < variants.length; vi += 1) {
-      const weight = cWeight * variantWeights[vi];
-      if (!(weight > 0.0001)) continue;
-      upsertBiomeBlendEntry(target, BIOME_DEFS[variants[vi]], weight);
+      const variantWeight = variantWeights[vi];
+      if (!(variantWeight > 0.0001)) continue;
+      const climateWeight = cWeight * variantWeight;
+      if (!(climateWeight > 0.0001)) continue;
+      const categoryKey = categoryKeys[ci];
+
+      if (oceanOpenWeight > 0.0001) {
+        const openBiome = getOceanBiome("open", categoryKey, vi);
+        const openWeight = climateWeight * oceanOpenWeight;
+        if (openBiome && openWeight > 0.0001) {
+          if (deepOceanAllowance < 0.9999 && isDeepOpenOceanBiome(openBiome)) {
+            const deepWeight = openWeight * deepOceanAllowance;
+            const bufferedWeight = openWeight - deepWeight;
+            if (deepWeight > 0.0001) upsertBiomeBlendEntry(target, openBiome, deepWeight);
+            if (bufferedWeight > 0.0001) {
+              const bufferedBiome = getOceanBiome("open", categoryKey, 0) || openBiome;
+              upsertBiomeBlendEntry(target, bufferedBiome, bufferedWeight);
+            }
+          } else {
+            upsertBiomeBlendEntry(target, openBiome, openWeight);
+          }
+        }
+      }
+
+      if (oceanCoastalWeight > 0.0001) {
+        const coastalBiome = getOceanBiome("coastal", categoryKey, vi);
+        if (coastalBiome) upsertBiomeBlendEntry(target, coastalBiome, climateWeight * oceanCoastalWeight);
+      }
+
+      if (landWeight > 0.0001) {
+        const baseBiome = BIOME_DEFS[variants[vi]];
+        if (!baseBiome) continue;
+        for (let hi = 0; hi < humidityWeights.length; hi += 1) {
+          const humidityWeight = humidityWeights[hi];
+          if (!(humidityWeight > 0.0001)) continue;
+          const weight = climateWeight * humidityWeight * landWeight;
+          if (!(weight > 0.0001)) continue;
+          const humidityBand = HUMIDITY_ZONE_KEYS[hi];
+          upsertBiomeBlendEntry(target, getHumidityMappedBiome(baseBiome, humidityBand), weight);
+        }
+      }
     }
   }
   if (target.count === 0) {
     setSingleBiomeBlendResult(target, dominantBiome);
-    return applyMountainVariantsToBiomeBlend(x, z, target);
+    return finalizeBiomeBlendAt(x, z, target);
   }
   normalizeBiomeBlendResult(target);
-  return applyMountainVariantsToBiomeBlend(x, z, target);
+  return finalizeBiomeBlendAt(x, z, target);
 }
 
 const terrainColorBlendScratch = createBiomeBlendSampleResult();
@@ -2098,19 +3160,46 @@ const blendedVisualStateScratch = {
 const heightAt = createTerrainHeightSampler({
   getNoiseSeed: () => noiseSeed,
   getTerrain: () => state.world.terrain,
+  getWaterLevel: () => state.world.water.level,
   terrainHorizontalScale: TERRAIN_HORIZONTAL_SCALE,
   sampleBiomeTerrainBlend: (x, z, target) => fillBiomeBlendSample(x, z, target),
   getBiomeTerrainProfile,
+  getDefaultBiomeTerrainProfile: () => getBiomeTerrainProfile(BIOME_DEFS[DEFAULT_TRANSITION_BIOME_ID]),
+  biomeEdgeSmooth: { start: BIOME_EDGE_SMOOTH_START_METERS, max: BIOME_EDGE_SMOOTH_MAX_METERS },
 });
+heightAt.mountainBiomeThresholdMeters = 100;
 
 function getBiomeAt(x, z) {
   const climate = sampleBiomeClimateFields(x, z);
-  let category = "temperate";
-  if (climate.temperature < 0.37) category = "cold";
-  else if (climate.temperature > 0.63) category = "hot";
-  const variants = BIOME_VARIANTS[category];
+  const category = getTemperatureCategoryFromValue(climate.temperature);
+  const humidityBand = getHumidityBandKey(climate.humidity);
   const index = Math.min(2, Math.floor(climate.selector * 3));
-  return getBiomeWithMountainVariantAt(x, z, BIOME_DEFS[variants[index]]);
+  const mountainSample = fillTerrainAdditiveSampleAt(x, z, mountainBiomeAdditiveScratch);
+  const mountainAdditiveHeight = mountainSample.mountainAdditiveHeight || 0;
+  const mountainRangeMask = mountainSample.rangeMask || 0;
+  const oceanRegime = getOceanRegimeFromMountainAdditiveHeight(mountainAdditiveHeight);
+  if (oceanRegime !== "land") {
+    const oceanBiome = getOceanBiome(oceanRegime, category, index);
+    if (oceanRegime === "open" && isDeepOpenOceanBiome(oceanBiome)) {
+      const deepAllowance = getDeepOceanAllowance(mountainAdditiveHeight, mountainRangeMask);
+      if (deepAllowance < 0.5) {
+        return getOceanBiome("open", category, 0) || oceanBiome || BIOME_DEFS.ocean || BIOME_DEFS.meadow;
+      }
+    }
+    return oceanBiome || BIOME_DEFS.ocean || BIOME_DEFS.meadow;
+  }
+
+  const variants = BIOME_VARIANTS[category];
+  const baseBiome = getHumidityMappedBiome(BIOME_DEFS[variants[index]], humidityBand);
+  const mountainAdjusted = getBiomeWithMountainVariantAt(x, z, baseBiome);
+  let wetlandAdjusted = mountainAdjusted;
+  if (mountainAdjusted?.wetlandRetentionGroup === "wetland" && shouldDemoteWetlandAt(x, z)) {
+    const fallbackHumidityBand = mountainAdjusted.humidityBand || humidityBand;
+    const fallbackId = BIOME_HUMIDITY_LOOKUP.meadow?.[fallbackHumidityBand] || "meadow";
+    wetlandAdjusted = BIOME_DEFS[fallbackId] || BIOME_DEFS.meadow;
+  }
+  const highAltitudeAdjusted = getBiomeWithHighAltitudeVariantAt(x, z, wetlandAdjusted, category, humidityBand);
+  return getBumpySubdividedBiomeForPoint(x, z, highAltitudeAdjusted);
 }
 
 function getGroundPointInfo(x, z) {
@@ -2134,7 +3223,7 @@ function toPlayerPlacementTarget(x, z, groundY) {
   return {
     x,
     z,
-    y: Math.max(groundY + PLAYER_TARGET_HEIGHT_OFFSET, state.world.water.level + PLAYER_TARGET_HEIGHT_OFFSET),
+    y: groundY,
   };
 }
 
@@ -2184,56 +3273,34 @@ function pickBetterSpawnCandidate(best, next) {
 }
 
 function tryFindLandSpawnNearOrigin() {
-  let attempts = 0;
   let best = null;
+  const searchRadii = buildSpawnSearchRadii(SPAWN_SEARCH_MAX_DISTANCE, SPAWN_SEARCH_STEP);
 
   const inspect = (x, z, radius) => {
-    if (attempts >= SPAWN_SEARCH_MAX_ATTEMPTS) return "stop";
-    attempts += 1;
     const info = getGroundPointInfo(x, z);
-    const candidate = { x, z, radius, ...info };
+    const placement = toPlayerPlacementTarget(x, z, info.groundY);
+    const candidate = { x, z, radius, placement, ...info };
     best = pickBetterSpawnCandidate(best, candidate);
     if (info.isDryLand && info.slope <= SPAWN_MAX_SLOPE_SCORE) {
-      return toPlayerPlacementTarget(x, z, info.groundY);
+      return candidate;
     }
     return null;
   };
 
-  for (let radius = 0; radius <= SPAWN_SEARCH_MAX_RADIUS; radius += SPAWN_SEARCH_STEP) {
-    if (radius === 0) {
-      const result = inspect(0, 0, 0);
-      if (result === "stop") break;
-      if (result) return result;
-      continue;
-    }
+  for (const radius of searchRadii) {
     let ringBestDry = null;
-    for (let offset = -radius; offset <= radius; offset += SPAWN_SEARCH_STEP) {
-      const candidates = [
-        [offset, -radius],
-        [radius, offset],
-        [offset, radius],
-        [-radius, offset],
-      ];
-      for (const [x, z] of candidates) {
-        const result = inspect(x, z, radius);
-        if (result === "stop") {
-          if (ringBestDry) return ringBestDry.placement;
-          return best?.isDryLand ? toPlayerPlacementTarget(best.x, best.z, best.groundY) : null;
-        }
-        if (result) {
-          const info = getGroundPointInfo(x, z);
-          const placement = toPlayerPlacementTarget(x, z, info.groundY);
-          ringBestDry = ringBestDry
-            ? pickBetterSpawnCandidate(ringBestDry, { x, z, radius, ...info, placement })
-            : { x, z, radius, ...info, placement };
-        }
-      }
+    for (const [x, z] of buildSpawnRingPositions(radius, SPAWN_SEARCH_STEP)) {
+      // Rings are sampled on square edges; clamp them to the requested radial limit.
+      if (!isWithinSpawnSearchDistance(x, z, SPAWN_SEARCH_MAX_DISTANCE)) continue;
+      const result = inspect(x, z, radius);
+      if (!result) continue;
+      ringBestDry = ringBestDry ? pickBetterSpawnCandidate(ringBestDry, result) : result;
     }
     if (ringBestDry) return ringBestDry.placement;
   }
 
   if (best?.isDryLand) {
-    return toPlayerPlacementTarget(best.x, best.z, best.groundY);
+    return best.placement;
   }
   return null;
 }
@@ -2243,7 +3310,7 @@ function resetPlayerToLandSpawnNearOrigin() {
   if (target) {
     player.position.set(target.x, target.y, target.z);
   } else {
-    player.position.set(0, 12, 0);
+    player.position.set(0, heightAt(0, 0), 0);
   }
   player.velocity.set(0, 0, 0);
   player.grounded = false;
@@ -2271,7 +3338,7 @@ function ensureChunks(cx, cz) {
       const key = `${cx + dx},${cz + dz}`;
       if (!chunks.has(key)) {
         const mesh = buildChunk(cx + dx, cz + dz);
-        scene.add(mesh);
+        worldGroup.add(mesh);
         chunks.set(key, mesh);
       }
       ensureTreeChunk(cx + dx, cz + dz, key);
@@ -2284,11 +3351,11 @@ function ensureChunks(cx, cz) {
     const dx = x - cx;
     const dz = z - cz;
     if (dx * dx + dz * dz > chunkKeepRadiusSq) {
-      scene.remove(mesh);
+      worldGroup.remove(mesh);
       mesh.geometry.dispose();
       const treeGroup = treeChunks.get(key);
       if (treeGroup) {
-        scene.remove(treeGroup);
+        worldGroup.remove(treeGroup);
       }
       treeChunks.delete(key);
       chunks.delete(key);
@@ -2298,12 +3365,19 @@ function ensureChunks(cx, cz) {
 
 function buildChunkCoordinateQueue(cx, cz, radius = CHUNK_RADIUS) {
   const coords = [];
-  const radiusSq = radius * radius;
+  const playerX = player.position.x;
+  const playerZ = player.position.z;
+  const radiusMeters = radius * CHUNK_SIZE;
+  const radiusSq = radiusMeters * radiusMeters;
   for (let dz = -radius; dz <= radius; dz += 1) {
     for (let dx = -radius; dx <= radius; dx += 1) {
-      const d2 = dx * dx + dz * dz;
+      const tileX = cx + dx;
+      const tileZ = cz + dz;
+      const centerX = tileX * CHUNK_SIZE - playerX;
+      const centerZ = tileZ * CHUNK_SIZE - playerZ;
+      const d2 = centerX * centerX + centerZ * centerZ;
       if (d2 > radiusSq) continue;
-      coords.push({ x: cx + dx, z: cz + dz, d2 });
+      coords.push({ x: tileX, z: tileZ, d2 });
     }
   }
   coords.sort((a, b) => a.d2 - b.d2);
@@ -2313,15 +3387,17 @@ function buildChunkCoordinateQueue(cx, cz, radius = CHUNK_RADIUS) {
 function buildMidTileCoordinateQueue(cx, cz, radius = MID_TILE_RADIUS) {
   const coords = [];
   const outerRadiusSq = MID_TILE_CULL_RADIUS * MID_TILE_CULL_RADIUS;
-  const innerRadiusSq = MID_TILE_INNER_CULL_RADIUS * MID_TILE_INNER_CULL_RADIUS;
+  const playerX = player.position.x;
+  const playerZ = player.position.z;
   for (let dz = -radius; dz <= radius; dz += 1) {
     for (let dx = -radius; dx <= radius; dx += 1) {
-      const centerX = dx * MID_TILE_SIZE;
-      const centerZ = dz * MID_TILE_SIZE;
+      const tileX = cx + dx;
+      const tileZ = cz + dz;
+      const centerX = tileX * MID_TILE_SIZE - playerX;
+      const centerZ = tileZ * MID_TILE_SIZE - playerZ;
       const d2 = centerX * centerX + centerZ * centerZ;
       if (d2 > outerRadiusSq) continue;
-      if (innerRadiusSq > 0 && d2 <= innerRadiusSq) continue;
-      coords.push({ x: cx + dx, z: cz + dz, d2 });
+      coords.push({ x: tileX, z: tileZ, d2 });
     }
   }
   coords.sort((a, b) => a.d2 - b.d2);
@@ -2331,15 +3407,17 @@ function buildMidTileCoordinateQueue(cx, cz, radius = MID_TILE_RADIUS) {
 function buildFarTileCoordinateQueue(cx, cz, radius = FAR_TILE_RADIUS) {
   const coords = [];
   const outerRadiusSq = FAR_TILE_CULL_RADIUS * FAR_TILE_CULL_RADIUS;
-  const innerRadiusSq = FAR_TILE_INNER_CULL_RADIUS * FAR_TILE_INNER_CULL_RADIUS;
+  const playerX = player.position.x;
+  const playerZ = player.position.z;
   for (let dz = -radius; dz <= radius; dz += 1) {
     for (let dx = -radius; dx <= radius; dx += 1) {
-      const centerX = dx * FAR_TILE_SIZE;
-      const centerZ = dz * FAR_TILE_SIZE;
+      const tileX = cx + dx;
+      const tileZ = cz + dz;
+      const centerX = tileX * FAR_TILE_SIZE - playerX;
+      const centerZ = tileZ * FAR_TILE_SIZE - playerZ;
       const d2 = centerX * centerX + centerZ * centerZ;
       if (d2 > outerRadiusSq) continue;
-      if (innerRadiusSq > 0 && d2 <= innerRadiusSq) continue;
-      coords.push({ x: cx + dx, z: cz + dz, d2 });
+      coords.push({ x: tileX, z: tileZ, d2 });
     }
   }
   coords.sort((a, b) => a.d2 - b.d2);
@@ -2361,7 +3439,7 @@ function ensureChunksIncremental(cx, cz, options = {}) {
       const key = `${x},${z}`;
       if (!chunks.has(key)) {
         const mesh = buildChunk(x, z);
-        scene.add(mesh);
+        worldGroup.add(mesh);
         chunks.set(key, mesh);
       }
       ensureTreeChunk(x, z, key);
@@ -2376,17 +3454,21 @@ function ensureChunksIncremental(cx, cz, options = {}) {
       return;
     }
 
-    const chunkKeepRadiusSq = (CHUNK_RADIUS + 1) * (CHUNK_RADIUS + 1);
+    const playerX = player.position.x;
+    const playerZ = player.position.z;
+    const chunkKeepRadiusMeters = (CHUNK_RADIUS + 1) * CHUNK_SIZE;
+    const chunkKeepRadiusSq = chunkKeepRadiusMeters * chunkKeepRadiusMeters;
     for (const [key, mesh] of chunks.entries()) {
       const [x, z] = key.split(",").map(Number);
-      const dx = x - cx;
-      const dz = z - cz;
-      if (dx * dx + dz * dz > chunkKeepRadiusSq) {
-        scene.remove(mesh);
+      const centerX = x * CHUNK_SIZE - playerX;
+      const centerZ = z * CHUNK_SIZE - playerZ;
+      const d2 = centerX * centerX + centerZ * centerZ;
+      if (d2 > chunkKeepRadiusSq) {
+        worldGroup.remove(mesh);
         mesh.geometry.dispose();
         const treeGroup = treeChunks.get(key);
         if (treeGroup) {
-          scene.remove(treeGroup);
+          worldGroup.remove(treeGroup);
         }
         treeChunks.delete(key);
         chunks.delete(key);
@@ -2417,7 +3499,12 @@ function ensureMidTerrainIncremental(cx, cz, options = {}) {
       const key = `${x},${z}`;
       if (!midTiles.has(key)) {
         const mesh = buildMidTile(x, z);
-        scene.add(mesh);
+        if (MID_TILE_INNER_CULL_RADIUS > 0) {
+          const dx = x * MID_TILE_SIZE - player.position.x;
+          const dz = z * MID_TILE_SIZE - player.position.z;
+          mesh.visible = dx * dx + dz * dz > MID_TILE_INNER_CULL_RADIUS * MID_TILE_INNER_CULL_RADIUS;
+        }
+        worldGroup.add(mesh);
         midTiles.set(key, mesh);
       }
     }
@@ -2433,17 +3520,21 @@ function ensureMidTerrainIncremental(cx, cz, options = {}) {
 
     const outerKeepRadiusSq = MID_TILE_KEEP_RADIUS * MID_TILE_KEEP_RADIUS;
     const innerRadiusSq = MID_TILE_INNER_CULL_RADIUS * MID_TILE_INNER_CULL_RADIUS;
+    const playerX = player.position.x;
+    const playerZ = player.position.z;
     for (const [key, mesh] of midTiles.entries()) {
       const [x, z] = key.split(",").map(Number);
-      const dx = x - cx;
-      const dz = z - cz;
-      const centerX = dx * MID_TILE_SIZE;
-      const centerZ = dz * MID_TILE_SIZE;
+      const centerX = x * MID_TILE_SIZE - playerX;
+      const centerZ = z * MID_TILE_SIZE - playerZ;
       const d2 = centerX * centerX + centerZ * centerZ;
-      if (d2 > outerKeepRadiusSq || (innerRadiusSq > 0 && d2 <= innerRadiusSq)) {
-        scene.remove(mesh);
+      if (d2 > outerKeepRadiusSq) {
+        worldGroup.remove(mesh);
         mesh.geometry.dispose();
         midTiles.delete(key);
+        continue;
+      }
+      if (innerRadiusSq > 0) {
+        mesh.visible = d2 > innerRadiusSq;
       }
     }
 
@@ -2471,7 +3562,12 @@ function ensureFarTerrainIncremental(cx, cz, options = {}) {
       const key = `${x},${z}`;
       if (!farTiles.has(key)) {
         const mesh = buildFarTile(x, z);
-        scene.add(mesh);
+        if (FAR_TILE_INNER_CULL_RADIUS > 0) {
+          const dx = x * FAR_TILE_SIZE - player.position.x;
+          const dz = z * FAR_TILE_SIZE - player.position.z;
+          mesh.visible = dx * dx + dz * dz > FAR_TILE_INNER_CULL_RADIUS * FAR_TILE_INNER_CULL_RADIUS;
+        }
+        worldGroup.add(mesh);
         farTiles.set(key, mesh);
       }
     }
@@ -2487,17 +3583,21 @@ function ensureFarTerrainIncremental(cx, cz, options = {}) {
 
     const outerKeepRadiusSq = FAR_TILE_KEEP_RADIUS * FAR_TILE_KEEP_RADIUS;
     const innerRadiusSq = FAR_TILE_INNER_CULL_RADIUS * FAR_TILE_INNER_CULL_RADIUS;
+    const playerX = player.position.x;
+    const playerZ = player.position.z;
     for (const [key, mesh] of farTiles.entries()) {
       const [x, z] = key.split(",").map(Number);
-      const dx = x - cx;
-      const dz = z - cz;
-      const centerX = dx * FAR_TILE_SIZE;
-      const centerZ = dz * FAR_TILE_SIZE;
+      const centerX = x * FAR_TILE_SIZE - playerX;
+      const centerZ = z * FAR_TILE_SIZE - playerZ;
       const d2 = centerX * centerX + centerZ * centerZ;
-      if (d2 > outerKeepRadiusSq || (innerRadiusSq > 0 && d2 <= innerRadiusSq)) {
-        scene.remove(mesh);
+      if (d2 > outerKeepRadiusSq) {
+        worldGroup.remove(mesh);
         mesh.geometry.dispose();
         farTiles.delete(key);
+        continue;
+      }
+      if (innerRadiusSq > 0) {
+        mesh.visible = d2 > innerRadiusSq;
       }
     }
 
@@ -2608,19 +3708,19 @@ function ensureFarTerrainRuntimeIncremental(cx, cz) {
 
 function clearChunks() {
   chunks.forEach((mesh) => {
-    scene.remove(mesh);
+    worldGroup.remove(mesh);
     mesh.geometry.dispose();
   });
   chunks.clear();
   treeChunks.forEach((treeGroup) => {
-    scene.remove(treeGroup);
+          worldGroup.remove(treeGroup);
   });
   treeChunks.clear();
 }
 
 function clearFarTerrain() {
   farTiles.forEach((mesh) => {
-    scene.remove(mesh);
+    worldGroup.remove(mesh);
     mesh.geometry.dispose();
   });
   farTiles.clear();
@@ -2633,7 +3733,7 @@ function clearFarTerrain() {
 
 function clearMidTerrain() {
   midTiles.forEach((mesh) => {
-    scene.remove(mesh);
+    worldGroup.remove(mesh);
     mesh.geometry.dispose();
   });
   midTiles.clear();
@@ -2678,14 +3778,14 @@ function ensureTreeChunk(cx, cz, key = `${cx},${cz}`) {
   const density = state.world.trees.density;
   if (density <= 0) {
     const existing = treeChunks.get(key);
-    if (existing) scene.remove(existing);
+    if (existing) worldGroup.remove(existing);
     treeChunks.delete(key);
     return;
   }
   if (treeChunks.has(key)) return;
   const group = buildTreeChunk(cx, cz);
   if (!group) return;
-  scene.add(group);
+  worldGroup.add(group);
   treeChunks.set(key, group);
 }
 
@@ -2719,9 +3819,21 @@ function buildTreeChunk(cx, cz) {
 
     const scale = 0.7 + hash2(cx * 97 + i * 13 + 7, cz * 83 + i * 11 + 17) * 0.9;
     const materialSet = getBiomeTreeMaterialSet(biome);
+    const treeStyle = biome.treeStyle ?? "broadleaf";
+    const trunkHeightScale =
+      treeStyle === "shrubland"
+        ? 0.56
+        : treeStyle === "thorn"
+          ? 0.74
+          : treeStyle === "muskeg"
+            ? 0.82
+            : treeStyle === "rainforest" || treeStyle === "monsoon"
+              ? 1.18
+              : 1;
+    const trunkWidthScale = treeStyle === "shrubland" ? 1.0 : treeStyle === "thorn" ? 1.2 : 1.5;
     const trunk = new THREE.Mesh(treeTrunkGeometry, materialSet.trunk);
-    trunk.position.set(worldX, groundY + 2.0 * scale, worldZ);
-    trunk.scale.set(1.5 * scale, scale, 1.5 * scale);
+    trunk.position.set(worldX, groundY + 2.0 * scale * trunkHeightScale, worldZ);
+    trunk.scale.set(trunkWidthScale * scale, scale * trunkHeightScale, trunkWidthScale * scale);
     trunk.receiveShadow = true;
     trunk.castShadow = scale > 0.92;
     trunk.renderOrder = TREE_RENDER_ORDER;
@@ -2730,18 +3842,17 @@ function buildTreeChunk(cx, cz) {
     const canopyMaterial =
       materialSet.canopies[Math.floor(hash2(cx * 181 + i * 9 + 17, cz * 223 + i * 13 + 43) * materialSet.canopies.length)];
     const variant = Math.floor(hash2(cx * 131 + i * 7 + 31, cz * 197 + i * 5 + 61) * 3);
-    const treeStyle = biome.treeStyle ?? "broadleaf";
 
-    if (treeStyle === "conifer") {
+    if (treeStyle === "conifer" || treeStyle === "subalpine") {
       const canopy = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
-      canopy.position.set(worldX, groundY + 5.8 * scale, worldZ);
+      canopy.position.set(worldX, groundY + 5.8 * scale * trunkHeightScale, worldZ);
       canopy.scale.set(2.05 * scale, 1.15 * scale, 2.05 * scale);
       canopy.receiveShadow = true;
       canopy.castShadow = scale > 0.96;
       canopy.renderOrder = TREE_RENDER_ORDER;
       group.add(canopy);
       const upper = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
-      upper.position.set(worldX, groundY + 7.3 * scale, worldZ);
+      upper.position.set(worldX, groundY + 7.3 * scale * trunkHeightScale, worldZ);
       upper.scale.set(1.28 * scale, 0.72 * scale, 1.28 * scale);
       upper.receiveShadow = true;
       upper.castShadow = false;
@@ -2765,6 +3876,50 @@ function buildTreeChunk(cx, cz) {
         canopySide.renderOrder = TREE_RENDER_ORDER;
         group.add(canopySide);
       }
+    } else if (treeStyle === "rainforest" || treeStyle === "monsoon") {
+      const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+      canopyMain.position.set(worldX, groundY + 6.95 * scale, worldZ);
+      canopyMain.scale.set(1.85 * scale, 1.34 * scale, 1.85 * scale);
+      canopyMain.receiveShadow = true;
+      canopyMain.castShadow = scale > 0.9;
+      canopyMain.renderOrder = TREE_RENDER_ORDER;
+      group.add(canopyMain);
+
+      const canopyUpper = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+      canopyUpper.position.set(worldX - 0.2 * scale, groundY + 8.15 * scale, worldZ + 0.14 * scale);
+      canopyUpper.scale.set(1.08 * scale, 0.84 * scale, 1.08 * scale);
+      canopyUpper.receiveShadow = true;
+      canopyUpper.castShadow = false;
+      canopyUpper.renderOrder = TREE_RENDER_ORDER;
+      group.add(canopyUpper);
+
+      if (variant !== 0 || treeStyle === "monsoon") {
+        const flank = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+        flank.position.set(worldX + 0.86 * scale, groundY + 6.55 * scale, worldZ - 0.65 * scale);
+        flank.scale.set(0.9 * scale, 0.64 * scale, 0.9 * scale);
+        flank.receiveShadow = true;
+        flank.castShadow = false;
+        flank.renderOrder = TREE_RENDER_ORDER;
+        group.add(flank);
+      }
+    } else if (treeStyle === "woodland") {
+      const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+      canopyMain.position.set(worldX, groundY + 5.75 * scale, worldZ);
+      canopyMain.scale.set(1.56 * scale, 0.82 * scale, 1.56 * scale);
+      canopyMain.receiveShadow = true;
+      canopyMain.castShadow = scale > 0.94;
+      canopyMain.renderOrder = TREE_RENDER_ORDER;
+      group.add(canopyMain);
+
+      if (variant === 2) {
+        const canopySide = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+        canopySide.position.set(worldX - 0.62 * scale, groundY + 5.38 * scale, worldZ + 0.42 * scale);
+        canopySide.scale.set(0.76 * scale, 0.4 * scale, 0.76 * scale);
+        canopySide.receiveShadow = true;
+        canopySide.castShadow = false;
+        canopySide.renderOrder = TREE_RENDER_ORDER;
+        group.add(canopySide);
+      }
     } else if (treeStyle === "wetland") {
       const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
       canopyMain.position.set(worldX, groundY + 6.0 * scale, worldZ);
@@ -2781,6 +3936,84 @@ function buildTreeChunk(cx, cz) {
       droop.castShadow = false;
       droop.renderOrder = TREE_RENDER_ORDER;
       group.add(droop);
+    } else if (treeStyle === "shrubland") {
+      const shrubA = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+      shrubA.position.set(worldX, groundY + 3.2 * scale, worldZ);
+      shrubA.scale.set(1.24 * scale, 0.54 * scale, 1.24 * scale);
+      shrubA.receiveShadow = true;
+      shrubA.castShadow = false;
+      shrubA.renderOrder = TREE_RENDER_ORDER;
+      group.add(shrubA);
+
+      if (variant !== 1) {
+        const shrubB = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+        shrubB.position.set(worldX + 0.46 * scale, groundY + 3.0 * scale, worldZ - 0.38 * scale);
+        shrubB.scale.set(0.84 * scale, 0.34 * scale, 0.84 * scale);
+        shrubB.receiveShadow = true;
+        shrubB.castShadow = false;
+        shrubB.renderOrder = TREE_RENDER_ORDER;
+        group.add(shrubB);
+      }
+    } else if (treeStyle === "thorn") {
+      const canopyMain = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
+      canopyMain.position.set(worldX, groundY + 4.95 * scale, worldZ);
+      canopyMain.scale.set(1.08 * scale, 0.86 * scale, 1.08 * scale);
+      canopyMain.receiveShadow = true;
+      canopyMain.castShadow = scale > 0.96;
+      canopyMain.renderOrder = TREE_RENDER_ORDER;
+      group.add(canopyMain);
+
+      const thornSpire = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
+      thornSpire.position.set(worldX + 0.16 * scale, groundY + 6.1 * scale, worldZ - 0.12 * scale);
+      thornSpire.scale.set(0.52 * scale, 0.66 * scale, 0.52 * scale);
+      thornSpire.receiveShadow = true;
+      thornSpire.castShadow = false;
+      thornSpire.renderOrder = TREE_RENDER_ORDER;
+      group.add(thornSpire);
+    } else if (treeStyle === "cloudforest") {
+      const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+      canopyMain.position.set(worldX, groundY + 6.4 * scale, worldZ);
+      canopyMain.scale.set(1.72 * scale, 1.08 * scale, 1.72 * scale);
+      canopyMain.receiveShadow = true;
+      canopyMain.castShadow = scale > 0.9;
+      canopyMain.renderOrder = TREE_RENDER_ORDER;
+      group.add(canopyMain);
+
+      const mossCape = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
+      mossCape.position.set(worldX, groundY + 5.05 * scale, worldZ);
+      mossCape.scale.set(1.52 * scale, 0.52 * scale, 1.52 * scale);
+      mossCape.receiveShadow = true;
+      mossCape.castShadow = false;
+      mossCape.renderOrder = TREE_RENDER_ORDER;
+      group.add(mossCape);
+
+      if (variant === 2) {
+        const upper = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
+        upper.position.set(worldX - 0.08 * scale, groundY + 7.65 * scale, worldZ + 0.1 * scale);
+        upper.scale.set(0.88 * scale, 0.56 * scale, 0.88 * scale);
+        upper.receiveShadow = true;
+        upper.castShadow = false;
+        upper.renderOrder = TREE_RENDER_ORDER;
+        group.add(upper);
+      }
+    } else if (treeStyle === "muskeg") {
+      const canopy = new THREE.Mesh(treeCanopyConeGeometry, canopyMaterial);
+      canopy.position.set(worldX, groundY + 4.7 * scale, worldZ);
+      canopy.scale.set(1.32 * scale, 0.82 * scale, 1.32 * scale);
+      canopy.receiveShadow = true;
+      canopy.castShadow = scale > 1.02;
+      canopy.renderOrder = TREE_RENDER_ORDER;
+      group.add(canopy);
+
+      if (variant !== 0) {
+        const side = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
+        side.position.set(worldX - 0.48 * scale, groundY + 4.35 * scale, worldZ + 0.34 * scale);
+        side.scale.set(0.56 * scale, 0.36 * scale, 0.56 * scale);
+        side.receiveShadow = true;
+        side.castShadow = false;
+        side.renderOrder = TREE_RENDER_ORDER;
+        group.add(side);
+      }
     } else if (variant === 1) {
       const canopyMain = new THREE.Mesh(treeCanopySphereGeometry, canopyMaterial);
       canopyMain.position.set(worldX, groundY + 6.1 * scale, worldZ);
@@ -2854,6 +4087,7 @@ function buildChunk(cx, cz) {
   const detailBiomes = new Float32Array(vertices.count);
   const detailBiomeFades = new Float32Array(vertices.count);
   const heightGrid = new Float32Array(CHUNK_GRID_STRIDE * CHUNK_GRID_STRIDE);
+  const colorGrid = new Float32Array(CHUNK_GRID_STRIDE * CHUNK_GRID_STRIDE * 3);
   const chunkBiomeBlendScratch = createBiomeBlendSampleResult();
   for (let i = 0; i < vertices.count; i += 1) {
     const localX = vertices.getX(i);
@@ -2876,6 +4110,10 @@ function buildChunk(cx, cz) {
     colors[i * 3] = color.r * brighten;
     colors[i * 3 + 1] = color.g * brighten;
     colors[i * 3 + 2] = color.b * brighten;
+    const gridIndex = (gz * CHUNK_GRID_STRIDE + gx) * 3;
+    colorGrid[gridIndex] = colors[i * 3];
+    colorGrid[gridIndex + 1] = colors[i * 3 + 1];
+    colorGrid[gridIndex + 2] = colors[i * 3 + 2];
     detailBiomes[i] = getTerrainDetailBiomeId(biome);
     detailBiomeFades[i] = getTerrainDetailBiomeFadeFromBlend(blend);
   }
@@ -2890,6 +4128,10 @@ function buildChunk(cx, cz) {
   mesh.castShadow = false;
   mesh.renderOrder = 1;
   mesh.userData.heightGrid = heightGrid;
+  mesh.userData.colorGrid = colorGrid;
+  mesh.userData.gridStride = CHUNK_GRID_STRIDE;
+  mesh.userData.tileSize = CHUNK_SIZE;
+  mesh.userData.tileRes = CHUNK_RES;
   mesh.userData.chunkCoordX = cx;
   mesh.userData.chunkCoordZ = cz;
   return mesh;
@@ -2902,10 +4144,16 @@ function buildFarTile(cx, cz) {
   const colors = new Float32Array(vertices.count * 3);
   const detailBiomes = new Float32Array(vertices.count);
   const detailBiomeFades = new Float32Array(vertices.count);
+  const tileStride = FAR_TILE_RES + 1;
+  const cellSize = FAR_TILE_SIZE / FAR_TILE_RES;
+  const colorGrid = new Float32Array(tileStride * tileStride * 3);
+  const heightGrid = new Float32Array(tileStride * tileStride);
   const tileBiomeBlendScratch = createBiomeBlendSampleResult();
   for (let i = 0; i < vertices.count; i += 1) {
     const localX = vertices.getX(i);
     const localZ = vertices.getZ(i);
+    const gx = clampNumber(Math.round((localX + FAR_TILE_SIZE * 0.5) / cellSize), 0, FAR_TILE_RES, 0);
+    const gz = clampNumber(Math.round((localZ + FAR_TILE_SIZE * 0.5) / cellSize), 0, FAR_TILE_RES, 0);
     const x = localX + cx * FAR_TILE_SIZE;
     const z = localZ + cz * FAR_TILE_SIZE;
     const blend = fillBiomeBlendSample(x, z, tileBiomeBlendScratch);
@@ -2914,6 +4162,7 @@ function buildFarTile(cx, cz) {
         ? heightAt.sampleWithBiomeBlend(x, z, blend)
         : heightAt(x, z);
     vertices.setY(i, y);
+    heightGrid[gz * tileStride + gx] = y;
     const biome = blend.dominantBiome || getBiomeAt(x, z);
     const color = fillTerrainColorFromBiomeBlend(blend);
     const n = hash2(Math.floor(x * 0.5), Math.floor(z * 0.5));
@@ -2921,6 +4170,10 @@ function buildFarTile(cx, cz) {
     colors[i * 3] = color.r * brighten;
     colors[i * 3 + 1] = color.g * brighten;
     colors[i * 3 + 2] = color.b * brighten;
+    const gridIndex = (gz * tileStride + gx) * 3;
+    colorGrid[gridIndex] = colors[i * 3];
+    colorGrid[gridIndex + 1] = colors[i * 3 + 1];
+    colorGrid[gridIndex + 2] = colors[i * 3 + 2];
     detailBiomes[i] = getTerrainDetailBiomeId(biome);
     detailBiomeFades[i] = getTerrainDetailBiomeFadeFromBlend(blend);
   }
@@ -2936,6 +4189,11 @@ function buildFarTile(cx, cz) {
   mesh.matrixAutoUpdate = false;
   mesh.updateMatrix();
   mesh.renderOrder = 0;
+  mesh.userData.colorGrid = colorGrid;
+  mesh.userData.heightGrid = heightGrid;
+  mesh.userData.gridStride = tileStride;
+  mesh.userData.tileSize = FAR_TILE_SIZE;
+  mesh.userData.tileRes = FAR_TILE_RES;
   return mesh;
 }
 
@@ -2946,10 +4204,16 @@ function buildMidTile(cx, cz) {
   const colors = new Float32Array(vertices.count * 3);
   const detailBiomes = new Float32Array(vertices.count);
   const detailBiomeFades = new Float32Array(vertices.count);
+  const tileStride = MID_TILE_RES + 1;
+  const cellSize = MID_TILE_SIZE / MID_TILE_RES;
+  const colorGrid = new Float32Array(tileStride * tileStride * 3);
+  const heightGrid = new Float32Array(tileStride * tileStride);
   const tileBiomeBlendScratch = createBiomeBlendSampleResult();
   for (let i = 0; i < vertices.count; i += 1) {
     const localX = vertices.getX(i);
     const localZ = vertices.getZ(i);
+    const gx = clampNumber(Math.round((localX + MID_TILE_SIZE * 0.5) / cellSize), 0, MID_TILE_RES, 0);
+    const gz = clampNumber(Math.round((localZ + MID_TILE_SIZE * 0.5) / cellSize), 0, MID_TILE_RES, 0);
     const x = localX + cx * MID_TILE_SIZE;
     const z = localZ + cz * MID_TILE_SIZE;
     const blend = fillBiomeBlendSample(x, z, tileBiomeBlendScratch);
@@ -2958,6 +4222,7 @@ function buildMidTile(cx, cz) {
         ? heightAt.sampleWithBiomeBlend(x, z, blend)
         : heightAt(x, z);
     vertices.setY(i, y);
+    heightGrid[gz * tileStride + gx] = y;
     const biome = blend.dominantBiome || getBiomeAt(x, z);
     const color = fillTerrainColorFromBiomeBlend(blend);
     const n = hash2(Math.floor(x * 0.5), Math.floor(z * 0.5));
@@ -2965,6 +4230,10 @@ function buildMidTile(cx, cz) {
     colors[i * 3] = color.r * brighten;
     colors[i * 3 + 1] = color.g * brighten;
     colors[i * 3 + 2] = color.b * brighten;
+    const gridIndex = (gz * tileStride + gx) * 3;
+    colorGrid[gridIndex] = colors[i * 3];
+    colorGrid[gridIndex + 1] = colors[i * 3 + 1];
+    colorGrid[gridIndex + 2] = colors[i * 3 + 2];
     detailBiomes[i] = getTerrainDetailBiomeId(biome);
     detailBiomeFades[i] = getTerrainDetailBiomeFadeFromBlend(blend);
   }
@@ -2980,6 +4249,11 @@ function buildMidTile(cx, cz) {
   mesh.matrixAutoUpdate = false;
   mesh.updateMatrix();
   mesh.renderOrder = 0.5;
+  mesh.userData.colorGrid = colorGrid;
+  mesh.userData.heightGrid = heightGrid;
+  mesh.userData.gridStride = tileStride;
+  mesh.userData.tileSize = MID_TILE_SIZE;
+  mesh.userData.tileRes = MID_TILE_RES;
   return mesh;
 }
 
@@ -3023,6 +4297,344 @@ function sampleGroundHeightForCollision(x, z) {
   return Number.isFinite(fast) ? fast : heightAt(x, z);
 }
 
+function queueTeleportChunkLoad(subtitle = "Loading destination") {
+  beginChunkBuildUi("teleport", `${subtitle} (0%)`);
+  const chunkCx = Math.floor(player.position.x / CHUNK_SIZE);
+  const chunkCz = Math.floor(player.position.z / CHUNK_SIZE);
+  ensureChunksIncremental(chunkCx, chunkCz, {
+    batchSize: 4,
+    onProgress(done, total) {
+      const pct = total > 0 ? Math.round((done / total) * 100) : 100;
+      setStartupLoadingMessage("Loading...", `${subtitle} (${pct}%)`);
+    },
+    onComplete() {
+      finishChunkBuildUi("teleport");
+      ensureMidTerrainRuntimeIncremental(
+        Math.floor(player.position.x / MID_TILE_SIZE),
+        Math.floor(player.position.z / MID_TILE_SIZE)
+      );
+      ensureFarTerrainRuntimeIncremental(
+        Math.floor(player.position.x / FAR_TILE_SIZE),
+        Math.floor(player.position.z / FAR_TILE_SIZE)
+      );
+    },
+  });
+}
+
+function teleportPlayerToWorldCoordinates(x, z, options = {}) {
+  if (!Number.isFinite(x) || !Number.isFinite(z)) return false;
+  const groundY = sampleGroundHeightForCollision(x, z);
+  if (!Number.isFinite(groundY)) return false;
+  player.position.set(x, groundY, z);
+  player.velocity.set(0, 0, 0);
+  player.grounded = false;
+  minimapNeedsRender = true;
+  updateBiomeHud();
+  queueTeleportChunkLoad(options.subtitle || "Loading destination");
+  saveState();
+  return true;
+}
+
+const minimapColorScratch = { r: 0, g: 0, b: 0 };
+const minimapWaterBaseScratch = new THREE.Color();
+const minimapWaterShallowScratch = new THREE.Color();
+const minimapWaterMidScratch = new THREE.Color();
+const minimapWaterDeepScratch = new THREE.Color();
+const minimapWaterAbyssScratch = new THREE.Color();
+
+function syncMinimapCanvasSize() {
+  if (!minimapCanvas || !minimapCtx) return;
+  const rect = minimapCanvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.round(rect.width * dpr));
+  const height = Math.max(1, Math.round(rect.height * dpr));
+  if (width === minimapPixelWidth && height === minimapPixelHeight) return;
+  minimapPixelWidth = width;
+  minimapPixelHeight = height;
+  minimapCanvas.width = width;
+  minimapCanvas.height = height;
+  minimapCtx.imageSmoothingEnabled = false;
+  minimapImageData = minimapCtx.createImageData(width, height);
+  minimapPixelData = minimapImageData.data;
+  minimapNeedsRender = true;
+}
+
+function normalizeYawDelta(delta) {
+  const twoPi = Math.PI * 2;
+  let next = delta % twoPi;
+  if (next > Math.PI) next -= twoPi;
+  if (next < -Math.PI) next += twoPi;
+  return next;
+}
+
+function sampleColorFromMeshGrid(mesh, x, z, size, res, out) {
+  if (!mesh) return false;
+  const grid = mesh.userData?.colorGrid;
+  if (!(grid instanceof Float32Array)) return false;
+  const stride = Number.isFinite(mesh.userData?.gridStride) ? mesh.userData.gridStride : res + 1;
+  const half = size * 0.5;
+  const localX = x - mesh.position.x;
+  const localZ = z - mesh.position.z;
+  if (localX < -half || localX > half || localZ < -half || localZ > half) return false;
+  const cellSize = size / res;
+  const gridX = clampNumber((localX + half) / cellSize, 0, res, 0);
+  const gridZ = clampNumber((localZ + half) / cellSize, 0, res, 0);
+  const x0 = Math.floor(gridX);
+  const z0 = Math.floor(gridZ);
+  const x1 = Math.min(res, x0 + 1);
+  const z1 = Math.min(res, z0 + 1);
+  const tx = gridX - x0;
+  const tz = gridZ - z0;
+  const i00 = (z0 * stride + x0) * 3;
+  const i10 = (z0 * stride + x1) * 3;
+  const i01 = (z1 * stride + x0) * 3;
+  const i11 = (z1 * stride + x1) * 3;
+  const r0 = grid[i00] + (grid[i10] - grid[i00]) * tx;
+  const r1 = grid[i01] + (grid[i11] - grid[i01]) * tx;
+  const g0 = grid[i00 + 1] + (grid[i10 + 1] - grid[i00 + 1]) * tx;
+  const g1 = grid[i01 + 1] + (grid[i11 + 1] - grid[i01 + 1]) * tx;
+  const b0 = grid[i00 + 2] + (grid[i10 + 2] - grid[i00 + 2]) * tx;
+  const b1 = grid[i01 + 2] + (grid[i11 + 2] - grid[i01 + 2]) * tx;
+  out.r = r0 + (r1 - r0) * tz;
+  out.g = g0 + (g1 - g0) * tz;
+  out.b = b0 + (b1 - b0) * tz;
+  return true;
+}
+
+function sampleHeightFromMeshGrid(mesh, x, z, size, res) {
+  if (!mesh) return null;
+  const grid = mesh.userData?.heightGrid;
+  if (!(grid instanceof Float32Array)) return null;
+  const stride = Number.isFinite(mesh.userData?.gridStride) ? mesh.userData.gridStride : res + 1;
+  const half = size * 0.5;
+  const localX = x - mesh.position.x;
+  const localZ = z - mesh.position.z;
+  if (localX < -half || localX > half || localZ < -half || localZ > half) return null;
+  const cellSize = size / res;
+  const gridX = clampNumber((localX + half) / cellSize, 0, res, 0);
+  const gridZ = clampNumber((localZ + half) / cellSize, 0, res, 0);
+  const x0 = Math.floor(gridX);
+  const z0 = Math.floor(gridZ);
+  const x1 = Math.min(res, x0 + 1);
+  const z1 = Math.min(res, z0 + 1);
+  const tx = gridX - x0;
+  const tz = gridZ - z0;
+  const h00 = grid[z0 * stride + x0];
+  const h10 = grid[z0 * stride + x1];
+  const h01 = grid[z1 * stride + x0];
+  const h11 = grid[z1 * stride + x1];
+  if (tx + tz <= 1) {
+    return h00 + (h10 - h00) * tx + (h01 - h00) * tz;
+  }
+  const ux = 1 - tx;
+  const uz = 1 - tz;
+  return h11 + (h01 - h11) * ux + (h10 - h11) * uz;
+}
+
+function sampleColorFromTileMap(tileMap, size, res, x, z, out) {
+  if (!tileMap || tileMap.size === 0) return false;
+  const cx = Math.floor((x + size * 0.5) / size);
+  const cz = Math.floor((z + size * 0.5) / size);
+  const mesh = tileMap.get(`${cx},${cz}`);
+  if (!mesh) return false;
+  return sampleColorFromMeshGrid(mesh, x, z, size, res, out);
+}
+
+function sampleHeightFromTileMap(tileMap, size, res, x, z) {
+  if (!tileMap || tileMap.size === 0) return null;
+  const cx = Math.floor((x + size * 0.5) / size);
+  const cz = Math.floor((z + size * 0.5) / size);
+  const mesh = tileMap.get(`${cx},${cz}`);
+  if (!mesh) return null;
+  return sampleHeightFromMeshGrid(mesh, x, z, size, res);
+}
+
+function sampleLoadedBiomeColorAt(x, z, out, mode = "far") {
+  switch (mode) {
+    case "near":
+      if (sampleColorFromTileMap(chunks, CHUNK_SIZE, CHUNK_RES, x, z, out)) return out;
+      return null;
+    case "mid":
+      if (sampleColorFromTileMap(midTiles, MID_TILE_SIZE, MID_TILE_RES, x, z, out)) return out;
+      return null;
+    case "far":
+    default:
+      if (sampleColorFromTileMap(farTiles, FAR_TILE_SIZE, FAR_TILE_RES, x, z, out)) return out;
+      return null;
+  }
+}
+
+function sampleLoadedHeightAt(x, z, mode = "far") {
+  switch (mode) {
+    case "near":
+      return sampleChunkHeightGridAt(x, z);
+    case "mid":
+      return sampleHeightFromTileMap(midTiles, MID_TILE_SIZE, MID_TILE_RES, x, z);
+    case "far":
+    default:
+      return sampleHeightFromTileMap(farTiles, FAR_TILE_SIZE, FAR_TILE_RES, x, z);
+  }
+}
+
+function renderMinimap() {
+  if (!minimapCtx || !minimapCanvas) return;
+  syncMinimapCanvasSize();
+  const width = minimapPixelWidth;
+  const height = minimapPixelHeight;
+  if (!width || !height) return;
+  const nearSafeRadius = NEAR_FADE_END_METERS - CHUNK_SIZE * 0.5;
+  const midSafeRadius = MID_TILE_CULL_RADIUS - MID_TILE_HALF_DIAGONAL;
+  const maxSquareRadius = minimapWorldRadius * Math.SQRT2;
+  const useNearOnly = minimapZoomIndex <= 4 && maxSquareRadius <= nearSafeRadius;
+  const useMidOnly = !useNearOnly && maxSquareRadius <= midSafeRadius;
+  const sampleMode = useNearOnly ? "near" : useMidOnly ? "mid" : "far";
+  const waterLevel = state.world.water.level;
+  minimapWaterBaseScratch.set(state.world.water.colorHex);
+  minimapWaterShallowScratch.copy(minimapWaterBaseScratch).lerp(MINIMAP_WATER_SHALLOW_TINT, 0.42);
+  minimapWaterMidScratch.copy(minimapWaterBaseScratch).lerp(MINIMAP_WATER_MID_TINT, 0.58);
+  minimapWaterDeepScratch.copy(minimapWaterBaseScratch).lerp(MINIMAP_WATER_DEEP_TINT, 0.8);
+  minimapWaterAbyssScratch.copy(minimapWaterBaseScratch).lerp(MINIMAP_WATER_ABYSS_TINT, 0.92);
+  const span = minimapWorldRadius * 2;
+  const startX = player.position.x - minimapWorldRadius;
+  const startZ = player.position.z - minimapWorldRadius;
+  const stepX = span / width;
+  const stepZ = span / height;
+  if (!minimapPixelData || minimapPixelData.length !== width * height * 4) {
+    minimapImageData = minimapCtx.createImageData(width, height);
+    minimapPixelData = minimapImageData.data;
+  }
+  const data = minimapPixelData;
+  let offset = 0;
+  for (let py = 0; py < height; py += 1) {
+    const worldZ = startZ + py * stepZ;
+    for (let px = 0; px < width; px += 1) {
+      const worldX = startX + px * stepX;
+      const heightSample = sampleLoadedHeightAt(worldX, worldZ, sampleMode);
+      let r = MINIMAP_FALLBACK_COLOR.r;
+      let g = MINIMAP_FALLBACK_COLOR.g;
+      let b = MINIMAP_FALLBACK_COLOR.b;
+      if (Number.isFinite(heightSample) && heightSample < waterLevel) {
+        const depth = waterLevel - heightSample;
+        const clampedDepth = clampNumber(depth, 0, MINIMAP_WATER_DEPTH_MAX, 0);
+        if (clampedDepth <= MINIMAP_WATER_DEPTH_MID) {
+          const t = smoothstep(0, MINIMAP_WATER_DEPTH_MID, clampedDepth);
+          r = minimapWaterShallowScratch.r + (minimapWaterMidScratch.r - minimapWaterShallowScratch.r) * t;
+          g = minimapWaterShallowScratch.g + (minimapWaterMidScratch.g - minimapWaterShallowScratch.g) * t;
+          b = minimapWaterShallowScratch.b + (minimapWaterMidScratch.b - minimapWaterShallowScratch.b) * t;
+        } else {
+          const t = smoothstep(MINIMAP_WATER_DEPTH_MID, MINIMAP_WATER_DEPTH_MAX, clampedDepth);
+          r = minimapWaterMidScratch.r + (minimapWaterDeepScratch.r - minimapWaterMidScratch.r) * t;
+          g = minimapWaterMidScratch.g + (minimapWaterDeepScratch.g - minimapWaterMidScratch.g) * t;
+          b = minimapWaterMidScratch.b + (minimapWaterDeepScratch.b - minimapWaterMidScratch.b) * t;
+        }
+        if (clampedDepth > MINIMAP_WATER_DEPTH_ABYSS_START) {
+          const abyssT = smoothstep(MINIMAP_WATER_DEPTH_ABYSS_START, MINIMAP_WATER_DEPTH_MAX, clampedDepth);
+          r += (minimapWaterAbyssScratch.r - r) * abyssT;
+          g += (minimapWaterAbyssScratch.g - g) * abyssT;
+          b += (minimapWaterAbyssScratch.b - b) * abyssT;
+        }
+      } else {
+        const color = sampleLoadedBiomeColorAt(worldX, worldZ, minimapColorScratch, sampleMode);
+        r = clampNumber(color ? color.r : MINIMAP_FALLBACK_COLOR.r, 0, 1, 0);
+        g = clampNumber(color ? color.g : MINIMAP_FALLBACK_COLOR.g, 0, 1, 0);
+        b = clampNumber(color ? color.b : MINIMAP_FALLBACK_COLOR.b, 0, 1, 0);
+      }
+      if (Number.isFinite(heightSample) && stepX > 0 && stepZ > 0) {
+        const hx0 = sampleLoadedHeightAt(worldX - stepX, worldZ, sampleMode);
+        const hx1 = sampleLoadedHeightAt(worldX + stepX, worldZ, sampleMode);
+        const hz0 = sampleLoadedHeightAt(worldX, worldZ - stepZ, sampleMode);
+        const hz1 = sampleLoadedHeightAt(worldX, worldZ + stepZ, sampleMode);
+        if (Number.isFinite(hx0) && Number.isFinite(hx1) && Number.isFinite(hz0) && Number.isFinite(hz1)) {
+          const dhx = (hx1 - hx0) / (2 * stepX);
+          const dhz = (hz1 - hz0) / (2 * stepZ);
+          const grad = Math.hypot(dhx, dhz);
+          if (grad > 0) {
+            const slopeAngle = Math.atan(grad);
+            if (slopeAngle > MINIMAP_SLOPE_MIN_RADIANS) {
+              const t = clampNumber(
+                (slopeAngle - MINIMAP_SLOPE_MIN_RADIANS) / (MINIMAP_SLOPE_MAX_RADIANS - MINIMAP_SLOPE_MIN_RADIANS),
+                0,
+                1,
+                0
+              );
+              const slopeT = t * t * (3 - 2 * t);
+              const invGrad = 1 / grad;
+              const downhillX = -dhx * invGrad;
+              const downhillZ = -dhz * invGrad;
+              const dirDot = downhillX * MINIMAP_SLOPE_DIR_X + downhillZ * MINIMAP_SLOPE_DIR_Z;
+              const dirAmount = Math.abs(dirDot);
+              if (dirAmount > 0) {
+              if (dirDot > 0) {
+                const lightBlend = slopeT * dirAmount * MINIMAP_SLOPE_LIGHT_BLEND_MAX;
+                const additive = lightBlend * 0.5;
+                r = Math.min(1, r + additive);
+                g = Math.min(1, g + additive);
+                b = Math.min(1, b + additive);
+              } else {
+                const darkBlend = slopeT * dirAmount * MINIMAP_SLOPE_BLEND_MAX;
+                r *= 1 - darkBlend;
+                g *= 1 - darkBlend;
+                b *= 1 - darkBlend;
+              }
+            }
+          }
+        }
+        }
+      }
+      data[offset] = Math.round(r * 255);
+      data[offset + 1] = Math.round(g * 255);
+      data[offset + 2] = Math.round(b * 255);
+      data[offset + 3] = 255;
+      offset += 4;
+    }
+  }
+  minimapCtx.putImageData(minimapImageData, 0, 0);
+
+  const pointerSize = Math.max(6, Math.min(width, height) * 0.07);
+  minimapCtx.save();
+  minimapCtx.translate(width * 0.5, height * 0.5);
+  minimapCtx.rotate(-player.yaw);
+  minimapCtx.beginPath();
+  minimapCtx.moveTo(0, -pointerSize);
+  minimapCtx.lineTo(pointerSize * 0.6, pointerSize * 0.7);
+  minimapCtx.lineTo(0, pointerSize * 0.4);
+  minimapCtx.lineTo(-pointerSize * 0.6, pointerSize * 0.7);
+  minimapCtx.closePath();
+  minimapCtx.fillStyle = "#e53935";
+  minimapCtx.strokeStyle = "rgba(0, 0, 0, 0.6)";
+  minimapCtx.lineWidth = Math.max(1, pointerSize * 0.15);
+  minimapCtx.fill();
+  minimapCtx.stroke();
+  minimapCtx.restore();
+}
+
+function updateMinimap() {
+  if (!minimapCtx) return;
+  const now = performance.now();
+  const interval = now - lastMinimapUpdateAt;
+  if (interval < MINIMAP_MIN_UPDATE_INTERVAL_MS) return;
+  const dx = player.position.x - lastMinimapSampleX;
+  const dz = player.position.z - lastMinimapSampleZ;
+  const moved =
+    !Number.isFinite(lastMinimapSampleX) ||
+    !Number.isFinite(lastMinimapSampleZ) ||
+    dx * dx + dz * dz >= MINIMAP_MOVE_THRESHOLD_SQ;
+  const yawDelta = Number.isFinite(lastMinimapSampleYaw)
+    ? Math.abs(normalizeYawDelta(player.yaw - lastMinimapSampleYaw))
+    : Infinity;
+  const turned = yawDelta >= MINIMAP_YAW_THRESHOLD;
+  const stale = interval >= MINIMAP_STALE_UPDATE_MS;
+  const zoomed = minimapZoomIndex !== lastMinimapSampleZoomIndex;
+  if (!moved && !turned && !stale && !zoomed && !minimapNeedsRender) return;
+  renderMinimap();
+  lastMinimapUpdateAt = now;
+  lastMinimapSampleX = player.position.x;
+  lastMinimapSampleZ = player.position.z;
+  lastMinimapSampleYaw = player.yaw;
+  lastMinimapSampleZoomIndex = minimapZoomIndex;
+  minimapNeedsRender = false;
+}
+
 const player = {
   position: new THREE.Vector3(state.player.position.x, state.player.position.y, state.player.position.z),
   velocity: new THREE.Vector3(),
@@ -3030,7 +4642,9 @@ const player = {
   pitch: state.player.pitch,
   grounded: false,
 };
-maybeRetargetInitialSpawnToLand();
+if (!state.__loadedFromStorage) {
+  maybeRetargetInitialSpawnToLand();
+}
 player.position.set(state.player.position.x, state.player.position.y, state.player.position.z);
 syncAtmosphereFromState();
 syncWaterColorFromState();
@@ -3171,6 +4785,7 @@ window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  syncMinimapCanvasSize();
 });
 
 window.addEventListener("keydown", (event) => {
@@ -3201,6 +4816,21 @@ window.addEventListener("keydown", (event) => {
     return;
   }
 
+  const zoomInKey =
+    event.key === "+" ||
+    event.key === "=" ||
+    event.code === "Equal" ||
+    event.code === "NumpadAdd" ||
+    event.code === "NumpadEqual";
+  const zoomOutKey =
+    event.key === "-" || event.key === "_" || event.code === "Minus" || event.code === "NumpadSubtract";
+  if (zoomInKey || zoomOutKey) {
+    setMinimapZoomIndex(minimapZoomIndex + (zoomInKey ? -1 : 1));
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+
   if (event.code === "Enter") {
     if (document.activeElement !== chatInput) {
       setChatOpen(true, { focusInput: true });
@@ -3210,7 +4840,13 @@ window.addEventListener("keydown", (event) => {
 
   keys.add(event.code);
 
-  if (event.code === "KeyR") {
+  if (
+    event.code === "KeyR" &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.metaKey &&
+    !event.shiftKey
+  ) {
     resetPlayerToLandSpawnNearOrigin();
   }
 }, true);
@@ -3236,6 +4872,25 @@ chatInput.addEventListener("focus", () => {
 
 chatMinimizeBtn?.addEventListener("click", () => {
   setChatOpen(!chatOpen, { focusInput: !chatOpen });
+});
+
+minimapCanvas?.addEventListener("click", (event) => {
+  if (event.button !== 0) return;
+  const worldPoint = mapMinimapClickToWorld(
+    event,
+    minimapCanvas,
+    player.position.x,
+    player.position.z,
+    minimapWorldRadius
+  );
+  if (!worldPoint) return;
+  event.preventDefault();
+  if (!teleportPlayerToWorldCoordinates(worldPoint.x, worldPoint.z)) return;
+  addChatEntry({
+    role: "codex_output",
+    content: `Teleported to ${Math.round(worldPoint.x)}, ${Math.round(worldPoint.z)} from minimap click.`,
+    ts: Date.now(),
+  });
 });
 
 window.addEventListener("mousemove", (event) => {
@@ -3280,20 +4935,87 @@ document.addEventListener("pointerlockchange", () => {
 
 const clock = new THREE.Clock();
 
+function formatHudCoord(value) {
+  const rounded = Math.round(value * 10) / 10;
+  return Object.is(rounded, -0) ? "0.0" : rounded.toFixed(1);
+}
+
+function updateHudYReadout() {
+  if (
+    !feetYEl &&
+    !eyeYEl &&
+    !waterYEl &&
+    !playerYEl &&
+    !cameraYEl &&
+    !velYEl &&
+    !groundedEl &&
+    !moveVersionEl
+  ) {
+    return;
+  }
+  const groundY = Number.isFinite(player._lastGroundHeight)
+    ? player._lastGroundHeight
+    : getGroundYAt(player.position.x, player.position.z, sampleGroundHeightForCollision, heightAt);
+  const feetY = Number.isFinite(groundY) ? groundY : getFeetY(player);
+  if (feetYEl) feetYEl.textContent = formatHudCoord(feetY);
+  if (eyeYEl) eyeYEl.textContent = formatHudCoord(getEyeY(player, PLAYER_HEIGHT));
+  if (waterYEl) waterYEl.textContent = formatHudCoord(state.world.water.level);
+  if (playerYEl) playerYEl.textContent = formatHudCoord(player.position.y);
+  if (cameraYEl) cameraYEl.textContent = formatHudCoord(camera.position.y);
+  if (velYEl) velYEl.textContent = formatHudCoord(player.velocity.y);
+  if (groundedEl) groundedEl.textContent = player.grounded ? "true" : "false";
+  if (moveVersionEl) moveVersionEl.textContent = MOVEMENT_VERSION;
+}
+
+function updateWorldGroupTransform() {
+  worldGroup.position.set(-originOffset.x, -originOffset.y, -originOffset.z);
+}
+
+function maybeRecenterWorldOrigin() {
+  const dx = player.position.x - originOffset.x;
+  const dz = player.position.z - originOffset.z;
+  if (Math.abs(dx) <= ORIGIN_RECENTER_THRESHOLD_METERS && Math.abs(dz) <= ORIGIN_RECENTER_THRESHOLD_METERS) {
+    return;
+  }
+  const targetX = Math.round(player.position.x / ORIGIN_RECENTER_GRID_METERS) * ORIGIN_RECENTER_GRID_METERS;
+  const targetZ = Math.round(player.position.z / ORIGIN_RECENTER_GRID_METERS) * ORIGIN_RECENTER_GRID_METERS;
+  originOffset.set(targetX, 0, targetZ);
+  updateWorldGroupTransform();
+  minimapNeedsRender = true;
+}
+
+function updateRenderTransforms() {
+  renderPlayerPosition.copy(player.position).sub(originOffset);
+  renderCameraPosition.copy(renderPlayerPosition);
+  renderCameraPosition.y += PLAYER_HEIGHT;
+  camera.position.copy(renderCameraPosition);
+  camera.rotation.set(player.pitch, player.yaw, 0, "YXZ");
+  sky.position.copy(renderPlayerPosition);
+  renderTargetPosition.copy(renderPlayerPosition);
+  renderTargetPosition.y = 0;
+  sunLight.target.position.copy(renderTargetPosition);
+  moonLight.target.position.copy(renderTargetPosition);
+  shadowFillLight.target.position.copy(renderTargetPosition);
+  playerGlowLight.position.set(renderPlayerPosition.x, renderPlayerPosition.y + PLAYER_HEIGHT + 1.4, renderPlayerPosition.z);
+  playerGroundFill.position.set(renderPlayerPosition.x, renderPlayerPosition.y + PLAYER_HEIGHT + 8.8, renderPlayerPosition.z);
+  playerGroundFill.target.position.set(renderPlayerPosition.x, renderPlayerPosition.y + PLAYER_HEIGHT - 1.6, renderPlayerPosition.z);
+}
+
 function updatePlayer(dt) {
   updatePlayerRuntime({
     dt,
     keys,
     player,
+    playerHeight: PLAYER_HEIGHT,
     heightAt,
     sampleGroundHeight: sampleGroundHeightForCollision,
     ensureChunks: ensureChunksRuntimeIncremental,
     chunkSize: CHUNK_SIZE,
     xyzEl,
     chunkEl,
-    camera,
     Vector3: THREE.Vector3,
   });
+  maybeRecenterWorldOrigin();
 }
 
 function updateFarTerrainFromPlayer() {
@@ -3320,13 +5042,18 @@ function updateBiomeHud() {
   if (!movedFar && !stale) return;
 
   const visual = fillBlendedVisualSampleAt(x, z);
+  const climate = sampleBiomeClimateFields(x, z);
+  const temperatureCategory = getTemperatureCategoryFromValue(climate.temperature);
+  const humidityBand = getHumidityBandKey(climate.humidity);
   applyVisualSampleToAtmosphereAndWater(visual);
   if (biomeEl) {
     biomeEl.textContent = visual?.biome?.label ?? visual?.biome?.id ?? "Unknown";
   }
   if (temperatureTypeEl) {
-    const category = visual?.biome?.category;
-    temperatureTypeEl.textContent = category ? `${category[0].toUpperCase()}${category.slice(1)}` : "Unknown";
+    temperatureTypeEl.textContent = `${temperatureCategory[0].toUpperCase()}${temperatureCategory.slice(1)}`;
+  }
+  if (humidityTypeEl) {
+    humidityTypeEl.textContent = HUMIDITY_ZONE_LABELS[humidityBand] || "Unknown";
   }
   lastVisualSampleX = x;
   lastVisualSampleZ = z;
@@ -3338,16 +5065,16 @@ function animate() {
   applyQueuedLookInput(dt);
   if (!chunkBuildInProgress || chunkBuildContext === "startup") {
     updatePlayer(dt);
-  } else {
-    camera.rotation.set(player.pitch, player.yaw, 0, "YXZ");
+    updateHudYReadout();
   }
   updateMidTerrainFromPlayer();
   updateFarTerrainFromPlayer();
   updateBiomeHud();
+  updateMinimap();
   updateDayNightCycle(dt);
+  updateUnderwaterVisualEffects(dt);
   updateStatusClock();
   updateStatusFps(dt);
-  sky.position.set(player.position.x, 0, player.position.z);
   if (cloudGroup.parent) {
     cloudGroup.position.set(
       player.position.x * 0.34 + Math.sin(clock.elapsedTime * 0.03) * 90,
@@ -3356,8 +5083,9 @@ function animate() {
     );
   }
   const targetOpacity = state.world.water.opacity;
+  const underwaterOpacityBoost = lerpScalar(0, 0.22, underwaterState.submersion);
   water.material.opacity = clampNumber(
-    targetOpacity + Math.sin(clock.elapsedTime * 0.6) * 0.04,
+    targetOpacity + underwaterOpacityBoost + Math.sin(clock.elapsedTime * 0.6) * 0.04,
     0.05,
     1,
     targetOpacity
@@ -3367,6 +5095,7 @@ function animate() {
   if (water.material instanceof THREE.MeshPhysicalMaterial) {
     water.material.roughness = clampNumber(0.2 + Math.sin(clock.elapsedTime * 0.35) * 0.04, 0.12, 0.3, 0.2);
   }
+  updateRenderTransforms();
   renderer.render(scene, camera);
   if (pendingInitialNightSync) {
     pendingInitialNightSync = false;
@@ -3400,7 +5129,9 @@ function startAppBootSequence() {
   beginChunkBuildUi("startup", "Preparing world systems");
   runStartupPhase("Loading...", "Preparing world systems", () => {}, () => {
     setStartupLoadingMessage("Loading...", "Generating nearby terrain chunks (0%)");
-    ensureChunksIncremental(0, 0, {
+    const startCx = Math.floor(player.position.x / CHUNK_SIZE);
+    const startCz = Math.floor(player.position.z / CHUNK_SIZE);
+    ensureChunksIncremental(startCx, startCz, {
       batchSize: 3,
       onProgress(done, total) {
         const pct = total > 0 ? Math.round((done / total) * 100) : 100;
@@ -3658,7 +5389,12 @@ function tryHandleLocalChatCommand(message) {
   if (handleTimeCommand(trimmed)) return true;
   const tpAliasMatch = trimmed.match(/^\/?tp\s+(.+)$/i);
   if (tpAliasMatch) {
-    teleportPlayerToBiome(tpAliasMatch[1]);
+    const coords = tryParseTeleportCoordinates(tpAliasMatch[1]);
+    if (coords) {
+      teleportPlayerToCoordinates(coords.x, coords.z);
+    } else {
+      teleportPlayerToBiome(tpAliasMatch[1]);
+    }
     return true;
   }
   if (!/^\/world(?:\s|$)/i.test(trimmed)) return false;
@@ -3850,8 +5586,7 @@ function handleLocalHelpCommand(message) {
 }
 
 function showWorldCommandHelp() {
-  const biomeNames = Object.values(BIOME_DEFS)
-    .map((biome) => biome.id)
+  const biomeNames = Array.from(new Set(getPublicBiomeEntries().map(([, biome]) => biome.id)))
     .sort()
     .join(", ");
   addChatEntry({
@@ -4159,6 +5894,13 @@ function applyBiomeSettingsUpdateFromAction(action) {
           terrainProfileTouched = true;
         }
       };
+      const assignFiniteNumber = (key) => {
+        if (typeof incoming[key] !== "number" || !Number.isFinite(incoming[key])) return;
+        if (terrainProfile[key] !== incoming[key]) {
+          terrainProfile[key] = incoming[key];
+          terrainProfileTouched = true;
+        }
+      };
       if (typeof incoming.noiseAlgorithm === "string") {
         const nextAlgorithm = incoming.noiseAlgorithm;
         if (terrainProfile.noiseAlgorithm !== nextAlgorithm) {
@@ -4176,6 +5918,8 @@ function applyBiomeSettingsUpdateFromAction(action) {
       assignNumber("warpStrength", 0, 1.2);
       assignNumber("warpScaleMultiplier", 0.2, 5);
       assignNumber("secondaryAmount", -1, 1);
+      assignFiniteNumber("heightMultiplier");
+      assignNumber("heightOffset", -200, 200);
       if (Object.keys(terrainProfile).length > 0) next.terrainProfile = terrainProfile;
       else if (next.terrainProfile) {
         delete next.terrainProfile;
@@ -4315,9 +6059,7 @@ function teleportPlayerToBiome(rawBiomeName, options = {}) {
   player.position.set(target.x, target.y, target.z);
   player.velocity.set(0, 0, 0);
   player.grounded = false;
-  const cx = Math.floor(player.position.x / CHUNK_SIZE);
-  const cz = Math.floor(player.position.z / CHUNK_SIZE);
-  ensureChunks(cx, cz);
+  queueTeleportChunkLoad("Loading biome destination");
   updateBiomeHud();
   saveState();
 
@@ -4328,16 +6070,57 @@ function teleportPlayerToBiome(rawBiomeName, options = {}) {
   });
 }
 
+function teleportPlayerToCoordinates(x, z) {
+  if (!Number.isFinite(x) || !Number.isFinite(z)) {
+    addChatEntry({
+      role: "codex_output",
+      content: `Invalid coordinates "${String(x)}, ${String(z)}".`,
+      ts: Date.now(),
+    });
+    return;
+  }
+
+  const success = teleportPlayerToWorldCoordinates(x, z);
+  if (!success) {
+    addChatEntry({
+      role: "codex_output",
+      content: `Failed to teleport to ${Math.round(x)}, ${Math.round(z)}. Try another location.`,
+      ts: Date.now(),
+    });
+    return;
+  }
+
+  addChatEntry({
+    role: "codex_output",
+    content: `Teleported to ${Math.round(x)}, ${Math.round(z)}.`,
+    ts: Date.now(),
+  });
+}
+
+function tryParseTeleportCoordinates(rawArg) {
+  if (!rawArg) return null;
+  const tokens = rawArg
+    .trim()
+    .split(/[\s,]+/)
+    .filter(Boolean);
+  if (tokens.length < 2) return null;
+  const x = Number.parseFloat(tokens[0]);
+  const z = Number.parseFloat(tokens[1]);
+  if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
+  return { x, z };
+}
+
 function resolveBiomeName(name) {
   const normalized = String(name || "")
     .trim()
     .toLowerCase()
     .replace(/[^a-z]/g, "");
   if (!normalized) return null;
-  for (const biome of Object.values(BIOME_DEFS)) {
+  for (const [key, biome] of getPublicBiomeEntries()) {
+    const keyName = String(key).toLowerCase().replace(/[^a-z]/g, "");
     const idKey = biome.id.toLowerCase().replace(/[^a-z]/g, "");
     const labelKey = biome.label.toLowerCase().replace(/[^a-z]/g, "");
-    if (normalized === idKey || normalized === labelKey) {
+    if (normalized === keyName || normalized === idKey || normalized === labelKey) {
       return biome;
     }
   }
@@ -4347,7 +6130,7 @@ function resolveBiomeName(name) {
 function guessBiomeName(name) {
   const query = normalizeWorldCommandToken(name);
   if (!query) return null;
-  const candidates = Object.values(BIOME_DEFS).map((biome) => ({
+  const candidates = getPublicBiomeEntries().map(([, biome]) => ({
     biome,
     keys: [biome.id, biome.label],
   }));
@@ -4372,6 +6155,14 @@ function guessBiomeName(name) {
   if (best.score > maxScore) return null;
   if (!hasClearMargin && best.score > 0) return null;
   return best;
+}
+
+function isInternalOnlyBiome(biome) {
+  return biome?.internalOnly === true;
+}
+
+function getPublicBiomeEntries() {
+  return Object.entries(BIOME_DEFS).filter(([, biome]) => !isInternalOnlyBiome(biome));
 }
 
 function guessWorldTeleportBiomeCommand(parts) {
@@ -4752,7 +6543,7 @@ function restoreRuntimeState(snapshot) {
   syncTerrainShaderUniforms();
   syncTreeMaterials();
   treeChunks.forEach((treeGroup) => {
-    scene.remove(treeGroup);
+    worldGroup.remove(treeGroup);
   });
   treeChunks.clear();
   rebuildTerrain();
