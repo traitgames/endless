@@ -108,8 +108,6 @@ const traceClearBtn = document.getElementById("trace-clear");
 const traceOpenBtn = document.getElementById("action-trace-open");
 const minimapCanvas = document.getElementById("minimap-canvas");
 const minimapCtx = minimapCanvas?.getContext("2d");
-const minimapZoomInBtn = document.getElementById("minimap-zoom-in");
-const minimapZoomOutBtn = document.getElementById("minimap-zoom-out");
 const LOCAL_COMMAND_HELP_URL = new URL("./commandHelp.json", import.meta.url);
 const FALLBACK_FRONTEND_COMMAND_HELP_LINES = [
   "/help <command>",
@@ -1059,15 +1057,6 @@ let minimapZoomIndex = (() => {
 })();
 let minimapWorldRadius = MINIMAP_ZOOM_PRESETS_METERS[minimapZoomIndex] * 0.5;
 
-function updateMinimapZoomControls() {
-  if (minimapZoomInBtn) {
-    minimapZoomInBtn.disabled = minimapZoomIndex <= 0;
-  }
-  if (minimapZoomOutBtn) {
-    minimapZoomOutBtn.disabled = minimapZoomIndex >= MINIMAP_ZOOM_PRESETS_METERS.length - 1;
-  }
-}
-
 function setMinimapZoomIndex(nextIndex, { force = false } = {}) {
   const clamped = clampNumber(
     Math.round(nextIndex),
@@ -1079,10 +1068,7 @@ function setMinimapZoomIndex(nextIndex, { force = false } = {}) {
   minimapZoomIndex = clamped;
   minimapWorldRadius = MINIMAP_ZOOM_PRESETS_METERS[minimapZoomIndex] * 0.5;
   minimapNeedsRender = true;
-  updateMinimapZoomControls();
 }
-
-updateMinimapZoomControls();
 const farTerrainMaterial = new THREE.MeshStandardMaterial({
   color: state.world.terrainColor,
   vertexColors: true,
@@ -4886,16 +4872,6 @@ chatInput.addEventListener("focus", () => {
 
 chatMinimizeBtn?.addEventListener("click", () => {
   setChatOpen(!chatOpen, { focusInput: !chatOpen });
-});
-
-minimapZoomInBtn?.addEventListener("click", (event) => {
-  event.preventDefault();
-  setMinimapZoomIndex(minimapZoomIndex - 1);
-});
-
-minimapZoomOutBtn?.addEventListener("click", (event) => {
-  event.preventDefault();
-  setMinimapZoomIndex(minimapZoomIndex + 1);
 });
 
 minimapCanvas?.addEventListener("click", (event) => {

@@ -310,40 +310,6 @@ canvas {
   cursor: crosshair;
 }
 
-#minimap-controls {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  display: grid;
-  gap: 6px;
-  z-index: 2;
-  pointer-events: auto;
-}
-
-#minimap-controls button {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(12, 18, 20, 0.85);
-  color: rgba(235, 245, 248, 0.9);
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 1;
-  cursor: pointer;
-  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.4);
-}
-
-#minimap-controls button:hover {
-  background: rgba(20, 28, 32, 0.95);
-}
-
-#minimap-controls button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-  filter: grayscale(0.6);
-}
-
 #help {
   position: fixed;
   left: 24px;
