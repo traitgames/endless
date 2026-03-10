@@ -10,7 +10,7 @@ const definition = Object.freeze({
   "terrainProfile": {
     "noiseAlgorithm": "hybrid",
     "noiseScaleMultiplier": 0.3,
-    "baseHeightMultiplier": 2.2,
+    "baseHeightMultiplier": 1.7,
     "ridgeScaleMultiplier": 0.72,
     "ridgeHeightMultiplier": 0.11,
     "octaves": 4,
